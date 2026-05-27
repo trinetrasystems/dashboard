@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+$py.class
+
+# Virtual environments
+venv/
+.venv/
+backend/venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
