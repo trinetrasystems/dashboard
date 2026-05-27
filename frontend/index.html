@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Live Monitoring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Topbar injected by common.js -->
+
+<!-- Loitering banner — shown only when there are active loitering alerts -->
+<div id="loiter-banner" class="loiter-banner" style="display: none;">
+  <div class="loiter-banner-content">
+    <div class="loiter-title">
+      <div class="alert-icon">!</div>
+      <span>LOITERING DETECTED</span>
+    </div>
+    <div class="loiter-list" id="loiter-list"></div>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">Detections Today</div>
+      <div class="kpi-value" id="kpi-total">—</div>
+      <div class="kpi-delta">last 24 hours</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">Currently in Premises</div>
+      <div class="kpi-value" id="kpi-active">—</div>
+      <div class="kpi-delta">active sessions</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Active Loitering Alerts</div>
+      <div class="kpi-value" id="kpi-loiter">—</div>
+      <div class="kpi-delta red">⚠ &gt; 15 min threshold</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Today's Detections</div>
+        <div class="card-sub">hourly · auto-refreshing</div>
+      </div>
+      <div class="card-sub" id="chart-meta">—</div>
+    </div>
+    <div class="chart-container" id="today-chart">—</div>
+  </div>
+
+  <div class="main-grid">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Currently in Premises</div>
+          <div class="card-sub">click row for last-seen image + history · threshold 15 min</div>
+        </div>
+        <div class="card-sub">▼ longest first</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Badge</th><th>Entered</th><th>Last Seen</th>
+            <th>Duration</th><th>Status</th><th>Sightings</th>
+          </tr>
+        </thead>
+        <tbody id="premises-body">
+          <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card notif-card">
+      <div class="notif-header">
+        <div>
+          <div class="card-title">Live Notifications</div>
+          <div class="card-sub" id="notif-meta">latest detections</div>
+        </div>
+      </div>
+      <div class="notif-list" id="notif-list">
+        <div class="notif-empty">waiting for events…</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/dummy-data.js"></script>
+<script src="js/common.js"></script>
+<script src="js/api.js"></script>
+<script src="js/live.js"></script>
+</body>
+</html>

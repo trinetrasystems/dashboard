@@ -1,0 +1,23 @@
+# Trinetra Systems — Badge class list
+# ────────────────────────────────────────────────────────────────────────────
+# One badge per line.  Lines starting with # and blank lines are ignored.
+#
+# This file is the source of truth for which badges your YOLO model detects.
+# Should match the `names:` list in your YOLOv5/v8 data.yaml.
+#
+# Whitelist dropdown + Logs filter dropdown are populated from this file.
+# Edit + restart the server (or just hit refresh — file is read on every request).
+
+RED-CIRCLE
+BLUE-SQUARE
+GREEN-TRIANGLE
+YELLOW-STAR
+CYAN-PENTAGON
+AMBER-TRIANGLE
+VIOLET-HEXAGON
+ORANGE-DIAMOND
+PINK-OCTAGON
+WHITE-CROSS
+BLACK-SHIELD
+GOLD-STAR
+SILVER-DIAMOND

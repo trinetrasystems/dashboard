@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Logs & Charts</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Topbar injected by common.js -->
+
+<div class="container">
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <input class="filter-input search" id="filter-search" placeholder="🔍 Search by badge, camera, or time…">
+    <span class="filter-label">Date</span>
+    <input type="date" class="filter-input" id="filter-date">
+    <span class="filter-label">Month</span>
+    <select class="filter-select" id="filter-month"></select>
+    <span class="filter-label">Badge</span>
+    <select class="filter-select" id="filter-badge"></select>
+    <span class="filter-label">Camera</span>
+    <select class="filter-select" id="filter-camera"></select>
+    <button class="export-btn" id="export-btn">⬇ Export CSV</button>
+  </div>
+
+  <!-- Detection log -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Detection Log</div>
+        <div class="card-sub">click row for full image</div>
+      </div>
+      <div class="card-sub" id="log-meta">—</div>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Frame</th><th>Time</th><th>Badge</th><th>Camera</th><th>Type</th></tr>
+      </thead>
+      <tbody id="log-body">
+        <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-dim);">loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 4-chart grid -->
+  <div class="chart-grid">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Detections Over Time</div>
+          <div class="card-sub" id="chart-timeline-sub">last 30 days</div>
+        </div>
+      </div>
+      <div class="chart-container" id="chart-timeline">—</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Detections by Badge</div>
+          <div class="card-sub" id="chart-by-badge-sub">top 7</div>
+        </div>
+      </div>
+      <div class="chart-container" id="chart-by-badge">—</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Detections by Camera</div>
+          <div class="card-sub" id="chart-by-camera-sub">—</div>
+        </div>
+      </div>
+      <div class="chart-container" id="chart-by-camera">—</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Loitering Incidents</div>
+          <div class="card-sub" id="chart-loitering-sub">last 30 days</div>
+        </div>
+      </div>
+      <div class="chart-container" id="chart-loitering">—</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/dummy-data.js"></script>
+<script src="js/common.js"></script>
+<script src="js/api.js"></script>
+<script src="js/logs.js"></script>
+</body>
+</html>

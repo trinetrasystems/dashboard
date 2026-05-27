@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Visits</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Topbar injected by common.js -->
+
+<div class="container">
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <input class="filter-input search" id="visit-filter-search" placeholder="🔍 Search by badge or camera…">
+    <span class="filter-label">Status</span>
+    <select class="filter-select" id="visit-filter-status">
+      <option value="all" selected>All</option>
+      <option value="closed">Completed only</option>
+      <option value="open">Currently in premises</option>
+    </select>
+    <span class="filter-label">Badge</span>
+    <select class="filter-select" id="visit-filter-badge"></select>
+    <span class="filter-label">Date</span>
+    <input type="date" class="filter-input" id="visit-filter-date">
+  </div>
+
+  <!-- Visits list -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Visits</div>
+        <div class="card-sub">each row = one badge presence from entry to exit · click for full timeline</div>
+      </div>
+      <div class="card-sub" id="visits-meta">—</div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Badge</th>
+          <th>Entered</th>
+          <th>Exited</th>
+          <th>Duration</th>
+          <th>Sightings</th>
+          <th>Cameras</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="visits-body">
+        <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-dim);">loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<script src="js/dummy-data.js"></script>
+<script src="js/common.js"></script>
+<script src="js/api.js"></script>
+<script src="js/visits.js"></script>
+</body>
+</html>

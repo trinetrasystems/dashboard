@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Badge Whitelist</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Topbar injected by common.js -->
+
+<div class="admin-wrap">
+  <div class="admin-card">
+    <div class="card-title" style="font-size: 18px;">Badge Whitelist</div>
+    <div class="card-sub" style="margin-top: 6px;">
+      Whitelisted badges are exempt from loitering alerts — their cards are auto-muted in the banner,
+      excluded from the active alert count, and still appear normally in the detection log.
+    </div>
+
+    <div class="admin-input">
+      <select id="wl-badge" class="filter-select" style="flex: 1; min-width: 180px; padding: 10px 12px;">
+        <option value="">— select a badge —</option>
+      </select>
+      <input id="wl-reason" placeholder="reason (optional, e.g. security guard)" style="flex: 2;">
+      <button id="wl-add-btn">+ Add Badge</button>
+    </div>
+
+    <div id="wl-list"></div>
+
+    <div class="notice">
+      <b>auto-mute behavior</b><br>
+      When a badge is added here, any active loitering alert for that badge is immediately muted —
+      the alert card greys out in the banner and the active alert count drops. The badge still appears
+      in the Currently in Premises table with a <span class="status-tag wl" style="vertical-align: middle;">WHITELIST</span> tag and all sightings remain in the detection log.
+    </div>
+  </div>
+</div>
+
+<script src="js/dummy-data.js"></script>
+<script src="js/common.js"></script>
+<script src="js/api.js"></script>
+<script src="js/whitelist.js"></script>
+</body>
+</html>
