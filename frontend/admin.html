@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e17;
+    --surface: #111827;
+    --card: rgba(255,255,255,0.03);
+    --border: rgba(255,255,255,0.07);
+    --border-hover: rgba(255,255,255,0.15);
+    --cyan: #00d4ff;
+    --cyan-dim: rgba(0,212,255,0.12);
+    --green: #00e676;
+    --red: #ff4444;
+    --amber: #ffaa00;
+    --text: #e8edf5;
+    --text-dim: #6b7a90;
+    --text-muted: #3d4f6a;
+    --radius: 12px;
+    --font: 'Bricolage Grotesque', sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    min-height: 100vh;
+  }
+
+  /* ── Login page ── */
+  #login-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% -20%, rgba(0,212,255,0.08) 0%, transparent 70%),
+      var(--bg);
+  }
+  .login-card {
+    width: 400px;
+    padding: 48px 40px;
+    background: rgba(17,24,39,0.9);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    backdrop-filter: blur(20px);
+    box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,212,255,0.05);
+  }
+  .login-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 36px;
+  }
+  .login-logo svg { width: 36px; height: 36px; }
+  .login-logo-text { font-size: 18px; font-weight: 700; letter-spacing: 0.05em; }
+  .login-logo-text span { color: var(--cyan); }
+  .login-title { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+  .login-sub { color: var(--text-dim); font-size: 14px; margin-bottom: 32px; }
+  .field { margin-bottom: 18px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: var(--text-dim); text-transform: uppercase; margin-bottom: 8px; }
+  .field input {
+    width: 100%; padding: 12px 16px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: var(--mono); font-size: 14px;
+    outline: none; transition: border-color 0.2s;
+  }
+  .field input:focus { border-color: var(--cyan); background: rgba(0,212,255,0.04); }
+  .btn-login {
+    width: 100%; padding: 14px;
+    background: linear-gradient(135deg, #00b4d8, #0077b6);
+    border: none; border-radius: 8px;
+    color: #fff; font-family: var(--font); font-size: 15px; font-weight: 700;
+    cursor: pointer; letter-spacing: 0.05em;
+    transition: all 0.2s; margin-top: 8px;
+  }
+  .btn-login:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,180,216,0.35); }
+  .btn-login:active { transform: translateY(0); }
+  .login-error {
+    margin-top: 14px; padding: 10px 14px;
+    background: rgba(255,68,68,0.1); border: 1px solid rgba(255,68,68,0.3);
+    border-radius: 8px; color: #ff8080; font-size: 13px;
+    display: none;
+  }
+
+  /* ── Admin settings page ── */
+  #admin-page { display: none; }
+  .admin-topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 32px; height: 60px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
+  }
+  .admin-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; letter-spacing: 0.04em; }
+  .admin-brand a { color: var(--text-dim); text-decoration: none; font-size: 13px; margin-left: 16px; }
+  .admin-brand a:hover { color: var(--cyan); }
+  .btn-logout {
+    padding: 7px 16px; background: rgba(255,68,68,0.1);
+    border: 1px solid rgba(255,68,68,0.3); border-radius: 6px;
+    color: #ff8080; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s; font-family: var(--font);
+  }
+  .btn-logout:hover { background: rgba(255,68,68,0.2); }
+
+  .admin-body { max-width: 860px; margin: 0 auto; padding: 40px 24px 80px; }
+  .admin-section { margin-bottom: 32px; }
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--cyan); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .settings-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .setting-row {
+    display: grid; grid-template-columns: 260px 1fr;
+    align-items: center; padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    gap: 20px;
+  }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-label { font-size: 14px; font-weight: 600; }
+  .setting-hint { font-size: 12px; color: var(--text-dim); margin-top: 3px; font-family: var(--mono); }
+  .setting-input {
+    width: 100%; padding: 9px 13px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text); font-family: var(--mono); font-size: 13px;
+    outline: none; transition: border-color 0.2s;
+  }
+  .setting-input:focus { border-color: var(--cyan); background: rgba(0,212,255,0.04); }
+  .setting-input[type="password"] { letter-spacing: 0.1em; }
+
+  .save-bar {
+    position: sticky; bottom: 0;
+    background: rgba(10,14,23,0.95); border-top: 1px solid var(--border);
+    padding: 16px 32px; display: flex; align-items: center; gap: 14px;
+    backdrop-filter: blur(12px);
+  }
+  .btn-save {
+    padding: 11px 28px;
+    background: linear-gradient(135deg, #00b4d8, #0077b6);
+    border: none; border-radius: 8px;
+    color: #fff; font-family: var(--font); font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s; letter-spacing: 0.04em;
+  }
+  .btn-save:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,180,216,0.3); }
+  .btn-save:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .save-msg {
+    font-size: 13px; padding: 8px 14px; border-radius: 7px; display: none;
+  }
+  .save-msg.ok { background: rgba(0,230,118,0.12); border: 1px solid rgba(0,230,118,0.3); color: #00e676; }
+  .save-msg.warn { background: rgba(255,170,0,0.12); border: 1px solid rgba(255,170,0,0.3); color: var(--amber); }
+  .save-msg.err { background: rgba(255,68,68,0.12); border: 1px solid rgba(255,68,68,0.3); color: var(--red); }
+</style>
+</head>
+<body>
+
+<!-- ════════════ LOGIN PAGE ════════════ -->
+<div id="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg viewBox="0 0 24 24" fill="none">
+        <ellipse cx="12" cy="5.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
+        <circle cx="12" cy="5.5" r="1.1" fill="#0a0e17"/>
+        <ellipse cx="5.5" cy="16.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
+        <circle cx="5.5" cy="16.5" r="1.1" fill="#0a0e17"/>
+        <ellipse cx="18.5" cy="16.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
+        <circle cx="18.5" cy="16.5" r="1.1" fill="#0a0e17"/>
+        <path d="M 12 8 L 5.5 14.5 M 12 8 L 18.5 14.5 M 8.5 16.5 L 15.5 16.5"
+              stroke="#00d4ff" stroke-width="1" stroke-linecap="round"/>
+      </svg>
+      <div class="login-logo-text">TRINETRA <span>SYSTEMS</span></div>
+    </div>
+    <div class="login-title">Admin Panel</div>
+    <div class="login-sub">Sign in to manage system configuration</div>
+    <div class="field">
+      <label>Email</label>
+      <input id="login-email" type="email" placeholder="trinetra@admin.com" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In →</button>
+    <div class="login-error" id="login-error">Invalid email or password.</div>
+  </div>
+</div>
+
+<!-- ════════════ ADMIN SETTINGS PAGE ════════════ -->
+<div id="admin-page">
+  <div class="admin-topbar">
+    <div class="admin-brand">
+      TRINETRA · ADMIN
+      <a href="/index.html">← Back to Dashboard</a>
+    </div>
+    <button class="btn-logout" onclick="doLogout()">Sign Out</button>
+  </div>
+
+  <div class="admin-body">
+
+    <!-- Detection & Sessions -->
+    <div class="admin-section">
+      <div class="section-title">🔍 Detection &amp; Session Settings</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Loitering Threshold</div>
+            <div class="setting-hint">TRINETRA_LOITER_MINUTES · minutes</div>
+          </div>
+          <input class="setting-input" type="number" id="TRINETRA_LOITER_MINUTES" min="1" max="120">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Session Gap</div>
+            <div class="setting-hint">TRINETRA_SESSION_GAP_MINUTES · minutes</div>
+          </div>
+          <input class="setting-input" type="number" id="TRINETRA_SESSION_GAP_MINUTES" min="1" max="60">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Session Auto-Close</div>
+            <div class="setting-hint">TRINETRA_SESSION_AUTO_CLOSE_MINUTES · minutes</div>
+          </div>
+          <input class="setting-input" type="number" id="TRINETRA_SESSION_AUTO_CLOSE_MINUTES" min="1" max="60">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Exit Cameras</div>
+            <div class="setting-hint">TRINETRA_EXIT_CAMERAS · comma-separated</div>
+          </div>
+          <input class="setting-input" type="text" id="TRINETRA_EXIT_CAMERAS" placeholder="cam-gate,cam-exit">
+        </div>
+      </div>
+    </div>
+
+    <!-- Image Cleanup -->
+    <div class="admin-section">
+      <div class="section-title">🖼️ Image Cleanup</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Image Retention</div>
+            <div class="setting-hint">TRINETRA_IMAGE_RETENTION_DAYS · days (0 = keep forever)</div>
+          </div>
+          <input class="setting-input" type="number" id="TRINETRA_IMAGE_RETENTION_DAYS" min="0">
+        </div>
+      </div>
+    </div>
+
+    <!-- Jetson Registry -->
+    <div class="admin-section">
+      <div class="section-title">📡 Jetson Registry</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Expected Jetsons</div>
+            <div class="setting-hint">TRINETRA_JETSONS · comma-separated names</div>
+          </div>
+          <input class="setting-input" type="text" id="TRINETRA_JETSONS" placeholder="central,edge-1,edge-2">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Heartbeat Stale Timeout</div>
+            <div class="setting-hint">TRINETRA_HB_STALE · seconds</div>
+          </div>
+          <input class="setting-input" type="number" id="TRINETRA_HB_STALE" min="10">
+        </div>
+      </div>
+    </div>
+
+    <!-- Telegram -->
+    <div class="admin-section">
+      <div class="section-title">💬 Telegram Alerts</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Bot Token</div>
+            <div class="setting-hint">TELEGRAM_TOKEN · from @BotFather</div>
+          </div>
+          <input class="setting-input" type="text" id="TELEGRAM_TOKEN" placeholder="123456:ABC-DEF…">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Chat ID</div>
+            <div class="setting-hint">TELEGRAM_CHAT_ID · your chat or group ID</div>
+          </div>
+          <input class="setting-input" type="text" id="TELEGRAM_CHAT_ID" placeholder="-100123456789">
+        </div>
+      </div>
+    </div>
+
+    <!-- Email -->
+    <div class="admin-section">
+      <div class="section-title">📧 Email Alerts</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">SMTP Host</div>
+            <div class="setting-hint">SMTP_HOST</div>
+          </div>
+          <input class="setting-input" type="text" id="SMTP_HOST" placeholder="smtp.gmail.com">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">SMTP Port</div>
+            <div class="setting-hint">SMTP_PORT</div>
+          </div>
+          <input class="setting-input" type="number" id="SMTP_PORT" min="1" max="65535">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">SMTP User</div>
+            <div class="setting-hint">SMTP_USER</div>
+          </div>
+          <input class="setting-input" type="email" id="SMTP_USER" placeholder="you@gmail.com">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Send Alerts To</div>
+            <div class="setting-hint">SMTP_TO</div>
+          </div>
+          <input class="setting-input" type="email" id="SMTP_TO" placeholder="alerts@company.com">
+        </div>
+      </div>
+    </div>
+
+    <!-- Database Management -->
+    <div class="admin-section">
+      <div class="section-title">🗄️ Database Management</div>
+      <div class="settings-card">
+        <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <div class="setting-label" style="display:flex; align-items:center; gap:12px;">
+              Table:
+              <select id="db-table-select" class="setting-input" style="width: auto; padding: 4px 8px; font-size: 13px;" onchange="loadDatabase()">
+                <option value="detections">detections</option>
+                <option value="sessions">sessions</option>
+                <option value="alerts">alerts</option>
+                <option value="whitelist">whitelist</option>
+              </select>
+            </div>
+            <div class="setting-hint" id="db-total">Loading records...</div>
+          </div>
+          <button class="btn-logout" onclick="clearDatabase()" style="background: rgba(255,68,68,0.2); border-color: rgba(255,68,68,0.4);">⚠️ Clear Table</button>
+        </div>
+        <div style="max-height: 300px; overflow-y: auto;">
+          <table style="width: 100%; text-align: left; border-collapse: collapse; font-size: 13px; white-space: nowrap;">
+            <thead style="position: sticky; top: 0; background: var(--surface); z-index: 10;" id="db-thead">
+              <!-- headers injected dynamically -->
+            </thead>
+            <tbody id="db-records">
+               <tr><td style="padding: 20px; text-align: center; color: var(--text-dim);">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Admin Account -->
+    <div class="admin-section">
+      <div class="section-title">🔐 Admin Account</div>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Admin Email</div>
+            <div class="setting-hint">ADMIN_EMAIL · login email</div>
+          </div>
+          <input class="setting-input" type="email" id="ADMIN_EMAIL">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">New Password</div>
+            <div class="setting-hint">ADMIN_PASSWORD · leave blank to keep current</div>
+          </div>
+          <input class="setting-input" type="password" id="ADMIN_PASSWORD" placeholder="leave blank to keep current">
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /admin-body -->
+
+  <div class="save-bar">
+    <button class="btn-save" id="save-btn" onclick="saveConfig()">💾 Save All Changes</button>
+    <div class="save-msg" id="save-msg"></div>
+  </div>
+</div>
+
+<script>
+/* ── Auth ── */
+async function doLogin() {
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
+  const email = document.getElementById('login-email').value.trim();
+  const pass  = document.getElementById('login-pass').value;
+  btn.textContent = 'Signing in…';
+  btn.disabled = true;
+  err.style.display = 'none';
+  try {
+    const r = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass }),
+      credentials: 'same-origin',
+    });
+    if (!r.ok) throw new Error('bad credentials');
+    showAdmin();
+  } catch (_) {
+    err.style.display = 'block';
+    btn.textContent = 'Sign In →';
+    btn.disabled = false;
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' });
+  document.getElementById('admin-page').style.display = 'none';
+  document.getElementById('login-page').style.display = 'flex';
+}
+
+/* ── Load settings ── */
+async function showAdmin() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('admin-page').style.display = 'block';
+  await loadConfig();
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/admin/config', { credentials: 'same-origin' });
+    if (r.status === 401) { doLogout(); return; }
+    const cfg = await r.json();
+    const FIELDS = [
+      'TRINETRA_LOITER_MINUTES','TRINETRA_SESSION_GAP_MINUTES',
+      'TRINETRA_SESSION_AUTO_CLOSE_MINUTES','TRINETRA_EXIT_CAMERAS',
+      'TRINETRA_IMAGE_RETENTION_DAYS','TRINETRA_JETSONS','TRINETRA_HB_STALE',
+      'TELEGRAM_TOKEN','TELEGRAM_CHAT_ID',
+      'SMTP_HOST','SMTP_PORT','SMTP_USER','SMTP_TO',
+      'ADMIN_EMAIL',
+    ];
+    FIELDS.forEach(k => {
+      const el = document.getElementById(k);
+      if (el && cfg[k] !== undefined) el.value = cfg[k];
+    });
+    
+    // Also load the database records
+    await loadDatabase();
+  } catch (e) {
+    console.error('loadConfig failed:', e);
+  }
+}
+
+/* ── Database Management ── */
+async function loadDatabase() {
+  const tbody = document.getElementById('db-records');
+  const thead = document.getElementById('db-thead');
+  const totalEl = document.getElementById('db-total');
+  const table = document.getElementById('db-table-select').value;
+  
+  try {
+    const r = await fetch(`/api/admin/database/${table}?limit=50`, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('Failed to load database');
+    const data = await r.json();
+    
+    totalEl.textContent = `Showing latest 50 of ${data.total} total records`;
+    
+    if (data.records.length === 0) {
+      thead.innerHTML = '';
+      tbody.innerHTML = `<tr><td style="padding: 20px; text-align: center; color: var(--text-dim);">No records found in ${table}.</td></tr>`;
+      return;
+    }
+    
+    // Build headers from first row keys
+    const keys = Object.keys(data.records[0]);
+    thead.innerHTML = '<tr>' + keys.map(k => `<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border);">${k}</th>`).join('') + '<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); width: 80px; position: sticky; right: 0; background: var(--surface);">Action</th></tr>';
+    
+    // PK for the table
+    const pk = table === 'whitelist' ? 'badge' : 'id';
+
+    tbody.innerHTML = data.records.map(row => {
+      let tds = keys.map(k => {
+        let val = row[k];
+        if (val === null) val = '—';
+        else if (typeof val === 'string' && val.length > 50) val = val.substring(0, 47) + '...';
+        return `<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono);">${val}</td>`;
+      }).join('');
+      
+      const rowId = row[pk];
+      const encodedId = encodeURIComponent(rowId);
+      return `<tr>${tds}<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); position: sticky; right: 0; background: var(--surface);"><button onclick="deleteRecord('${table}', '${encodedId}')" style="background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-dim)'" title="Delete record">🗑️</button></td></tr>`;
+    }).join('');
+  } catch (e) {
+    console.error(e);
+    tbody.innerHTML = `<tr><td style="padding: 20px; text-align: center; color: var(--red);">Error loading records: ${e.message}</td></tr>`;
+  }
+}
+
+async function deleteRecord(table, id) {
+  if (!confirm(`Are you sure you want to delete this record from ${table}? This action cannot be undone.`)) return;
+  try {
+    const r = await fetch(`/api/admin/database/${table}/${id}`, {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    });
+    if (!r.ok) throw new Error('Failed to delete');
+    await loadDatabase();
+  } catch (e) {
+    alert('Error deleting record: ' + e.message);
+  }
+}
+
+async function clearDatabase() {
+  const table = document.getElementById('db-table-select').value;
+  const code = Math.floor(1000 + Math.random() * 9000);
+  const input = prompt(`WARNING: This will delete ALL records in the '${table}' table.\n\nTo proceed, type the code: ${code}`);
+  if (input !== String(code)) {
+    if (input !== null) alert("Code did not match. Action cancelled.");
+    return;
+  }
+  
+  try {
+    const r = await fetch(`/api/admin/database/${table}`, {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    });
+    if (!r.ok) throw new Error('Failed to clear database');
+    await loadDatabase();
+    alert(`Table '${table}' successfully cleared.`);
+  } catch (e) {
+    alert('Error clearing database: ' + e.message);
+  }
+}
+
+/* ── Save settings ── */
+async function saveConfig() {
+  const btn = document.getElementById('save-btn');
+  const msg = document.getElementById('save-msg');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  msg.style.display = 'none';
+
+  const FIELDS = [
+    'TRINETRA_LOITER_MINUTES','TRINETRA_SESSION_GAP_MINUTES',
+    'TRINETRA_SESSION_AUTO_CLOSE_MINUTES','TRINETRA_EXIT_CAMERAS',
+    'TRINETRA_IMAGE_RETENTION_DAYS','TRINETRA_JETSONS','TRINETRA_HB_STALE',
+    'TELEGRAM_TOKEN','TELEGRAM_CHAT_ID',
+    'SMTP_HOST','SMTP_PORT','SMTP_USER','SMTP_TO',
+    'ADMIN_EMAIL',
+  ];
+  const updates = {};
+  FIELDS.forEach(k => {
+    const el = document.getElementById(k);
+    if (el && el.value.trim() !== '') updates[k] = el.value.trim();
+  });
+
+  /* Password — only include if filled in */
+  const pw = document.getElementById('ADMIN_PASSWORD').value;
+  if (pw) updates['ADMIN_PASSWORD'] = pw;
+
+  try {
+    const r = await fetch('/api/admin/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+      credentials: 'same-origin',
+    });
+    if (r.status === 401) { doLogout(); return; }
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || 'Save failed');
+    }
+    const result = await r.json();
+    document.getElementById('ADMIN_PASSWORD').value = '';
+    msg.className = 'save-msg ' + (result.restart_required ? 'warn' : 'ok');
+    msg.textContent = result.restart_required
+      ? '⚠ Settings saved — restart server for full effect'
+      : '✓ Settings saved and applied immediately';
+    msg.style.display = 'block';
+  } catch (e) {
+    msg.className = 'save-msg err';
+    msg.textContent = '✕ ' + e.message;
+    msg.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 Save All Changes';
+    setTimeout(() => { msg.style.display = 'none'; }, 5000);
+  }
+}
+
+/* ── Enter key on login ── */
+document.getElementById('login-pass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+document.getElementById('login-email').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('login-pass').focus();
+});
+
+/* ── Check if already logged in on load ── */
+(async () => {
+  try {
+    const r = await fetch('/api/admin/config', { credentials: 'same-origin' });
+    if (r.ok) { showAdmin(); }
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>

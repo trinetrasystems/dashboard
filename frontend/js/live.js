@@ -18,7 +18,7 @@ async function refreshAll() {
     activeSessions = sessions.map(s => ({
       ...s,
       first_seen_dt: new Date(s.first_seen.endsWith('Z') ? s.first_seen : s.first_seen + 'Z'),
-      last_seen_dt:  new Date(s.last_seen.endsWith('Z')  ? s.last_seen  : s.last_seen  + 'Z'),
+      last_seen_dt: new Date(s.last_seen.endsWith('Z') ? s.last_seen : s.last_seen + 'Z'),
     }));
     cachedStats = stats;
     cachedNotifications = (recentDetections || []).slice(0, NOTIF_MAX);
@@ -29,7 +29,7 @@ async function refreshAll() {
       pills[0].innerHTML = `<span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span>`;
       const loiterCls = stats.loitering_count ? 'alert' : '';
       pills[1].className = `status-pill ${loiterCls}`;
-      pills[1].innerHTML = `<span class="dot ${stats.loitering_count?'red':''}"></span><span>${stats.loitering_count} LOITERING</span>`;
+      pills[1].innerHTML = `<span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span>`;
       pills[2].innerHTML = `<span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span>`;
     }
 
@@ -45,9 +45,10 @@ async function refreshAll() {
 
 function renderLoiterBanner() {
   const banner = document.getElementById('loiter-banner');
-  const list   = document.getElementById('loiter-list');
+  const list = document.getElementById('loiter-list');
+  // Show ALL sessions loitering by time — both whitelisted and non-whitelisted.
+  // Whitelisted ones get a Remove WL button; others get an Ack button.
   const loitering = activeSessions.filter(s => {
-    if (s.whitelisted) return false;
     const mins = (Date.now() - s.first_seen_dt.getTime()) / 60000;
     return mins >= LOITER_MIN;
   });
@@ -55,17 +56,26 @@ function renderLoiterBanner() {
   banner.style.display = 'block';
   list.innerHTML = loitering.map(s => {
     const secs = (Date.now() - s.first_seen_dt.getTime()) / 1000;
-    const acked = s.acked;
+    const metaText = s.whitelisted
+      ? `whitelisted · since ${fmtTime(s.first_seen_dt)} · ${escapeHtml(s.last_camera || '')}`
+      : `since ${fmtTime(s.first_seen_dt)} · ${escapeHtml(s.last_camera || '')}`;
+    const actionBtn = s.whitelisted
+      ? `<button class="ack-btn" style="background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
+             onclick="removeFromWhitelist('${escapeHtml(s.badge)}')"
+             title="Remove from whitelist — will be monitored for loitering again">
+             ✕ Remove WL</button>`
+      : (s.alert_id
+          ? `<button class="ack-btn" onclick="ackAlert(${s.alert_id})" title="Acknowledge — adds badge to whitelist">
+               ✓ Ack</button>`
+          : '');
     return `
-      <div class="loiter-item ${acked ? 'acked' : ''}">
+      <div class="loiter-item ${s.whitelisted ? 'acked' : ''}">
         <div class="info">
           <div class="label">${escapeHtml(s.badge)}</div>
-          <div class="meta">${acked
-            ? `acked by ${escapeHtml(s.acked_by || 'operator')}`
-            : `since ${fmtTime(s.first_seen_dt)} · ${escapeHtml(s.last_camera || '')}`}</div>
+          <div class="meta">${metaText}</div>
         </div>
         <div class="duration" data-since="${s.first_seen_dt.getTime()}">${fmtDuration(secs)}</div>
-        ${acked || !s.alert_id ? '' : `<button class="ack-btn" onclick="ackAlert(${s.alert_id})">✓ Ack</button>`}
+        ${actionBtn}
       </div>`;
   }).join('');
 }
@@ -78,7 +88,7 @@ window.ackAlert = ackAlert;
 
 function renderKPIs() {
   if (!cachedStats) return;
-  document.getElementById('kpi-total').textContent  = cachedStats.total_today;
+  document.getElementById('kpi-total').textContent = cachedStats.total_today;
   document.getElementById('kpi-active').textContent = cachedStats.active_sessions;
   document.getElementById('kpi-loiter').textContent = cachedStats.loitering_count;
 }
@@ -96,7 +106,7 @@ function renderTodayChart() {
     const y = chartH - h;
     bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="var(--cyan)" opacity="0.85"/>`;
     if (i % 4 === 0) {
-      labels += `<text x="${x + barW/2}" y="${chartH+18}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${pad(i)}:00</text>`;
+      labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${pad(i)}:00</text>`;
     }
   }
   const peakHr = data.indexOf(max);
@@ -104,11 +114,11 @@ function renderTodayChart() {
     max === 0 ? 'no detections yet today' : `peak ${pad(peakHr)}:00 · ${max} detections`;
   document.getElementById('today-chart').innerHTML = `
     <svg viewBox="0 0 ${chartW} 220" width="100%" preserveAspectRatio="none" style="display: block;">
-      <line x1="${x0}" y1="${chartH}" x2="${chartW-20}" y2="${chartH}" stroke="var(--border)"/>
-      <line x1="${x0}" y1="${chartH*0.5}" x2="${chartW-20}" y2="${chartH*0.5}" stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
+      <line x1="${x0}" y1="${chartH}" x2="${chartW - 20}" y2="${chartH}" stroke="var(--border)"/>
+      <line x1="${x0}" y1="${chartH * 0.5}" x2="${chartW - 20}" y2="${chartH * 0.5}" stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
       ${bars}${labels}
-      <text x="40" y="${chartH+4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">0</text>
-      <text x="40" y="${chartH*0.5+4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${Math.floor(max/2)}</text>
+      <text x="40" y="${chartH + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">0</text>
+      <text x="40" y="${chartH * 0.5 + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
       <text x="40" y="10" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${max}</text>
     </svg>`;
 }
@@ -126,19 +136,33 @@ function renderPremisesTable() {
     let status;
     if (s.whitelisted) status = { cls: 'wl', label: 'WHITELIST' };
     else if (secs / 60 >= LOITER_MIN) status = { cls: 'alert', label: 'LOITERING' };
-    else if (secs / 60 >= WARN_MIN)   status = { cls: 'warn', label: 'APPROACHING' };
+    else if (secs / 60 >= WARN_MIN) status = { cls: 'warn', label: 'APPROACHING' };
     else status = { cls: 'ok', label: 'OK' };
     const rowCls = (!s.whitelisted && status.cls === 'alert') ? 'alert-row'
-                 : (!s.whitelisted && status.cls === 'warn')  ? 'warn-row' : '';
+      : (!s.whitelisted && status.cls === 'warn') ? 'warn-row' : '';
+    // Action button: Ack for LOITERING rows, Remove WL for WHITELIST rows
+    let actionBtn = '';
+    if (s.whitelisted) {
+      actionBtn = `<button class="ack-btn"
+          style="margin-left:8px;background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
+          onclick="event.stopPropagation();removeFromWhitelist('${escapeHtml(s.badge)}')"
+          title="Remove from whitelist — badge will be monitored for loitering again">
+          ✕ Remove WL</button>`;
+    } else if (status.cls === 'alert' && s.alert_id) {
+      actionBtn = `<button class="ack-btn"
+          onclick="event.stopPropagation();ackAlert(${s.alert_id})"
+          title="Acknowledge — adds badge to whitelist">
+          ✓ Ack</button>`;
+    }
     return `
-      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}','${escapeHtml(s.last_camera||'')}')">
+      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}','${escapeHtml(s.last_camera || '')}')">
         <td class="mono"><b>${escapeHtml(s.badge)}</b></td>
         <td class="mono">${fmtTime(s.first_seen_dt)}</td>
-        <td class="mono">${escapeHtml(s.last_camera||'—')} · ${fmtRelative(s.last_seen_dt)}</td>
+        <td class="mono">${escapeHtml(s.last_camera || '—')} · ${fmtRelative(s.last_seen_dt)}</td>
         <td><span class="duration-pill ${dCls}" data-since="${s.first_seen_dt.getTime()}">
-          ${dCls==='alert' ? '⚠ ' : ''}${fmtDuration(secs)}
+          ${dCls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}
         </span></td>
-        <td><span class="status-tag ${status.cls}">${status.label}</span></td>
+        <td><span class="status-tag ${status.cls}">${status.label}</span>${actionBtn}</td>
         <td class="mono">${s.total_sightings}</td>
       </tr>`;
   }).join('');
@@ -149,6 +173,17 @@ function showBadgeDetail(badge, lastCamera) {
   openBadgeDetail(badge, lastCamera);
 }
 window.showBadgeDetail = showBadgeDetail;
+
+/* ─── Remove badge from whitelist directly from premises table ─── */
+async function removeFromWhitelist(badge) {
+  try {
+    await removeWhitelist(badge);
+    await refreshAll();
+  } catch (e) {
+    console.error('remove whitelist failed:', e);
+  }
+}
+window.removeFromWhitelist = removeFromWhitelist;
 
 /* ─── Live Notifications panel ─── */
 function renderNotifications() {
@@ -161,7 +196,7 @@ function renderNotifications() {
     if (meta) meta.textContent = 'no events yet';
     return;
   }
-  if (meta) meta.textContent = `${cachedNotifications.length} event${cachedNotifications.length>1?'s':''} today`;
+  if (meta) meta.textContent = `${cachedNotifications.length} event${cachedNotifications.length > 1 ? 's' : ''} today`;
 
   list.innerHTML = cachedNotifications.map(d => {
     const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
@@ -210,7 +245,7 @@ function connectWS() {
   catch (e) { return; }
   ws.onmessage = () => setTimeout(refreshAll, 300);
   ws.onclose = () => setTimeout(connectWS, 2000);
-  ws.onerror = () => { try { ws.close(); } catch(e){} };
+  ws.onerror = () => { try { ws.close(); } catch (e) { } };
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

@@ -301,7 +301,11 @@ async def check_loitering():
             threshold = timedelta(minutes=config.LOITER_MINUTES)
             now = datetime.utcnow()
 
-            # Sessions over threshold, not yet alerted, not whitelisted
+            # ── STEP 1: Loitering alert check (runs BEFORE stale-close) ──────
+            # A session qualifies if first_seen is old enough, regardless of
+            # how old last_seen is. This matters when a back-dated image file
+            # is dropped: last_seen == ts (in the past), but first_seen also
+            # shows the badge has been here long enough to loiter.
             rows = conn.execute("""
                 SELECT id, badge, first_seen FROM sessions
                 WHERE closed=0 AND alert_sent=0
@@ -327,15 +331,22 @@ async def check_loitering():
                         "duration_seconds": duration,
                     })
 
-            # Close stale sessions — no detection in SESSION_AUTO_CLOSE_MINUTES.
-            # When this fires, the badge is considered "left without exiting properly".
-            # If the same badge is later detected again (e.g. handed off to another
-            # person), a fresh session opens — so the two visits are tracked separately.
+            # ── STEP 2: Close stale sessions (runs AFTER loitering check) ────
+            # A session is stale if last_seen is older than SESSION_AUTO_CLOSE_MINUTES
+            # AND it has NOT triggered a loitering alert (alert_sent=0).
+            #
+            # Sessions with alert_sent=1 are intentionally kept open so the loitering
+            # banner stays visible until the badge is explicitly seen at an exit camera.
+            # This directly implements the use-case:
+            #   "banner must stay visible until badge exits through exit camera".
+            #
+            # A back-dated file drop sets last_seen = file_ts (appears stale), but
+            # STEP 1 above just set alert_sent=1 for it — so STEP 2 won't close it.
             stale_cutoff = (now - timedelta(minutes=config.SESSION_AUTO_CLOSE_MINUTES)).isoformat()
             with conn:
                 conn.execute(
                     "UPDATE sessions SET closed=1, closed_at=? "
-                    "WHERE closed=0 AND last_seen < ?",
+                    "WHERE closed=0 AND alert_sent=0 AND last_seen < ?",
                     (now.isoformat(), stale_cutoff)
                 )
         finally:
@@ -443,6 +454,47 @@ def jetson_status() -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# IMAGE CLEANUP LOOP
+# ════════════════════════════════════════════════════════════════════════════
+
+def _delete_old_images():
+    """Delete .jpg files from archive older than IMAGE_RETENTION_DAYS.
+    DB records (detections/sessions/alerts) are intentionally NOT touched —
+    has_image is computed live, so the dashboard shows NO IMAGE AVAILABLE."""
+    if config.IMAGE_RETENTION_DAYS <= 0:
+        return
+    archive = Path(config.ARCHIVE_DIR)
+    if not archive.exists():
+        return
+    cutoff = time.time() - config.IMAGE_RETENTION_DAYS * 86400  # days → seconds
+    deleted = 0
+    for f in archive.glob("*.jpg"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                deleted += 1
+        except FileNotFoundError:
+            pass  # already gone
+    if deleted:
+        print(f"[cleanup] deleted {deleted} image(s) older than {config.IMAGE_RETENTION_DAYS} days")
+    else:
+        print(f"[cleanup] ran — no images older than {config.IMAGE_RETENTION_DAYS} days found")
+
+
+async def image_cleanup_loop():
+    """Run image cleanup once at startup (after 60s grace) then every 24 hours."""
+    if config.IMAGE_RETENTION_DAYS <= 0:
+        print("[cleanup] image cleanup disabled (TRINETRA_IMAGE_RETENTION_DAYS=0)")
+        return
+    print(f"[cleanup] image retention = {config.IMAGE_RETENTION_DAYS} days · first run in 60s")
+    await asyncio.sleep(60)          # give server time to finish startup
+    _delete_old_images()             # clean up any backlog from while server was down
+    while True:
+        await asyncio.sleep(86400)   # then repeat every 24 hours
+        _delete_old_images()
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -455,7 +507,8 @@ async def lifespan(app: FastAPI):
     init_db()
     threading.Thread(target=scan_existing, daemon=True).start()
     observer = start_watcher()
-    task = asyncio.create_task(loitering_loop())
+    loiter_task   = asyncio.create_task(loitering_loop())
+    cleanup_task  = asyncio.create_task(image_cleanup_loop())
     print("[trinetra] startup complete · http://%s:%d" % (config.HOST, config.PORT))
     try:
         yield
@@ -463,7 +516,8 @@ async def lifespan(app: FastAPI):
         print("[trinetra] shutting down")
         observer.stop()
         observer.join(timeout=2)
-        task.cancel()
+        loiter_task.cancel()
+        cleanup_task.cancel()
 
 
 app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan)
@@ -478,11 +532,15 @@ def api_stats():
             "SELECT COUNT(*) FROM detections WHERE date(timestamp)=date('now','localtime')"
         ).fetchone()[0]
         active = conn.execute("SELECT COUNT(*) FROM sessions WHERE closed=0").fetchone()[0]
+        # Count sessions loitering by actual time elapsed, matching what the
+        # frontend banner shows. Uses first_seen age so it works immediately
+        # (no wait for the loitering loop) and includes whitelisted sessions
+        # (so the count stays > 0 even after acking a badge).
         loitering = conn.execute(
-            "SELECT COUNT(*) FROM sessions s "
-            "WHERE s.closed=0 AND s.alert_sent=1 "
-            "AND s.badge NOT IN (SELECT badge FROM whitelist) "
-            "AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.session_id=s.id AND a.acknowledged=1)"
+            "SELECT COUNT(*) FROM sessions "
+            "WHERE closed=0 "
+            "AND (julianday('now') - julianday(first_seen)) * 1440 >= ?"
+            , (config.LOITER_MINUTES,)
         ).fetchone()[0]
 
         by_badge = conn.execute("""
@@ -896,13 +954,29 @@ async def api_alert_ack(alert_id: int, request: Request):
         acked_by = (body.get("acked_by") or "operator").strip()
     except Exception:
         acked_by = "operator"
+    now = datetime.utcnow()
     conn = db()
     try:
         with conn:
+            # 1. Mark the alert as acknowledged
             conn.execute(
                 "UPDATE alerts SET acknowledged=1, acknowledged_at=?, acknowledged_by=? WHERE id=?",
-                (datetime.utcnow().isoformat(), acked_by, alert_id)
+                (now.isoformat(), acked_by, alert_id)
             )
+            # 2. Auto-whitelist the badge so it is recorded and no longer
+            #    flagged as loitering. The badge stays visible in the premises
+            #    table with WHITELIST status and is filtered out of the
+            #    loitering banner automatically by the frontend.
+            row = conn.execute(
+                "SELECT badge FROM alerts WHERE id=?", (alert_id,)
+            ).fetchone()
+            if row:
+                badge = row["badge"]
+                reason = f"Auto-whitelisted: acked alert #{alert_id} by {acked_by}"
+                conn.execute(
+                    "INSERT OR REPLACE INTO whitelist(badge, reason) VALUES (?,?)",
+                    (badge, reason)
+                )
         return {"ok": True}
     finally:
         conn.close()
@@ -924,6 +998,225 @@ def get_image(filename: str):
             return FileResponse(cand)
     raise HTTPException(404, "no image available")
 
+# ════════════════════════════════════════════════════════════════════════════
+# ADMIN — login, config read/write
+# ════════════════════════════════════════════════════════════════════════════
+import secrets as _secrets
+
+_admin_sessions: dict = {}   # token → expires datetime
+
+
+def _check_admin(request: Request) -> bool:
+    token = request.cookies.get("admin_token", "")
+    info = _admin_sessions.get(token)
+    if not info:
+        return False
+    if datetime.utcnow() > info:
+        _admin_sessions.pop(token, None)
+        return False
+    return True
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: Request):
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    if email != config.ADMIN_EMAIL.lower() or password != config.ADMIN_PASSWORD:
+        raise HTTPException(401, "Invalid credentials")
+    token = _secrets.token_hex(32)
+    _admin_sessions[token] = datetime.utcnow() + timedelta(hours=8)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("admin_token", token, httponly=True,
+                    max_age=8 * 3600, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(request: Request):
+    from fastapi.responses import JSONResponse
+    token = request.cookies.get("admin_token", "")
+    _admin_sessions.pop(token, None)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("admin_token", path="/")
+    return resp
+
+
+@app.get("/api/admin/config")
+def admin_get_config(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    return {
+        "TRINETRA_LOITER_MINUTES":            config.LOITER_MINUTES,
+        "TRINETRA_SESSION_GAP_MINUTES":       config.SESSION_GAP_MINUTES,
+        "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": config.SESSION_AUTO_CLOSE_MINUTES,
+        "TRINETRA_EXIT_CAMERAS":              ",".join(sorted(config.EXIT_CAMERAS)),
+        "TRINETRA_IMAGE_RETENTION_DAYS":      config.IMAGE_RETENTION_DAYS,
+        "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
+        "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
+        "TELEGRAM_TOKEN":                     config.TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID":                   config.TELEGRAM_CHAT_ID,
+        "SMTP_HOST":                          config.SMTP_HOST,
+        "SMTP_PORT":                          config.SMTP_PORT,
+        "SMTP_USER":                          config.SMTP_USER,
+        "SMTP_TO":                            config.SMTP_TO,
+        "ADMIN_EMAIL":                        config.ADMIN_EMAIL,
+    }
+
+
+@app.post("/api/admin/config")
+async def admin_update_config(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    updates: dict = await request.json()
+
+    # Coerce integer fields
+    int_fields = ["TRINETRA_LOITER_MINUTES", "TRINETRA_SESSION_GAP_MINUTES",
+                  "TRINETRA_SESSION_AUTO_CLOSE_MINUTES", "TRINETRA_IMAGE_RETENTION_DAYS",
+                  "TRINETRA_HB_STALE", "SMTP_PORT"]
+    for f in int_fields:
+        if f in updates:
+            try:
+                updates[f] = str(int(updates[f]))
+            except (ValueError, TypeError):
+                raise HTTPException(400, f"{f} must be an integer")
+
+    _write_env(updates)
+    _apply_config(updates)
+
+    restart_needed = bool(set(updates) & {"TRINETRA_HOST", "TRINETRA_PORT",
+                                           "TRINETRA_DATA", "TRINETRA_INCOMING",
+                                           "TRINETRA_ARCHIVE"})
+    return {"ok": True, "restart_required": restart_needed}
+
+
+def _write_env(updates: dict):
+    """Rewrite .env preserving comments; append any keys not already present."""
+    env_path = Path(config.PROJECT_ROOT) / ".env"
+    existing = env_path.read_text().splitlines() if env_path.exists() else []
+    seen = set()
+    out = []
+    for line in existing:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                out.append(f"{key}={updates[key]}")
+                seen.add(key)
+                continue
+        out.append(line)
+    for key, val in updates.items():
+        if key not in seen:
+            out.append(f"{key}={val}")
+    env_path.write_text("\n".join(out) + "\n")
+
+
+def _apply_config(updates: dict):
+    """Hot-reload config module attributes so changes take effect immediately."""
+    mapping = {
+        "TRINETRA_LOITER_MINUTES":             ("LOITER_MINUTES",              int),
+        "TRINETRA_SESSION_GAP_MINUTES":        ("SESSION_GAP_MINUTES",         int),
+        "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": ("SESSION_AUTO_CLOSE_MINUTES",  int),
+        "TRINETRA_IMAGE_RETENTION_DAYS":       ("IMAGE_RETENTION_DAYS",        int),
+        "TRINETRA_HB_STALE":                   ("HEARTBEAT_STALE_SECONDS",     int),
+        "TRINETRA_EXIT_CAMERAS":               ("EXIT_CAMERAS",
+                                                lambda v: {c.strip() for c in v.split(",") if c.strip()}),
+        "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
+                                                lambda v: [j.strip() for j in v.split(",") if j.strip()]),
+        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",   str),
+        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_ID", str),
+        "SMTP_HOST":        ("SMTP_HOST",         str),
+        "SMTP_PORT":        ("SMTP_PORT",          int),
+        "SMTP_USER":        ("SMTP_USER",         str),
+        "SMTP_TO":          ("SMTP_TO",           str),
+        "ADMIN_EMAIL":      ("ADMIN_EMAIL",       str),
+        "ADMIN_PASSWORD":   ("ADMIN_PASSWORD",    str),
+    }
+    for env_key, (attr, fn) in mapping.items():
+        if env_key in updates:
+            setattr(config, attr, fn(updates[env_key]))
+@app.get("/api/admin/database/{table}")
+def admin_get_database_table(request: Request, table: str, limit: int = 50, offset: int = 0):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+    
+    conn = db()
+    try:
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if table == "detections":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "sessions":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY first_seen DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "alerts":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY triggered_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "whitelist":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY added_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            
+        return {
+            "total": total,
+            "records": [dict(r) for r in rows]
+        }
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/database/{table}/{record_id}")
+def admin_delete_database_record(request: Request, table: str, record_id: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+        
+    conn = db()
+    try:
+        with conn:
+            if table == "detections":
+                row = conn.execute("SELECT filename FROM detections WHERE id=?", (record_id,)).fetchone()
+                if row:
+                    filename = row["filename"]
+                    image_path = Path(config.ARCHIVE_DIR) / filename
+                    if image_path.exists():
+                        try:
+                            image_path.unlink()
+                        except Exception as e:
+                            print(f"Error deleting image file {filename}: {e}")
+                conn.execute("DELETE FROM detections WHERE id=?", (record_id,))
+            elif table == "whitelist":
+                conn.execute("DELETE FROM whitelist WHERE badge=?", (record_id,))
+            else:
+                conn.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+@app.delete("/api/admin/database/{table}")
+def admin_clear_database_table(request: Request, table: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+        
+    conn = db()
+    try:
+        with conn:
+            if table == "detections":
+                rows = conn.execute("SELECT filename FROM detections").fetchall()
+                for row in rows:
+                    filename = row["filename"]
+                    image_path = Path(config.ARCHIVE_DIR) / filename
+                    if image_path.exists():
+                        try:
+                            image_path.unlink()
+                        except Exception:
+                            pass
+            conn.execute(f"DELETE FROM {table}")
+            
+        return {"ok": True}
+    finally:
+        conn.close()
 
 # ─── /ws — WebSocket for live updates ─────────────────────────────────────
 @app.websocket("/ws")
