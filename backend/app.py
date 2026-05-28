@@ -454,6 +454,47 @@ def jetson_status() -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# IMAGE CLEANUP LOOP
+# ════════════════════════════════════════════════════════════════════════════
+
+def _delete_old_images():
+    """Delete .jpg files from archive older than IMAGE_RETENTION_DAYS.
+    DB records (detections/sessions/alerts) are intentionally NOT touched —
+    has_image is computed live, so the dashboard shows NO IMAGE AVAILABLE."""
+    if config.IMAGE_RETENTION_DAYS <= 0:
+        return
+    archive = Path(config.ARCHIVE_DIR)
+    if not archive.exists():
+        return
+    cutoff = time.time() - config.IMAGE_RETENTION_DAYS * 86400  # days → seconds
+    deleted = 0
+    for f in archive.glob("*.jpg"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                deleted += 1
+        except FileNotFoundError:
+            pass  # already gone
+    if deleted:
+        print(f"[cleanup] deleted {deleted} image(s) older than {config.IMAGE_RETENTION_DAYS} days")
+    else:
+        print(f"[cleanup] ran — no images older than {config.IMAGE_RETENTION_DAYS} days found")
+
+
+async def image_cleanup_loop():
+    """Run image cleanup once at startup (after 60s grace) then every 24 hours."""
+    if config.IMAGE_RETENTION_DAYS <= 0:
+        print("[cleanup] image cleanup disabled (TRINETRA_IMAGE_RETENTION_DAYS=0)")
+        return
+    print(f"[cleanup] image retention = {config.IMAGE_RETENTION_DAYS} days · first run in 60s")
+    await asyncio.sleep(60)          # give server time to finish startup
+    _delete_old_images()             # clean up any backlog from while server was down
+    while True:
+        await asyncio.sleep(86400)   # then repeat every 24 hours
+        _delete_old_images()
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -466,7 +507,8 @@ async def lifespan(app: FastAPI):
     init_db()
     threading.Thread(target=scan_existing, daemon=True).start()
     observer = start_watcher()
-    task = asyncio.create_task(loitering_loop())
+    loiter_task   = asyncio.create_task(loitering_loop())
+    cleanup_task  = asyncio.create_task(image_cleanup_loop())
     print("[trinetra] startup complete · http://%s:%d" % (config.HOST, config.PORT))
     try:
         yield
@@ -474,7 +516,8 @@ async def lifespan(app: FastAPI):
         print("[trinetra] shutting down")
         observer.stop()
         observer.join(timeout=2)
-        task.cancel()
+        loiter_task.cancel()
+        cleanup_task.cancel()
 
 
 app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan)
