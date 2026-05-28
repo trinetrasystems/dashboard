@@ -998,6 +998,225 @@ def get_image(filename: str):
             return FileResponse(cand)
     raise HTTPException(404, "no image available")
 
+# ════════════════════════════════════════════════════════════════════════════
+# ADMIN — login, config read/write
+# ════════════════════════════════════════════════════════════════════════════
+import secrets as _secrets
+
+_admin_sessions: dict = {}   # token → expires datetime
+
+
+def _check_admin(request: Request) -> bool:
+    token = request.cookies.get("admin_token", "")
+    info = _admin_sessions.get(token)
+    if not info:
+        return False
+    if datetime.utcnow() > info:
+        _admin_sessions.pop(token, None)
+        return False
+    return True
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: Request):
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    if email != config.ADMIN_EMAIL.lower() or password != config.ADMIN_PASSWORD:
+        raise HTTPException(401, "Invalid credentials")
+    token = _secrets.token_hex(32)
+    _admin_sessions[token] = datetime.utcnow() + timedelta(hours=8)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("admin_token", token, httponly=True,
+                    max_age=8 * 3600, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(request: Request):
+    from fastapi.responses import JSONResponse
+    token = request.cookies.get("admin_token", "")
+    _admin_sessions.pop(token, None)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("admin_token", path="/")
+    return resp
+
+
+@app.get("/api/admin/config")
+def admin_get_config(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    return {
+        "TRINETRA_LOITER_MINUTES":            config.LOITER_MINUTES,
+        "TRINETRA_SESSION_GAP_MINUTES":       config.SESSION_GAP_MINUTES,
+        "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": config.SESSION_AUTO_CLOSE_MINUTES,
+        "TRINETRA_EXIT_CAMERAS":              ",".join(sorted(config.EXIT_CAMERAS)),
+        "TRINETRA_IMAGE_RETENTION_DAYS":      config.IMAGE_RETENTION_DAYS,
+        "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
+        "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
+        "TELEGRAM_TOKEN":                     config.TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID":                   config.TELEGRAM_CHAT_ID,
+        "SMTP_HOST":                          config.SMTP_HOST,
+        "SMTP_PORT":                          config.SMTP_PORT,
+        "SMTP_USER":                          config.SMTP_USER,
+        "SMTP_TO":                            config.SMTP_TO,
+        "ADMIN_EMAIL":                        config.ADMIN_EMAIL,
+    }
+
+
+@app.post("/api/admin/config")
+async def admin_update_config(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    updates: dict = await request.json()
+
+    # Coerce integer fields
+    int_fields = ["TRINETRA_LOITER_MINUTES", "TRINETRA_SESSION_GAP_MINUTES",
+                  "TRINETRA_SESSION_AUTO_CLOSE_MINUTES", "TRINETRA_IMAGE_RETENTION_DAYS",
+                  "TRINETRA_HB_STALE", "SMTP_PORT"]
+    for f in int_fields:
+        if f in updates:
+            try:
+                updates[f] = str(int(updates[f]))
+            except (ValueError, TypeError):
+                raise HTTPException(400, f"{f} must be an integer")
+
+    _write_env(updates)
+    _apply_config(updates)
+
+    restart_needed = bool(set(updates) & {"TRINETRA_HOST", "TRINETRA_PORT",
+                                           "TRINETRA_DATA", "TRINETRA_INCOMING",
+                                           "TRINETRA_ARCHIVE"})
+    return {"ok": True, "restart_required": restart_needed}
+
+
+def _write_env(updates: dict):
+    """Rewrite .env preserving comments; append any keys not already present."""
+    env_path = Path(config.PROJECT_ROOT) / ".env"
+    existing = env_path.read_text().splitlines() if env_path.exists() else []
+    seen = set()
+    out = []
+    for line in existing:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                out.append(f"{key}={updates[key]}")
+                seen.add(key)
+                continue
+        out.append(line)
+    for key, val in updates.items():
+        if key not in seen:
+            out.append(f"{key}={val}")
+    env_path.write_text("\n".join(out) + "\n")
+
+
+def _apply_config(updates: dict):
+    """Hot-reload config module attributes so changes take effect immediately."""
+    mapping = {
+        "TRINETRA_LOITER_MINUTES":             ("LOITER_MINUTES",              int),
+        "TRINETRA_SESSION_GAP_MINUTES":        ("SESSION_GAP_MINUTES",         int),
+        "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": ("SESSION_AUTO_CLOSE_MINUTES",  int),
+        "TRINETRA_IMAGE_RETENTION_DAYS":       ("IMAGE_RETENTION_DAYS",        int),
+        "TRINETRA_HB_STALE":                   ("HEARTBEAT_STALE_SECONDS",     int),
+        "TRINETRA_EXIT_CAMERAS":               ("EXIT_CAMERAS",
+                                                lambda v: {c.strip() for c in v.split(",") if c.strip()}),
+        "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
+                                                lambda v: [j.strip() for j in v.split(",") if j.strip()]),
+        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",   str),
+        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_ID", str),
+        "SMTP_HOST":        ("SMTP_HOST",         str),
+        "SMTP_PORT":        ("SMTP_PORT",          int),
+        "SMTP_USER":        ("SMTP_USER",         str),
+        "SMTP_TO":          ("SMTP_TO",           str),
+        "ADMIN_EMAIL":      ("ADMIN_EMAIL",       str),
+        "ADMIN_PASSWORD":   ("ADMIN_PASSWORD",    str),
+    }
+    for env_key, (attr, fn) in mapping.items():
+        if env_key in updates:
+            setattr(config, attr, fn(updates[env_key]))
+@app.get("/api/admin/database/{table}")
+def admin_get_database_table(request: Request, table: str, limit: int = 50, offset: int = 0):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+    
+    conn = db()
+    try:
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if table == "detections":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "sessions":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY first_seen DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "alerts":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY triggered_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        elif table == "whitelist":
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY added_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            
+        return {
+            "total": total,
+            "records": [dict(r) for r in rows]
+        }
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/database/{table}/{record_id}")
+def admin_delete_database_record(request: Request, table: str, record_id: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+        
+    conn = db()
+    try:
+        with conn:
+            if table == "detections":
+                row = conn.execute("SELECT filename FROM detections WHERE id=?", (record_id,)).fetchone()
+                if row:
+                    filename = row["filename"]
+                    image_path = Path(config.ARCHIVE_DIR) / filename
+                    if image_path.exists():
+                        try:
+                            image_path.unlink()
+                        except Exception as e:
+                            print(f"Error deleting image file {filename}: {e}")
+                conn.execute("DELETE FROM detections WHERE id=?", (record_id,))
+            elif table == "whitelist":
+                conn.execute("DELETE FROM whitelist WHERE badge=?", (record_id,))
+            else:
+                conn.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+@app.delete("/api/admin/database/{table}")
+def admin_clear_database_table(request: Request, table: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+        raise HTTPException(400, "Invalid table")
+        
+    conn = db()
+    try:
+        with conn:
+            if table == "detections":
+                rows = conn.execute("SELECT filename FROM detections").fetchall()
+                for row in rows:
+                    filename = row["filename"]
+                    image_path = Path(config.ARCHIVE_DIR) / filename
+                    if image_path.exists():
+                        try:
+                            image_path.unlink()
+                        except Exception:
+                            pass
+            conn.execute(f"DELETE FROM {table}")
+            
+        return {"ok": True}
+    finally:
+        conn.close()
 
 # ─── /ws — WebSocket for live updates ─────────────────────────────────────
 @app.websocket("/ws")

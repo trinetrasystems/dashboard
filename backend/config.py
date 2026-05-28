@@ -89,6 +89,10 @@ EXIT_CAMERAS = {
 # Delete archived images older than this many days. 0 = keep forever (disabled).
 IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "0"))
 
+# ─── ADMIN CREDENTIALS ────────────────────────────────────────────────────────
+ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL",    "trinetra@admin.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
+
 # ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
