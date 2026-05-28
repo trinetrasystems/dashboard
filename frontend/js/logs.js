@@ -95,7 +95,7 @@ function renderLogTable() {
     return `
       <tr class="clickable" onclick='showLog(${JSON.stringify(d).replace(/'/g, "&#39;")})'>
         <td><div class="thumb">${thumbSVG(d.badge)}</div></td>
-        <td class="mono">${fmtTime(ts)} ${ts.toDateString() !== new Date().toDateString() ? '<span style="color:var(--text-dim)">· '+fmtDate(ts)+'</span>' : ''}</td>
+        <td class="mono">${fmtTime(ts)} ${ts.toDateString() !== new Date().toDateString() ? '<span style="color:var(--text-dim)">· ' + fmtDate(ts) + '</span>' : ''}</td>
         <td class="mono"><b>${escapeHtml(d.badge)}</b></td>
         <td class="mono">${escapeHtml(d.camera)}</td>
         <td><span class="tag-${d.type}">${d.type.toUpperCase()}</span></td>
@@ -111,7 +111,7 @@ function thumbSVG(badge) {
   return `<svg viewBox="0 0 56 36" preserveAspectRatio="none">
     <rect width="56" height="36" fill="hsl(${hue},25%,28%)" opacity="0.4"/>
     <circle cx="22" cy="18" r="6" fill="hsl(${hue},65%,55%)" opacity="0.9"/>
-    <rect x="32" y="10" width="14" height="20" rx="2" fill="hsl(${(hue+60)%360},55%,55%)" opacity="0.7"/>
+    <rect x="32" y="10" width="14" height="20" rx="2" fill="hsl(${(hue + 60) % 360},55%,55%)" opacity="0.7"/>
   </svg>`;
 }
 
@@ -131,12 +131,12 @@ function renderCharts() {
   // 1. Detections over time
   document.getElementById('chart-timeline').innerHTML = lineChartSVG(cachedStats.daily_30d || []);
   document.getElementById('chart-timeline-sub').textContent =
-    `last 30 days · ${(cachedStats.daily_30d||[]).reduce((a,b)=>a+b,0)} total`;
+    `last 30 days · ${(cachedStats.daily_30d || []).reduce((a, b) => a + b, 0)} total`;
 
   // 2. Detections by badge — from filtered detections
   const byBadge = {};
   for (const d of cachedDetections) byBadge[d.badge] = (byBadge[d.badge] || 0) + 1;
-  const badgeData = Object.entries(byBadge).sort((a,b)=>b[1]-a[1]).slice(0, 7);
+  const badgeData = Object.entries(byBadge).sort((a, b) => b[1] - a[1]).slice(0, 7);
   document.getElementById('chart-by-badge').innerHTML = hbarChartSVG(badgeData, 'var(--cyan)');
   document.getElementById('chart-by-badge-sub').textContent =
     `${cachedDetections.length} events · top ${badgeData.length}`;
@@ -144,7 +144,7 @@ function renderCharts() {
   // 3. Detections by camera — from filtered
   const byCam = {};
   for (const d of cachedDetections) byCam[d.camera] = (byCam[d.camera] || 0) + 1;
-  const camData = Object.entries(byCam).sort((a,b)=>b[1]-a[1]);
+  const camData = Object.entries(byCam).sort((a, b) => b[1] - a[1]);
   document.getElementById('chart-by-camera').innerHTML = vbarChartSVG(camData, 'var(--violet)');
   document.getElementById('chart-by-camera-sub').textContent = `${cachedDetections.length} events`;
 
@@ -152,7 +152,7 @@ function renderCharts() {
   const loiter = cachedStats.loitering_30d || [];
   document.getElementById('chart-loitering').innerHTML = loiterBarSVG(loiter);
   document.getElementById('chart-loitering-sub').textContent =
-    `last 30 days · ${loiter.reduce((a,b)=>a+b,0)} total`;
+    `last 30 days · ${loiter.reduce((a, b) => a + b, 0)} total`;
 }
 
 function lineChartSVG(data) {
@@ -164,16 +164,16 @@ function lineChartSVG(data) {
     return `${x},${y}`;
   });
   const line = pts.join(' ');
-  const lastX = 50 + (data.length-1) * 15;
+  const lastX = 50 + (data.length - 1) * 15;
   const area = `50,160 ${line} ${lastX},160`;
   return `<svg viewBox="0 0 500 180" width="100%" style="display: block;">
-    <line x1="50" y1="160" x2="${lastX+5}" y2="160" stroke="var(--border)"/>
-    <line x1="50" y1="95"  x2="${lastX+5}" y2="95"  stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
-    <line x1="50" y1="30"  x2="${lastX+5}" y2="30"  stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
+    <line x1="50" y1="160" x2="${lastX + 5}" y2="160" stroke="var(--border)"/>
+    <line x1="50" y1="95"  x2="${lastX + 5}" y2="95"  stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
+    <line x1="50" y1="30"  x2="${lastX + 5}" y2="30"  stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
     <polygon points="${area}" fill="var(--cyan)" opacity="0.15"/>
     <polyline points="${line}" fill="none" stroke="var(--cyan)" stroke-width="2"/>
     <text x="40" y="34" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${max}</text>
-    <text x="40" y="99" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${Math.floor(max/2)}</text>
+    <text x="40" y="99" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
     <text x="40" y="164" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">0</text>
     <text x="50" y="178" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">30d ago</text>
     <text x="${lastX}" y="178" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">today</text>
@@ -187,25 +187,25 @@ function hbarChartSVG(data, color) {
   data.forEach(([name, v], i) => {
     const y = 20 + i * 28;
     const w = (v / max) * 320;
-    out += `<text x="0" y="${y+10}" font-family="JetBrains Mono" font-size="10" fill="var(--text-muted)">${escapeHtml(name)}</text>`;
+    out += `<text x="0" y="${y + 10}" font-family="JetBrains Mono" font-size="10" fill="var(--text-muted)">${escapeHtml(name)}</text>`;
     out += `<rect x="150" y="${y}" width="${w}" height="18" rx="3" fill="${color}" opacity="0.85"/>`;
-    out += `<text x="${150+w+6}" y="${y+13}" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
+    out += `<text x="${150 + w + 6}" y="${y + 13}" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
   });
-  return `<svg viewBox="0 0 500 ${30 + data.length*28}" width="100%" style="display: block;">${out}</svg>`;
+  return `<svg viewBox="0 0 500 ${30 + data.length * 28}" width="100%" style="display: block;">${out}</svg>`;
 }
 
 function vbarChartSVG(data, color) {
   if (data.length === 0) return `<div style="text-align:center;color:var(--text-dim);padding:30px;font-family:JetBrains Mono;font-size:12px;">no data</div>`;
   const max = Math.max(...data.map(d => d[1]), 1);
   const barW = 60; const gap = 40; const x0 = 50;
-  let out = `<line x1="${x0}" y1="160" x2="${x0 + data.length*(barW+gap)}" y2="160" stroke="var(--border)"/>`;
+  let out = `<line x1="${x0}" y1="160" x2="${x0 + data.length * (barW + gap)}" y2="160" stroke="var(--border)"/>`;
   data.forEach(([name, v], i) => {
     const h = (v / max) * 130;
     const x = x0 + i * (barW + gap);
     const y = 160 - h;
     out += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}" opacity="0.85"/>`;
-    out += `<text x="${x + barW/2}" y="${y-6}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
-    out += `<text x="${x + barW/2}" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${escapeHtml(name)}</text>`;
+    out += `<text x="${x + barW / 2}" y="${y - 6}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
+    out += `<text x="${x + barW / 2}" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${escapeHtml(name)}</text>`;
   });
   return `<svg viewBox="0 0 500 200" width="100%" style="display: block;">${out}</svg>`;
 }

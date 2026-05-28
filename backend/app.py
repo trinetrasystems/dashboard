@@ -301,7 +301,11 @@ async def check_loitering():
             threshold = timedelta(minutes=config.LOITER_MINUTES)
             now = datetime.utcnow()
 
-            # Sessions over threshold, not yet alerted, not whitelisted
+            # ── STEP 1: Loitering alert check (runs BEFORE stale-close) ──────
+            # A session qualifies if first_seen is old enough, regardless of
+            # how old last_seen is. This matters when a back-dated image file
+            # is dropped: last_seen == ts (in the past), but first_seen also
+            # shows the badge has been here long enough to loiter.
             rows = conn.execute("""
                 SELECT id, badge, first_seen FROM sessions
                 WHERE closed=0 AND alert_sent=0
@@ -327,15 +331,22 @@ async def check_loitering():
                         "duration_seconds": duration,
                     })
 
-            # Close stale sessions — no detection in SESSION_AUTO_CLOSE_MINUTES.
-            # When this fires, the badge is considered "left without exiting properly".
-            # If the same badge is later detected again (e.g. handed off to another
-            # person), a fresh session opens — so the two visits are tracked separately.
+            # ── STEP 2: Close stale sessions (runs AFTER loitering check) ────
+            # A session is stale if last_seen is older than SESSION_AUTO_CLOSE_MINUTES
+            # AND it has NOT triggered a loitering alert (alert_sent=0).
+            #
+            # Sessions with alert_sent=1 are intentionally kept open so the loitering
+            # banner stays visible until the badge is explicitly seen at an exit camera.
+            # This directly implements the use-case:
+            #   "banner must stay visible until badge exits through exit camera".
+            #
+            # A back-dated file drop sets last_seen = file_ts (appears stale), but
+            # STEP 1 above just set alert_sent=1 for it — so STEP 2 won't close it.
             stale_cutoff = (now - timedelta(minutes=config.SESSION_AUTO_CLOSE_MINUTES)).isoformat()
             with conn:
                 conn.execute(
                     "UPDATE sessions SET closed=1, closed_at=? "
-                    "WHERE closed=0 AND last_seen < ?",
+                    "WHERE closed=0 AND alert_sent=0 AND last_seen < ?",
                     (now.isoformat(), stale_cutoff)
                 )
         finally:
@@ -478,11 +489,15 @@ def api_stats():
             "SELECT COUNT(*) FROM detections WHERE date(timestamp)=date('now','localtime')"
         ).fetchone()[0]
         active = conn.execute("SELECT COUNT(*) FROM sessions WHERE closed=0").fetchone()[0]
+        # Count sessions loitering by actual time elapsed, matching what the
+        # frontend banner shows. Uses first_seen age so it works immediately
+        # (no wait for the loitering loop) and includes whitelisted sessions
+        # (so the count stays > 0 even after acking a badge).
         loitering = conn.execute(
-            "SELECT COUNT(*) FROM sessions s "
-            "WHERE s.closed=0 AND s.alert_sent=1 "
-            "AND s.badge NOT IN (SELECT badge FROM whitelist) "
-            "AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.session_id=s.id AND a.acknowledged=1)"
+            "SELECT COUNT(*) FROM sessions "
+            "WHERE closed=0 "
+            "AND (julianday('now') - julianday(first_seen)) * 1440 >= ?"
+            , (config.LOITER_MINUTES,)
         ).fetchone()[0]
 
         by_badge = conn.execute("""
@@ -896,13 +911,29 @@ async def api_alert_ack(alert_id: int, request: Request):
         acked_by = (body.get("acked_by") or "operator").strip()
     except Exception:
         acked_by = "operator"
+    now = datetime.utcnow()
     conn = db()
     try:
         with conn:
+            # 1. Mark the alert as acknowledged
             conn.execute(
                 "UPDATE alerts SET acknowledged=1, acknowledged_at=?, acknowledged_by=? WHERE id=?",
-                (datetime.utcnow().isoformat(), acked_by, alert_id)
+                (now.isoformat(), acked_by, alert_id)
             )
+            # 2. Auto-whitelist the badge so it is recorded and no longer
+            #    flagged as loitering. The badge stays visible in the premises
+            #    table with WHITELIST status and is filtered out of the
+            #    loitering banner automatically by the frontend.
+            row = conn.execute(
+                "SELECT badge FROM alerts WHERE id=?", (alert_id,)
+            ).fetchone()
+            if row:
+                badge = row["badge"]
+                reason = f"Auto-whitelisted: acked alert #{alert_id} by {acked_by}"
+                conn.execute(
+                    "INSERT OR REPLACE INTO whitelist(badge, reason) VALUES (?,?)",
+                    (badge, reason)
+                )
         return {"ok": True}
     finally:
         conn.close()

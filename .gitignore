@@ -28,3 +28,11 @@ logs/
 
 # Node
 node_modules/
+
+# ── Trinetra runtime data (never commit) ─────────────────────────────────────
+# All generated at runtime — DB, images, heartbeat files, dead-letter queue.
+data/
+
+
+# Editor / linter config (local only)
+.jshintrc
