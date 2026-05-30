@@ -15,6 +15,7 @@ Run locally:
 """
 import asyncio
 import csv
+import uuid
 import io
 import json
 import os
@@ -23,6 +24,7 @@ import smtplib
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -307,7 +309,7 @@ async def check_loitering():
             # is dropped: last_seen == ts (in the past), but first_seen also
             # shows the badge has been here long enough to loiter.
             rows = conn.execute("""
-                SELECT id, badge, first_seen FROM sessions
+                SELECT id, badge, first_seen, last_seen, last_camera FROM sessions
                 WHERE closed=0 AND alert_sent=0
                   AND badge NOT IN (SELECT badge FROM whitelist)
             """).fetchall()
@@ -323,12 +325,20 @@ async def check_loitering():
                             (r["id"], r["badge"], now.isoformat(), duration)
                         )
                         conn.execute("UPDATE sessions SET alert_sent=1 WHERE id=?", (r["id"],))
+                        last_image_row = conn.execute(
+                            "SELECT filename FROM detections WHERE session_id=? ORDER BY timestamp DESC LIMIT 1",
+                            (r["id"],)
+                        ).fetchone()
+                        last_image = last_image_row["filename"] if last_image_row else None
                     alerts_to_send.append({
                         "alert_id": cur.lastrowid,
                         "session_id": r["id"],
                         "badge": r["badge"],
                         "first_seen": r["first_seen"],
+                        "last_seen": r["last_seen"],
+                        "last_camera": r["last_camera"],
                         "duration_seconds": duration,
+                        "last_image": last_image,
                     })
 
             # ── STEP 2: Close stale sessions (runs AFTER loitering check) ────
@@ -359,21 +369,55 @@ async def check_loitering():
 async def fire_alert(alert: dict):
     """Send notifications and broadcast over WebSocket."""
     badge = alert["badge"]
-    first = datetime.fromisoformat(alert["first_seen"])
     duration_min = alert["duration_seconds"] // 60
+    duration_sec = alert["duration_seconds"] % 60
+
+    # Times are stored as UTC in DB — convert to local time for display
+    local_offset = datetime.now() - datetime.utcnow()
+    first_utc = datetime.fromisoformat(alert["first_seen"])
+    first_local = first_utc + local_offset
+
+    last_seen_str = "—"
+    if alert.get("last_seen"):
+        last_utc = datetime.fromisoformat(alert["last_seen"])
+        last_local = last_utc + local_offset
+        last_seen_str = last_local.strftime("%d %b %Y  %H:%M:%S")
+
+    last_camera = alert.get("last_camera") or "unknown"
+
     text = (
         f"⚠️ LOITERING ALERT\n"
-        f"Badge: {badge}\n"
-        f"Duration: {duration_min} minutes\n"
-        f"First seen: {first.strftime('%H:%M:%S')}"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪪 Badge       : {badge}\n"
+        f"⏱ Duration    : {duration_min}m {duration_sec:02d}s\n"
+        f"🕐 Entry time  : {first_local.strftime('%d %b %Y  %H:%M:%S')}\n"
+        f"🕒 Last seen   : {last_seen_str}\n"
+        f"📷 Last camera : {last_camera}"
     )
 
-    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
         try:
-            await _send_telegram(text)
+            photo_path = None
+            last_image = alert.get("last_image")
+            print(f"[alert] last_image from DB: {last_image}")
+            if last_image:
+                photo_path = Path(config.ARCHIVE_DIR) / last_image
+                print(f"[alert] photo_path: {photo_path} | exists: {photo_path.exists()} | size: {photo_path.stat().st_size if photo_path.exists() else 'N/A'}")
+
+            has_photo = photo_path and photo_path.exists() and photo_path.stat().st_size > 0
+            print(f"[alert] sending to {len(config.TELEGRAM_CHAT_IDS)} recipient(s): {config.TELEGRAM_CHAT_IDS}")
+            for chat_id in config.TELEGRAM_CHAT_IDS:
+                try:
+                    if has_photo:
+                        await _send_telegram_photo(chat_id, text, photo_path)
+                    else:
+                        await _send_telegram(chat_id, text)
+                    print(f"[alert] sent to chat_id={chat_id}")
+                except Exception as e:
+                    print(f"[alert] telegram failed for chat_id={chat_id}: {e}")
             _mark_alert(alert["alert_id"], "telegram_sent")
         except Exception as e:
-            print(f"[alert] telegram failed: {e}")
+            print(f"[alert] telegram setup failed: {e}")
 
     if config.SMTP_USER and config.SMTP_TO and config.SMTP_PASS:
         try:
@@ -397,15 +441,60 @@ def _mark_alert(alert_id: int, column: str):
             conn.close()
 
 
-async def _send_telegram(text: str):
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage"
+async def _send_telegram(chat_id: str, text: str):
+    token = config.TELEGRAM_TOKEN
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode({
-        "chat_id": config.TELEGRAM_CHAT_ID, "text": text
+        "chat_id": chat_id, "text": text
     }).encode()
 
     def _send():
         req = urllib.request.Request(url, data=data)
         urllib.request.urlopen(req, timeout=5).read()
+
+    await asyncio.get_event_loop().run_in_executor(None, _send)
+
+
+async def _send_telegram_photo(chat_id: str, text: str, photo_path: Path):
+    token = config.TELEGRAM_TOKEN
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    boundary = uuid.uuid4().hex
+    headers = {'Content-type': f'multipart/form-data; boundary={boundary}'}
+
+    with open(photo_path, 'rb') as f:
+        photo_data = f.read()
+
+    CRLF = b'\r\n'
+    body = bytearray()
+
+    def field(name, value):
+        body.extend(f'--{boundary}'.encode() + CRLF)
+        body.extend(f'Content-Disposition: form-data; name="{name}"'.encode() + CRLF)
+        body.extend(CRLF)
+        body.extend(value.encode('utf-8') if isinstance(value, str) else value)
+        body.extend(CRLF)
+
+    field('chat_id', chat_id)
+    field('caption', text)
+
+    filename = photo_path.name
+    body.extend(f'--{boundary}'.encode() + CRLF)
+    body.extend(f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode() + CRLF)
+    body.extend(b'Content-Type: image/jpeg' + CRLF)
+    body.extend(CRLF)
+    body.extend(photo_data)
+    body.extend(CRLF)
+    body.extend(f'--{boundary}--'.encode() + CRLF)
+
+    def _send():
+        req = urllib.request.Request(url, data=bytes(body), headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            print(f"[alert] Telegram sendPhoto response: {resp.status}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='replace')
+            print(f"[alert] Telegram sendPhoto HTTP error {e.code}: {err_body}")
+            raise
 
     await asyncio.get_event_loop().run_in_executor(None, _send)
 
