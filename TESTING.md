@@ -654,6 +654,221 @@ Server starts fresh — DB recreated, no detections. Topbar back to 0/0/0.
 
 ---
 
+---
+
+# PART E — Telegram Notification Tests
+
+> **Prerequisites:**
+> - Server is running (`python backend/app.py`)
+> - `.env` has `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` set
+> - The recipient(s) have already messaged your bot at least once
+
+---
+
+## TEST 18 — Verify Telegram bot token and chat ID
+
+Before testing alerts, confirm your bot can send messages.
+
+Open this URL in your browser (replace with your actual token):
+```
+https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
+```
+
+Your token is in `.env`:
+```ini
+TELEGRAM_TOKEN= 8628143016:AAGk6IP15OtxUnlThUNuAm0M_lTNfUdkQWE
+```
+
+So the full URL is:
+```
+https://api.telegram.org/bot8628143016:AAGk6IP15OtxUnlThUNuAm0M_lTNfUdkQWE/getUpdates
+```
+
+**You should see JSON like:**
+```json
+{
+  "ok": true,
+  "result": [
+    {
+      "message": {
+        "chat": {
+          "id": 959075448,
+          "first_name": "Yash"
+        }
+      }
+    }
+  ]
+}
+```
+
+If `result` is empty `[]`, the recipient needs to open Telegram → search your bot → press **START** first.
+
+**Check `.env` has no typos:**
+```ini
+# ✅ Correct format (leading space is fine, it gets stripped)
+TELEGRAM_TOKEN= 8628143016:AAGk6IP15OtxUnlThUNuAm0M_lTNfUdkQWE
+TELEGRAM_CHAT_ID= 959075448,6417306521
+```
+
+✅ Bot is reachable, chat IDs are confirmed.
+
+---
+
+## TEST 19 — Loitering alert with image sent to Telegram
+
+This test sends a real `.jpg` image (not a 0-byte `touch` file) so Telegram receives the photo.
+
+**Step 1: Clear any old DEMO-BADGE data**
+```bash
+sqlite3 data/trinetra.db "
+  DELETE FROM alerts WHERE badge='DEMO-BADGE';
+  DELETE FROM detections WHERE badge='DEMO-BADGE';
+  DELETE FROM sessions WHERE badge='DEMO-BADGE';
+"
+```
+
+**Step 2: Drop two real image files with timestamps within the session gap**
+```bash
+cd /home/yash/dashboard
+
+# Use any real .jpg on your system
+IMG=/home/yash/cam-perimeter_GOLI_20260527-222334.jpg
+
+PAST=$(date -d '20 minutes ago' +%Y%m%d-%H%M%S)
+RECENT=$(date -d '18 minutes ago' +%Y%m%d-%H%M%S)
+
+cp "$IMG" "data/incoming/cam-entrance_DEMO-BADGE_${PAST}.jpg"
+sleep 1
+cp "$IMG" "data/incoming/cam-parking_DEMO-BADGE_${RECENT}.jpg"
+```
+
+> **Why two timestamps?** Entry = 20 min ago, last sighting = 18 min ago.
+> Gap = 2 min (within `TRINETRA_SESSION_GAP_MINUTES`), so they merge into **one session**.
+> `first_seen` = 20 min ago → exceeds `TRINETRA_LOITER_MINUTES=15` → alert fires.
+
+**Step 3: Watch server logs**
+```
+[alert] last_image from DB: cam-parking_DEMO-BADGE_<timestamp>.jpg
+[alert] photo_path: .../archive/cam-parking_DEMO-BADGE_... | exists: True | size: 45231
+[alert] sending to 2 recipient(s): ['959075448', '6417306521']
+[alert] Telegram sendPhoto response: 200
+[alert] sent to chat_id=959075448
+[alert] sent to chat_id=6417306521
+```
+
+**Step 4: Check Telegram**
+
+Within 30 seconds you should receive on **both** accounts:
+```
+⚠️ LOITERING ALERT
+━━━━━━━━━━━━━━━━━━━━━
+🪪 Badge       : DEMO-BADGE
+⏱ Duration    : 20m 05s
+🕐 Entry time  : 30 May 2026  19:10:00
+🕒 Last seen   : 30 May 2026  19:12:00
+📷 Last camera : cam-parking
+```
+…with the actual `.jpg` photo attached.
+
+**If image is missing but text arrives:**
+- The files were created with `touch` (0-byte) — use `cp` with a real image instead
+- Check archive: `ls -lh data/archive/ | grep DEMO-BADGE`
+
+✅ Loitering alert fires with correct times (IST) and sends image to all recipients.
+
+---
+
+## TEST 20 — Multi-recipient: both chat IDs receive the alert
+
+Verify both IDs in `TELEGRAM_CHAT_ID` receive messages independently.
+
+**Check `.env`:**
+```ini
+TELEGRAM_CHAT_ID= 959075448,6417306521
+```
+
+**Server logs should show two separate sends:**
+```
+[alert] sending to 2 recipient(s): ['959075448', '6417306521']
+[alert] sent to chat_id=959075448
+[alert] sent to chat_id=6417306521
+```
+
+**To add more recipients** — just append comma-separated IDs:
+```ini
+TELEGRAM_CHAT_ID= 959075448,6417306521,112233445
+```
+Restart the server. No code changes needed.
+
+**To get a new person's chat ID:**
+1. They open Telegram → search your bot → press **START**
+2. You open the `getUpdates` URL in your browser (see TEST 18)
+3. Their `"id"` appears in the JSON — add it to `TELEGRAM_CHAT_ID`
+
+✅ All recipients in the comma-separated list receive every alert independently.
+
+---
+
+## TEST 21 — Loitering re-sighting alert (new detection on already-loitering badge)
+
+This test verifies that a **second alert** fires immediately when a loitering badge is detected again by any camera.
+
+**Prerequisites:** TEST 19 has already run — DEMO-BADGE is in loitering state.
+
+**Step 1: Confirm DEMO-BADGE is still in loitering state**
+```bash
+sqlite3 data/trinetra.db "SELECT id, badge, closed, alert_sent FROM sessions WHERE badge='DEMO-BADGE';"
+# Expected: closed=0, alert_sent=1
+```
+
+**Step 2: Drop a new sighting for DEMO-BADGE**
+```bash
+cd /home/yash/dashboard
+IMG=/home/yash/cam-perimeter_GOLI_20260527-222334.jpg
+NOW=$(date +%Y%m%d-%H%M%S)
+cp "$IMG" "data/incoming/cam-perimeter_DEMO-BADGE_${NOW}.jpg"
+```
+
+**Step 3: Watch server logs — alert fires IMMEDIATELY (no 30s wait)**
+```
+[loiter] re-alert: DEMO-BADGE still loitering, new sighting at cam-perimeter
+[loiter] re-alert sent to chat_id=959075448 for badge=DEMO-BADGE
+[loiter] re-alert sent to chat_id=6417306521 for badge=DEMO-BADGE
+```
+
+**Step 4: Check Telegram**
+
+You should receive on both accounts within seconds:
+```
+🔴 LOITERING RE-SIGHTED
+━━━━━━━━━━━━━━━━━━━━━
+🪪 Badge       : DEMO-BADGE
+⏱ Duration    : 22m 15s
+🕐 Entry time  : 30 May 2026  19:10:00
+🕒 Last seen   : 30 May 2026  19:32:15
+📷 Last camera : cam-perimeter
+```
+…with the **new** camera image attached.
+
+**Repeat Step 2 with different camera names** to test multiple re-sightings:
+```bash
+NOW=$(date +%Y%m%d-%H%M%S)
+cp "$IMG" "data/incoming/cam-entrance_DEMO-BADGE_${NOW}.jpg"
+# Another re-sighting alert fires immediately
+```
+
+**Step 5: Stop re-alerts by closing the session (exit gate)**
+```bash
+NOW=$(date +%Y%m%d-%H%M%S)
+cp "$IMG" "data/incoming/cam-gate_DEMO-BADGE_${NOW}.jpg"
+# Session closed → no more re-alerts for DEMO-BADGE
+```
+
+✅ Re-sighting alert fires instantly on new detection, includes new image and updated duration/camera.
+
+---
+
+
 # ✅ Final checklist
 
 | # | What you verified |
@@ -676,8 +891,12 @@ Server starts fresh — DB recreated, no detections. Topbar back to 0/0/0.
 | 15 | Heartbeat freshness drives jetson count |
 | 16 | Loitering threshold via `.env` + restart |
 | 17 | Reset everything works cleanly |
+| **18** | **Telegram bot token + chat ID verified via getUpdates** |
+| **19** | **Loitering alert sends image + correct local times to Telegram** |
+| **20** | **Multi-recipient: all comma-separated chat IDs receive the alert** |
+| **21** | **Re-sighting alert fires immediately when loitering badge detected again** |
 
-If all 18 pass → ready to deploy.
+If all 21 pass → ready to deploy.
 
 ---
 
@@ -693,6 +912,11 @@ If all 18 pass → ready to deploy.
 | Logs page empty | Same as above — `rm -rf data/`, restart |
 | `.env` path doesn't work | Use forward slashes on Windows too: `C:/Users/...` |
 | Whitelist dropdown empty | Check `backend/classes.txt` has uncommented lines |
+| Telegram text sent but no photo | Image is 0-byte (used `touch`). Use `cp` with a real `.jpg` file |
+| Telegram `getUpdates` returns `[]` | Recipient hasn't messaged the bot yet — they must press START |
+| Only one recipient gets the message | Check `TELEGRAM_CHAT_ID` has no extra spaces around the comma |
+| Re-sighting alert not firing | Session `alert_sent` may be 0 — first loitering alert must fire first |
+| Times in Telegram show wrong timezone | Server clock may be UTC-only; verify with `date` command in terminal |
 
 ---
 

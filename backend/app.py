@@ -140,12 +140,14 @@ def parse_filename(name: str):
 def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
     """
     Find open session for badge, extend it OR close it (on exit) OR open new one.
-    Returns (session_id, detection_type)  where type is 'entry' | 'sighting' | 'exit'.
+    Returns (session_id, detection_type, is_loitering)
+      where type is 'entry' | 'sighting' | 'exit'
+      and is_loitering=True if the session already had alert_sent=1.
     """
     gap = timedelta(minutes=config.SESSION_GAP_MINUTES)
 
     row = conn.execute(
-        "SELECT id, last_seen, cameras_json FROM sessions "
+        "SELECT id, last_seen, cameras_json, alert_sent, first_seen, last_camera FROM sessions "
         "WHERE badge=? AND closed=0 ORDER BY id DESC LIMIT 1",
         (badge,)
     ).fetchone()
@@ -160,7 +162,7 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
             "closed=1, closed_at=? WHERE id=?",
             (ts.isoformat(), camera, json.dumps(cams), ts.isoformat(), row["id"])
         )
-        return row["id"], "exit"
+        return row["id"], "exit", False
 
     if row:
         last_seen = datetime.fromisoformat(row["last_seen"])
@@ -173,21 +175,22 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
                 "total_sightings=total_sightings+1, cameras_json=? WHERE id=?",
                 (ts.isoformat(), camera, json.dumps(cams), row["id"])
             )
-            return row["id"], "sighting"
+            already_loitering = bool(row["alert_sent"])
+            return row["id"], "sighting", already_loitering
         # Gap too long → close old session, open new one below
         conn.execute("UPDATE sessions SET closed=1, closed_at=? WHERE id=?",
                      (ts.isoformat(), row["id"]))
 
     if is_exit:
         # Exit on a badge with no open session — just log it, no session
-        return None, "exit"
+        return None, "exit", False
 
     cur = conn.execute(
         "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json) "
         "VALUES (?,?,?,?,?)",
         (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}))
     )
-    return cur.lastrowid, "entry"
+    return cur.lastrowid, "entry", False
 
 
 def handle_new_file(path: Path):
@@ -204,7 +207,7 @@ def handle_new_file(path: Path):
         return
 
     camera, badge, ts = parsed
-    session_id, det_type = None, None
+    session_id, det_type, is_loitering = None, None, False
 
     with _db_lock:
         conn = db()
@@ -219,12 +222,31 @@ def handle_new_file(path: Path):
                     return  # duplicate filename
                 detection_id = cur.lastrowid
                 is_exit = camera in config.EXIT_CAMERAS
-                session_id, det_type = update_session(conn, badge, camera, ts, is_exit)
+                session_id, det_type, is_loitering = update_session(conn, badge, camera, ts, is_exit)
                 # Stamp the detection with its session (visit) ID and final type
                 conn.execute(
                     "UPDATE detections SET type=?, session_id=? WHERE id=?",
                     (det_type, session_id, detection_id)
                 )
+                # If this badge is already loitering, fetch session info for re-alert
+                if is_loitering and session_id and det_type == "sighting":
+                    sess_row = conn.execute(
+                        "SELECT first_seen, last_seen, last_camera FROM sessions WHERE id=?",
+                        (session_id,)
+                    ).fetchone()
+                    loiter_resight = {
+                        "session_id": session_id,
+                        "badge": badge,
+                        "first_seen": sess_row["first_seen"],
+                        "last_seen": sess_row["last_seen"],
+                        "last_camera": sess_row["last_camera"],
+                        "last_image": path.name,  # new image (will be archived below)
+                        "duration_seconds": int(
+                            (datetime.utcnow() - datetime.fromisoformat(sess_row["first_seen"])).total_seconds()
+                        ),
+                    }
+                else:
+                    loiter_resight = None
         finally:
             conn.close()
 
@@ -244,6 +266,13 @@ def handle_new_file(path: Path):
         "session_id": session_id,
         "detection_type": det_type,
     })
+
+    # Fire re-alert AFTER archiving so the image file exists when Telegram reads it
+    if loiter_resight and _main_loop:
+        print(f"[loiter] re-alert: {badge} still loitering, new sighting at {camera}")
+        asyncio.run_coroutine_threadsafe(
+            fire_loiter_resight(loiter_resight), _main_loop
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -279,6 +308,56 @@ def start_watcher() -> Observer:
     obs.start()
     print(f"[ingest] watching {config.INCOMING_DIR}")
     return obs
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# LOITERING RE-ALERT — fires immediately on new detection for loitering badge
+# ════════════════════════════════════════════════════════════════════════════
+
+async def fire_loiter_resight(resight: dict):
+    """Send a follow-up alert when a loitering badge is spotted again."""
+    badge = resight["badge"]
+    duration_min = resight["duration_seconds"] // 60
+    duration_sec = resight["duration_seconds"] % 60
+
+    local_offset = datetime.now() - datetime.utcnow()
+    first_utc = datetime.fromisoformat(resight["first_seen"])
+    first_local = first_utc + local_offset
+
+    last_seen_str = "—"
+    if resight.get("last_seen"):
+        last_local = datetime.fromisoformat(resight["last_seen"]) + local_offset
+        last_seen_str = last_local.strftime("%d %b %Y  %H:%M:%S")
+
+    last_camera = resight.get("last_camera") or "unknown"
+
+    text = (
+        f"🔴 LOITERING RE-SIGHTED\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪪 Badge       : {badge}\n"
+        f"⏱ Duration    : {duration_min}m {duration_sec:02d}s\n"
+        f"🕐 Entry time  : {first_local.strftime('%d %b %Y  %H:%M:%S')}\n"
+        f"🕒 Last seen   : {last_seen_str}\n"
+        f"📷 Last camera : {last_camera}"
+    )
+
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
+        photo_path = None
+        if resight.get("last_image"):
+            photo_path = Path(config.ARCHIVE_DIR) / resight["last_image"]
+
+        has_photo = photo_path and photo_path.exists() and photo_path.stat().st_size > 0
+        for chat_id in config.TELEGRAM_CHAT_IDS:
+            try:
+                if has_photo:
+                    await _send_telegram_photo(chat_id, text, photo_path)
+                else:
+                    await _send_telegram(chat_id, text)
+                print(f"[loiter] re-alert sent to chat_id={chat_id} for badge={badge}")
+            except Exception as e:
+                print(f"[loiter] re-alert telegram failed for chat_id={chat_id}: {e}")
+
+    await wsm.broadcast({"type": "loitering_resight", **resight})
 
 
 # ════════════════════════════════════════════════════════════════════════════
