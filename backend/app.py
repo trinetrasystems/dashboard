@@ -376,7 +376,12 @@ async def fire_loiter_resight(resight: dict):
                     await _send_telegram(chat_id, text)
                 print(f"[loiter] re-alert sent to chat_id={chat_id} for badge={badge}")
             except Exception as e:
-                print(f"[loiter] re-alert telegram failed for chat_id={chat_id}: {e}")
+                print(f"[loiter] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                try:
+                    await _send_telegram(chat_id, text)
+                    print(f"[loiter] text fallback sent to chat_id={chat_id}")
+                except Exception as e2:
+                    print(f"[loiter] text fallback also failed for chat_id={chat_id}: {e2}")
 
     await wsm.broadcast({"type": "loitering_resight", **resight})
 
@@ -514,7 +519,12 @@ async def fire_alert(alert: dict):
                         await _send_telegram(chat_id, text)
                     print(f"[alert] sent to chat_id={chat_id}")
                 except Exception as e:
-                    print(f"[alert] telegram failed for chat_id={chat_id}: {e}")
+                    print(f"[alert] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                    try:
+                        await _send_telegram(chat_id, text)
+                        print(f"[alert] text fallback sent to chat_id={chat_id}")
+                    except Exception as e2:
+                        print(f"[alert] text fallback also failed for chat_id={chat_id}: {e2}")
             _mark_alert(alert["alert_id"], "telegram_sent")
         except Exception as e:
             print(f"[alert] telegram setup failed: {e}")
