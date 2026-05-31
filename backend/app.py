@@ -1059,12 +1059,18 @@ def api_sessions_active():
             SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
                    s.total_sightings, s.cameras_json,
                    CASE WHEN s.badge IN (SELECT badge FROM whitelist) THEN 1 ELSE 0 END AS whitelisted,
-                   a.id AS alert_id, a.acknowledged, a.acknowledged_at, a.acknowledged_by
+                   a.id AS alert_id, a.acknowledged, a.acknowledged_at, a.acknowledged_by,
+                   (
+                       SELECT d.filename FROM detections d
+                       WHERE d.session_id = s.id
+                       ORDER BY d.timestamp DESC LIMIT 1
+                   ) AS last_image
             FROM sessions s
             LEFT JOIN alerts a ON a.session_id = s.id
             WHERE s.closed=0
             ORDER BY s.first_seen ASC
         """).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
         return [{
             "id": r["id"],
             "badge": r["badge"],
@@ -1077,6 +1083,8 @@ def api_sessions_active():
             "acked": bool(r["acknowledged"]) if r["acknowledged"] is not None else False,
             "acked_at": r["acknowledged_at"],
             "acked_by": r["acknowledged_by"],
+            "last_image": r["last_image"],
+            "has_image": bool(r["last_image"] and (archive / r["last_image"]).exists()),
         } for r in rows]
     finally:
         conn.close()
