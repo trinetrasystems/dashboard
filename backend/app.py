@@ -1224,7 +1224,7 @@ def admin_get_config(request: Request):
         "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
         "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
         "TELEGRAM_TOKEN":                     config.TELEGRAM_TOKEN,
-        "TELEGRAM_CHAT_ID":                   config.TELEGRAM_CHAT_ID,
+        "TELEGRAM_CHAT_ID":                   ",".join(config.TELEGRAM_CHAT_IDS),
         "SMTP_HOST":                          config.SMTP_HOST,
         "SMTP_PORT":                          config.SMTP_PORT,
         "SMTP_USER":                          config.SMTP_USER,
@@ -1292,8 +1292,9 @@ def _apply_config(updates: dict):
                                                 lambda v: {c.strip() for c in v.split(",") if c.strip()}),
         "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
                                                 lambda v: [j.strip() for j in v.split(",") if j.strip()]),
-        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",   str),
-        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_ID", str),
+        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",    str),
+        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_IDS",
+                             lambda v: [cid.strip() for cid in v.split(",") if cid.strip()]),
         "SMTP_HOST":        ("SMTP_HOST",         str),
         "SMTP_PORT":        ("SMTP_PORT",          int),
         "SMTP_USER":        ("SMTP_USER",         str),
@@ -1385,6 +1386,59 @@ def admin_clear_database_table(request: Request, table: str):
         return {"ok": True}
     finally:
         conn.close()
+
+
+@app.post("/api/admin/reset")
+def admin_reset_all(request: Request):
+    """Wipe ALL data: every DB table + archive images + dead-letter + heartbeats. Irreversible."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+
+    def _clear_dir(directory: str, pattern: str = "*") -> int:
+        """Delete all files matching pattern in a directory. Returns count deleted."""
+        count = 0
+        p = Path(directory)
+        if not p.exists():
+            return 0
+        for f in p.glob(pattern):
+            if f.is_file():
+                try:
+                    f.unlink()
+                    count += 1
+                except Exception:
+                    pass
+        return count
+
+    with _db_lock:
+        conn = db()
+        try:
+            with conn:
+                # 1. Clear archive images
+                deleted_images    = _clear_dir(config.ARCHIVE_DIR, "*.jpg")
+                # 2. Clear dead-letter files
+                deleted_dead      = _clear_dir(config.DEAD_LETTER_DIR)
+                # 3. Clear heartbeat files
+                deleted_hb        = _clear_dir(config.HEARTBEATS_DIR)
+                # 4. Clear all DB tables (FK-safe order)
+                conn.execute("DELETE FROM alerts")
+                conn.execute("DELETE FROM detections")
+                conn.execute("DELETE FROM sessions")
+                conn.execute("DELETE FROM whitelist")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions')")
+        finally:
+            conn.close()
+
+    print(
+        f"[admin] FULL RESET — all tables cleared | "
+        f"images={deleted_images} | dead-letter={deleted_dead} | heartbeats={deleted_hb}"
+    )
+    return {
+        "ok": True,
+        "deleted_images": deleted_images,
+        "deleted_dead_letter": deleted_dead,
+        "deleted_heartbeats": deleted_hb,
+    }
+
 
 # ─── /ws — WebSocket for live updates ─────────────────────────────────────
 @app.websocket("/ws")
