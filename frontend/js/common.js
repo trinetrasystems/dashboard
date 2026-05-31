@@ -146,6 +146,47 @@ function openModal({ title, sub, filename, hasImage = true }) {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
+/* ─── Direct last-image modal for "Currently in Premises" row clicks ─── */
+function openBadgeLastImage(session) {
+  ensureModal();
+  const modal = document.querySelector('.modal');
+  modal.classList.remove('modal-detail');
+
+  const badge      = session.badge || '—';
+  const lastCamera = session.last_camera || '—';
+  const sightings  = session.total_sightings || 0;
+
+  // Duration (live)
+  const firstDt = session.first_seen
+    ? new Date(session.first_seen.endsWith('Z') ? session.first_seen : session.first_seen + 'Z')
+    : null;
+  const durationStr = firstDt
+    ? fmtDuration((Date.now() - firstDt.getTime()) / 1000) + ' (live)'
+    : '—';
+
+  const lastDt = session.last_seen
+    ? new Date(session.last_seen.endsWith('Z') ? session.last_seen : session.last_seen + 'Z')
+    : null;
+  const lastSeenStr = lastDt ? fmtTime(lastDt) : '—';
+
+  document.getElementById('modal-title').textContent = badge;
+  document.getElementById('modal-sub').textContent =
+    `📷 ${lastCamera}  ·  last seen ${lastSeenStr}  ·  ${sightings} sighting${sightings !== 1 ? 's' : ''}  ·  duration ${durationStr}`;
+
+  const body = document.getElementById('modal-body');
+  if (session.has_image && session.last_image) {
+    body.innerHTML = `
+      <img class="modal-img" src="/images/${encodeURIComponent(session.last_image)}"
+           alt="${escapeHtml(badge)}"
+           onerror="this.outerHTML='<div class=&quot;modal-no-image&quot;>⊘ NO IMAGE AVAILABLE</div>'">`;
+  } else {
+    body.innerHTML = `<div class="modal-no-image">⊘ NO IMAGE AVAILABLE<br><br>image was cleaned up or never archived</div>`;
+  }
+
+  document.getElementById('modal-overlay').classList.add('open');
+}
+window.openBadgeLastImage = openBadgeLastImage;
+
 /* ─── Badge detail modal — sessions timeline (handoff-aware) ─── */
 async function openBadgeDetail(badge, lastCamera) {
   ensureModal();

@@ -15,14 +15,18 @@ Run locally:
 """
 import asyncio
 import csv
+import uuid
 import io
 import json
+import random
 import os
+import re
 import shutil
 import smtplib
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -38,6 +42,25 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 import config
+
+# ─── Minimal valid 1×1 white JPEG (used by the test data generator) ──────────
+# This is a real, parseable JPEG so Telegram and browsers accept it.
+MINIMAL_JPEG = bytes([
+    0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,
+    0x00,0x01,0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,
+    0x07,0x06,0x05,0x08,0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,
+    0x0C,0x0B,0x0B,0x0C,0x19,0x12,0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,
+    0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,0x22,0x2C,0x23,0x1C,0x1C,0x28,
+    0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,0x39,0x3D,0x38,0x32,
+    0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,0x00,0x01,
+    0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x1F,0x00,0x00,0x01,0x05,0x01,0x01,
+    0x01,0x01,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x02,
+    0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0xFF,0xC4,0x00,0x35,0x10,
+    0x00,0x02,0x01,0x03,0x02,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x01,0x02,0x03,0x11,0x00,0x04,0x12,0x21,0x31,0x41,0x05,0x13,
+    0x51,0x61,0x22,0x71,0x81,0x91,0xA1,0xB1,0xC1,0xD1,0xFF,0xDA,0x00,0x08,
+    0x01,0x01,0x00,0x00,0x3F,0x00,0xF5,0x57,0xFF,0xD9,
+])
 
 # ════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -138,12 +161,14 @@ def parse_filename(name: str):
 def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
     """
     Find open session for badge, extend it OR close it (on exit) OR open new one.
-    Returns (session_id, detection_type)  where type is 'entry' | 'sighting' | 'exit'.
+    Returns (session_id, detection_type, is_loitering)
+      where type is 'entry' | 'sighting' | 'exit'
+      and is_loitering=True if the session already had alert_sent=1.
     """
     gap = timedelta(minutes=config.SESSION_GAP_MINUTES)
 
     row = conn.execute(
-        "SELECT id, last_seen, cameras_json FROM sessions "
+        "SELECT id, last_seen, cameras_json, alert_sent, first_seen, last_camera FROM sessions "
         "WHERE badge=? AND closed=0 ORDER BY id DESC LIMIT 1",
         (badge,)
     ).fetchone()
@@ -158,7 +183,7 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
             "closed=1, closed_at=? WHERE id=?",
             (ts.isoformat(), camera, json.dumps(cams), ts.isoformat(), row["id"])
         )
-        return row["id"], "exit"
+        return row["id"], "exit", False
 
     if row:
         last_seen = datetime.fromisoformat(row["last_seen"])
@@ -171,21 +196,22 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
                 "total_sightings=total_sightings+1, cameras_json=? WHERE id=?",
                 (ts.isoformat(), camera, json.dumps(cams), row["id"])
             )
-            return row["id"], "sighting"
+            already_loitering = bool(row["alert_sent"])
+            return row["id"], "sighting", already_loitering
         # Gap too long → close old session, open new one below
         conn.execute("UPDATE sessions SET closed=1, closed_at=? WHERE id=?",
                      (ts.isoformat(), row["id"]))
 
     if is_exit:
         # Exit on a badge with no open session — just log it, no session
-        return None, "exit"
+        return None, "exit", False
 
     cur = conn.execute(
         "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json) "
         "VALUES (?,?,?,?,?)",
         (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}))
     )
-    return cur.lastrowid, "entry"
+    return cur.lastrowid, "entry", False
 
 
 def handle_new_file(path: Path):
@@ -202,7 +228,7 @@ def handle_new_file(path: Path):
         return
 
     camera, badge, ts = parsed
-    session_id, det_type = None, None
+    session_id, det_type, is_loitering = None, None, False
 
     with _db_lock:
         conn = db()
@@ -217,12 +243,38 @@ def handle_new_file(path: Path):
                     return  # duplicate filename
                 detection_id = cur.lastrowid
                 is_exit = camera in config.EXIT_CAMERAS
-                session_id, det_type = update_session(conn, badge, camera, ts, is_exit)
+                session_id, det_type, is_loitering = update_session(conn, badge, camera, ts, is_exit)
                 # Stamp the detection with its session (visit) ID and final type
                 conn.execute(
                     "UPDATE detections SET type=?, session_id=? WHERE id=?",
                     (det_type, session_id, detection_id)
                 )
+                # If this badge is already loitering, fetch session info for re-alert
+                # but ONLY if the badge is not whitelisted (may have been added after first alert)
+                is_whitelisted = conn.execute(
+                    "SELECT 1 FROM whitelist WHERE badge=?", (badge,)
+                ).fetchone() is not None
+
+                if is_loitering and session_id and det_type == "sighting" and not is_whitelisted:
+                    sess_row = conn.execute(
+                        "SELECT first_seen, last_seen, last_camera FROM sessions WHERE id=?",
+                        (session_id,)
+                    ).fetchone()
+                    loiter_resight = {
+                        "session_id": session_id,
+                        "badge": badge,
+                        "first_seen": sess_row["first_seen"],
+                        "last_seen": sess_row["last_seen"],
+                        "last_camera": sess_row["last_camera"],
+                        "last_image": path.name,  # new image (will be archived below)
+                        "duration_seconds": int(
+                            (datetime.utcnow() - datetime.fromisoformat(sess_row["first_seen"])).total_seconds()
+                        ),
+                    }
+                else:
+                    loiter_resight = None
+                    if is_loitering and is_whitelisted:
+                        print(f"[loiter] re-alert suppressed: {badge} is now whitelisted")
         finally:
             conn.close()
 
@@ -242,6 +294,13 @@ def handle_new_file(path: Path):
         "session_id": session_id,
         "detection_type": det_type,
     })
+
+    # Fire re-alert AFTER archiving so the image file exists when Telegram reads it
+    if loiter_resight and _main_loop:
+        print(f"[loiter] re-alert: {badge} still loitering, new sighting at {camera}")
+        asyncio.run_coroutine_threadsafe(
+            fire_loiter_resight(loiter_resight), _main_loop
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -280,6 +339,61 @@ def start_watcher() -> Observer:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# LOITERING RE-ALERT — fires immediately on new detection for loitering badge
+# ════════════════════════════════════════════════════════════════════════════
+
+async def fire_loiter_resight(resight: dict):
+    """Send a follow-up alert when a loitering badge is spotted again."""
+    badge = resight["badge"]
+    duration_min = resight["duration_seconds"] // 60
+    duration_sec = resight["duration_seconds"] % 60
+
+    local_offset = datetime.now() - datetime.utcnow()
+    first_utc = datetime.fromisoformat(resight["first_seen"])
+    first_local = first_utc + local_offset
+
+    last_seen_str = "—"
+    if resight.get("last_seen"):
+        last_local = datetime.fromisoformat(resight["last_seen"]) + local_offset
+        last_seen_str = last_local.strftime("%d %b %Y  %H:%M:%S")
+
+    last_camera = resight.get("last_camera") or "unknown"
+
+    text = (
+        f"🔴 LOITERING RE-SIGHTED\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪪 Badge       : {badge}\n"
+        f"⏱ Duration    : {duration_min}m {duration_sec:02d}s\n"
+        f"🕐 Entry time  : {first_local.strftime('%d %b %Y  %H:%M:%S')}\n"
+        f"🕒 Last seen   : {last_seen_str}\n"
+        f"📷 Last camera : {last_camera}"
+    )
+
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
+        photo_path = None
+        if resight.get("last_image"):
+            photo_path = Path(config.ARCHIVE_DIR) / resight["last_image"]
+
+        has_photo = photo_path and photo_path.exists() and photo_path.stat().st_size > 0
+        for chat_id in config.TELEGRAM_CHAT_IDS:
+            try:
+                if has_photo:
+                    await _send_telegram_photo(chat_id, text, photo_path)
+                else:
+                    await _send_telegram(chat_id, text)
+                print(f"[loiter] re-alert sent to chat_id={chat_id} for badge={badge}")
+            except Exception as e:
+                print(f"[loiter] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                try:
+                    await _send_telegram(chat_id, text)
+                    print(f"[loiter] text fallback sent to chat_id={chat_id}")
+                except Exception as e2:
+                    print(f"[loiter] text fallback also failed for chat_id={chat_id}: {e2}")
+
+    await wsm.broadcast({"type": "loitering_resight", **resight})
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # LOITERING CHECKER (runs every 30s)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -307,7 +421,7 @@ async def check_loitering():
             # is dropped: last_seen == ts (in the past), but first_seen also
             # shows the badge has been here long enough to loiter.
             rows = conn.execute("""
-                SELECT id, badge, first_seen FROM sessions
+                SELECT id, badge, first_seen, last_seen, last_camera FROM sessions
                 WHERE closed=0 AND alert_sent=0
                   AND badge NOT IN (SELECT badge FROM whitelist)
             """).fetchall()
@@ -323,12 +437,20 @@ async def check_loitering():
                             (r["id"], r["badge"], now.isoformat(), duration)
                         )
                         conn.execute("UPDATE sessions SET alert_sent=1 WHERE id=?", (r["id"],))
+                        last_image_row = conn.execute(
+                            "SELECT filename FROM detections WHERE session_id=? ORDER BY timestamp DESC LIMIT 1",
+                            (r["id"],)
+                        ).fetchone()
+                        last_image = last_image_row["filename"] if last_image_row else None
                     alerts_to_send.append({
                         "alert_id": cur.lastrowid,
                         "session_id": r["id"],
                         "badge": r["badge"],
                         "first_seen": r["first_seen"],
+                        "last_seen": r["last_seen"],
+                        "last_camera": r["last_camera"],
                         "duration_seconds": duration,
+                        "last_image": last_image,
                     })
 
             # ── STEP 2: Close stale sessions (runs AFTER loitering check) ────
@@ -359,21 +481,60 @@ async def check_loitering():
 async def fire_alert(alert: dict):
     """Send notifications and broadcast over WebSocket."""
     badge = alert["badge"]
-    first = datetime.fromisoformat(alert["first_seen"])
     duration_min = alert["duration_seconds"] // 60
+    duration_sec = alert["duration_seconds"] % 60
+
+    # Times are stored as UTC in DB — convert to local time for display
+    local_offset = datetime.now() - datetime.utcnow()
+    first_utc = datetime.fromisoformat(alert["first_seen"])
+    first_local = first_utc + local_offset
+
+    last_seen_str = "—"
+    if alert.get("last_seen"):
+        last_utc = datetime.fromisoformat(alert["last_seen"])
+        last_local = last_utc + local_offset
+        last_seen_str = last_local.strftime("%d %b %Y  %H:%M:%S")
+
+    last_camera = alert.get("last_camera") or "unknown"
+
     text = (
         f"⚠️ LOITERING ALERT\n"
-        f"Badge: {badge}\n"
-        f"Duration: {duration_min} minutes\n"
-        f"First seen: {first.strftime('%H:%M:%S')}"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪪 Badge       : {badge}\n"
+        f"⏱ Duration    : {duration_min}m {duration_sec:02d}s\n"
+        f"🕐 Entry time  : {first_local.strftime('%d %b %Y  %H:%M:%S')}\n"
+        f"🕒 Last seen   : {last_seen_str}\n"
+        f"📷 Last camera : {last_camera}"
     )
 
-    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
         try:
-            await _send_telegram(text)
+            photo_path = None
+            last_image = alert.get("last_image")
+            print(f"[alert] last_image from DB: {last_image}")
+            if last_image:
+                photo_path = Path(config.ARCHIVE_DIR) / last_image
+                print(f"[alert] photo_path: {photo_path} | exists: {photo_path.exists()} | size: {photo_path.stat().st_size if photo_path.exists() else 'N/A'}")
+
+            has_photo = photo_path and photo_path.exists() and photo_path.stat().st_size > 0
+            print(f"[alert] sending to {len(config.TELEGRAM_CHAT_IDS)} recipient(s): {config.TELEGRAM_CHAT_IDS}")
+            for chat_id in config.TELEGRAM_CHAT_IDS:
+                try:
+                    if has_photo:
+                        await _send_telegram_photo(chat_id, text, photo_path)
+                    else:
+                        await _send_telegram(chat_id, text)
+                    print(f"[alert] sent to chat_id={chat_id}")
+                except Exception as e:
+                    print(f"[alert] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                    try:
+                        await _send_telegram(chat_id, text)
+                        print(f"[alert] text fallback sent to chat_id={chat_id}")
+                    except Exception as e2:
+                        print(f"[alert] text fallback also failed for chat_id={chat_id}: {e2}")
             _mark_alert(alert["alert_id"], "telegram_sent")
         except Exception as e:
-            print(f"[alert] telegram failed: {e}")
+            print(f"[alert] telegram setup failed: {e}")
 
     if config.SMTP_USER and config.SMTP_TO and config.SMTP_PASS:
         try:
@@ -397,15 +558,60 @@ def _mark_alert(alert_id: int, column: str):
             conn.close()
 
 
-async def _send_telegram(text: str):
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage"
+async def _send_telegram(chat_id: str, text: str):
+    token = config.TELEGRAM_TOKEN
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode({
-        "chat_id": config.TELEGRAM_CHAT_ID, "text": text
+        "chat_id": chat_id, "text": text
     }).encode()
 
     def _send():
         req = urllib.request.Request(url, data=data)
         urllib.request.urlopen(req, timeout=5).read()
+
+    await asyncio.get_event_loop().run_in_executor(None, _send)
+
+
+async def _send_telegram_photo(chat_id: str, text: str, photo_path: Path):
+    token = config.TELEGRAM_TOKEN
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    boundary = uuid.uuid4().hex
+    headers = {'Content-type': f'multipart/form-data; boundary={boundary}'}
+
+    with open(photo_path, 'rb') as f:
+        photo_data = f.read()
+
+    CRLF = b'\r\n'
+    body = bytearray()
+
+    def field(name, value):
+        body.extend(f'--{boundary}'.encode() + CRLF)
+        body.extend(f'Content-Disposition: form-data; name="{name}"'.encode() + CRLF)
+        body.extend(CRLF)
+        body.extend(value.encode('utf-8') if isinstance(value, str) else value)
+        body.extend(CRLF)
+
+    field('chat_id', chat_id)
+    field('caption', text)
+
+    filename = photo_path.name
+    body.extend(f'--{boundary}'.encode() + CRLF)
+    body.extend(f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode() + CRLF)
+    body.extend(b'Content-Type: image/jpeg' + CRLF)
+    body.extend(CRLF)
+    body.extend(photo_data)
+    body.extend(CRLF)
+    body.extend(f'--{boundary}--'.encode() + CRLF)
+
+    def _send():
+        req = urllib.request.Request(url, data=bytes(body), headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            print(f"[alert] Telegram sendPhoto response: {resp.status}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='replace')
+            print(f"[alert] Telegram sendPhoto HTTP error {e.code}: {err_body}")
+            raise
 
     await asyncio.get_event_loop().run_in_executor(None, _send)
 
@@ -680,6 +886,64 @@ def api_badge_history(badge: str, limit: int = 50):
         conn.close()
 
 
+@app.get("/api/badges/{badge}/sessions")
+def api_badge_sessions(badge: str, limit: int = 20):
+    """Return all sessions (visits) for a specific badge, newest first.
+    Used by the Currently in Premises modal to show visit history."""
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
+                   s.total_sightings, s.closed, s.closed_at,
+                   CAST((julianday(COALESCE(s.closed_at, datetime('now'))) -
+                         julianday(s.first_seen)) * 86400 AS INTEGER) AS duration_seconds,
+                   CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS had_alert
+            FROM sessions s
+            LEFT JOIN alerts a ON a.session_id = s.id
+            WHERE s.badge = ?
+            ORDER BY s.first_seen DESC LIMIT ?
+        """, (badge, limit)).fetchall()
+        return [{
+            "id": r["id"],
+            "badge": r["badge"],
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
+            "last_camera": r["last_camera"],
+            "total_sightings": r["total_sightings"],
+            "closed": bool(r["closed"]),
+            "closed_at": r["closed_at"],
+            "duration_seconds": r["duration_seconds"] or 0,
+            "had_alert": bool(r["had_alert"]),
+        } for r in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/api/sessions/{session_id}/detections")
+def api_session_detections(session_id: int):
+    """Return all detections belonging to a single session, oldest first.
+    Used by the premises modal to show the full detection log for a visit."""
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT id, filename, camera, badge, timestamp, type
+            FROM detections WHERE session_id=?
+            ORDER BY timestamp ASC
+        """, (session_id,)).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
+        return [{
+            "id": r["id"],
+            "filename": r["filename"],
+            "camera": r["camera"],
+            "badge": r["badge"],
+            "timestamp": r["timestamp"],
+            "type": r["type"],
+            "has_image": (archive / r["filename"]).exists(),
+        } for r in rows]
+    finally:
+        conn.close()
+
+
 # ─── /api/visits — list of all visits (sessions) with duration + badge ────
 @app.get("/api/visits")
 def api_visits(badge: Optional[str] = None, status: str = "all",
@@ -795,12 +1059,18 @@ def api_sessions_active():
             SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
                    s.total_sightings, s.cameras_json,
                    CASE WHEN s.badge IN (SELECT badge FROM whitelist) THEN 1 ELSE 0 END AS whitelisted,
-                   a.id AS alert_id, a.acknowledged, a.acknowledged_at, a.acknowledged_by
+                   a.id AS alert_id, a.acknowledged, a.acknowledged_at, a.acknowledged_by,
+                   (
+                       SELECT d.filename FROM detections d
+                       WHERE d.session_id = s.id
+                       ORDER BY d.timestamp DESC LIMIT 1
+                   ) AS last_image
             FROM sessions s
             LEFT JOIN alerts a ON a.session_id = s.id
             WHERE s.closed=0
             ORDER BY s.first_seen ASC
         """).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
         return [{
             "id": r["id"],
             "badge": r["badge"],
@@ -813,6 +1083,8 @@ def api_sessions_active():
             "acked": bool(r["acknowledged"]) if r["acknowledged"] is not None else False,
             "acked_at": r["acknowledged_at"],
             "acked_by": r["acknowledged_by"],
+            "last_image": r["last_image"],
+            "has_image": bool(r["last_image"] and (archive / r["last_image"]).exists()),
         } for r in rows]
     finally:
         conn.close()
@@ -1056,7 +1328,7 @@ def admin_get_config(request: Request):
         "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
         "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
         "TELEGRAM_TOKEN":                     config.TELEGRAM_TOKEN,
-        "TELEGRAM_CHAT_ID":                   config.TELEGRAM_CHAT_ID,
+        "TELEGRAM_CHAT_ID":                   ",".join(config.TELEGRAM_CHAT_IDS),
         "SMTP_HOST":                          config.SMTP_HOST,
         "SMTP_PORT":                          config.SMTP_PORT,
         "SMTP_USER":                          config.SMTP_USER,
@@ -1124,8 +1396,9 @@ def _apply_config(updates: dict):
                                                 lambda v: {c.strip() for c in v.split(",") if c.strip()}),
         "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
                                                 lambda v: [j.strip() for j in v.split(",") if j.strip()]),
-        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",   str),
-        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_ID", str),
+        "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",    str),
+        "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_IDS",
+                             lambda v: [cid.strip() for cid in v.split(",") if cid.strip()]),
         "SMTP_HOST":        ("SMTP_HOST",         str),
         "SMTP_PORT":        ("SMTP_PORT",          int),
         "SMTP_USER":        ("SMTP_USER",         str),
@@ -1217,6 +1490,90 @@ def admin_clear_database_table(request: Request, table: str):
         return {"ok": True}
     finally:
         conn.close()
+
+
+@app.post("/api/admin/simulate")
+async def admin_simulate(request: Request):
+    """Drop a single detection file into incoming/ with a backdated timestamp."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+
+    body = await request.json()
+    badge       = (body.get("badge") or "TEST-BADGE").strip().upper()
+    camera      = (body.get("camera") or "cam-entrance").strip().lower()
+    minutes_ago = max(0, int(body.get("minutes_ago") or 0))
+
+    if not re.match(r'^[A-Za-z0-9-]+$', badge):
+        raise HTTPException(400, "Badge name may only contain letters, numbers and hyphens")
+    if not re.match(r'^[A-Za-z0-9-]+$', camera):
+        raise HTTPException(400, "Camera name may only contain letters, numbers and hyphens")
+
+    incoming = Path(config.INCOMING_DIR)
+    incoming.mkdir(parents=True, exist_ok=True)
+
+    # Pick a random test image from backend/test_images/ if available
+    test_images_dir = Path(__file__).parent / "test_images"
+    test_images = sorted(test_images_dir.glob("*.jpg")) if test_images_dir.exists() else []
+    image_bytes = random.choice(test_images).read_bytes() if test_images else MINIMAL_JPEG
+
+    ts = datetime.now() - timedelta(minutes=minutes_ago)
+    filename = f"{camera}_{badge}_{ts.strftime('%Y%m%d-%H%M%S')}.jpg"
+    (incoming / filename).write_bytes(image_bytes)
+
+    return {"ok": True, "filename": filename, "test_image_used": test_images_dir.exists() and bool(test_images)}
+
+
+@app.post("/api/admin/reset")
+def admin_reset_all(request: Request):
+    """Wipe ALL data: every DB table + archive images + dead-letter + heartbeats. Irreversible."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+
+    def _clear_dir(directory: str, pattern: str = "*") -> int:
+        """Delete all files matching pattern in a directory. Returns count deleted."""
+        count = 0
+        p = Path(directory)
+        if not p.exists():
+            return 0
+        for f in p.glob(pattern):
+            if f.is_file():
+                try:
+                    f.unlink()
+                    count += 1
+                except Exception:
+                    pass
+        return count
+
+    with _db_lock:
+        conn = db()
+        try:
+            with conn:
+                # 1. Clear archive images
+                deleted_images    = _clear_dir(config.ARCHIVE_DIR, "*.jpg")
+                # 2. Clear dead-letter files
+                deleted_dead      = _clear_dir(config.DEAD_LETTER_DIR)
+                # 3. Clear heartbeat files
+                deleted_hb        = _clear_dir(config.HEARTBEATS_DIR)
+                # 4. Clear all DB tables (FK-safe order)
+                conn.execute("DELETE FROM alerts")
+                conn.execute("DELETE FROM detections")
+                conn.execute("DELETE FROM sessions")
+                conn.execute("DELETE FROM whitelist")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions')")
+        finally:
+            conn.close()
+
+    print(
+        f"[admin] FULL RESET — all tables cleared | "
+        f"images={deleted_images} | dead-letter={deleted_dead} | heartbeats={deleted_hb}"
+    )
+    return {
+        "ok": True,
+        "deleted_images": deleted_images,
+        "deleted_dead_letter": deleted_dead,
+        "deleted_heartbeats": deleted_hb,
+    }
+
 
 # ─── /ws — WebSocket for live updates ─────────────────────────────────────
 @app.websocket("/ws")

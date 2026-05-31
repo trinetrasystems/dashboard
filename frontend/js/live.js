@@ -7,6 +7,7 @@ const NOTIF_MAX = 50;
 let activeSessions = [];
 let cachedStats = null;
 let cachedNotifications = [];
+let _premisesMap = {};   // badge → session object, for row-click lookup
 
 async function refreshAll() {
   try {
@@ -124,6 +125,7 @@ function renderTodayChart() {
 }
 
 function renderPremisesTable() {
+  _premisesMap = {};
   const sorted = [...activeSessions].sort((a, b) => a.first_seen_dt - b.first_seen_dt);
   const tbody = document.getElementById('premises-body');
   if (sorted.length === 0) {
@@ -131,6 +133,7 @@ function renderPremisesTable() {
     return;
   }
   tbody.innerHTML = sorted.map(s => {
+    _premisesMap[s.badge] = s;   // store for modal lookup
     const secs = (Date.now() - s.first_seen_dt.getTime()) / 1000;
     const dCls = durationClass(secs);
     let status;
@@ -140,7 +143,6 @@ function renderPremisesTable() {
     else status = { cls: 'ok', label: 'OK' };
     const rowCls = (!s.whitelisted && status.cls === 'alert') ? 'alert-row'
       : (!s.whitelisted && status.cls === 'warn') ? 'warn-row' : '';
-    // Action button: Ack for LOITERING rows, Remove WL for WHITELIST rows
     let actionBtn = '';
     if (s.whitelisted) {
       actionBtn = `<button class="ack-btn"
@@ -155,7 +157,7 @@ function renderPremisesTable() {
           ✓ Ack</button>`;
     }
     return `
-      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}','${escapeHtml(s.last_camera || '')}')">
+      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}')">
         <td class="mono"><b>${escapeHtml(s.badge)}</b></td>
         <td class="mono">${fmtTime(s.first_seen_dt)}</td>
         <td class="mono">${escapeHtml(s.last_camera || '—')} · ${fmtRelative(s.last_seen_dt)}</td>
@@ -168,9 +170,12 @@ function renderPremisesTable() {
   }).join('');
 }
 
-/* ─── Click handler: open enhanced detail modal (image + history) ─── */
-function showBadgeDetail(badge, lastCamera) {
-  openBadgeDetail(badge, lastCamera);
+/* ─── Click handler: open last-image modal directly ─── */
+function showBadgeDetail(badge) {
+  const session = _premisesMap[badge];
+  if (session) {
+    openBadgeLastImage(session);
+  }
 }
 window.showBadgeDetail = showBadgeDetail;
 

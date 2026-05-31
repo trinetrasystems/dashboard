@@ -94,8 +94,12 @@ ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL",    "trinetra@admin.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
 
 # ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
+# Supports multiple recipients: comma-separated list of chat IDs
+TELEGRAM_CHAT_IDS = [
+    cid.strip() for cid in os.environ.get("TELEGRAM_CHAT_ID", "").split(",")
+    if cid.strip()
+]
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
