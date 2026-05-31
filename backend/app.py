@@ -886,6 +886,64 @@ def api_badge_history(badge: str, limit: int = 50):
         conn.close()
 
 
+@app.get("/api/badges/{badge}/sessions")
+def api_badge_sessions(badge: str, limit: int = 20):
+    """Return all sessions (visits) for a specific badge, newest first.
+    Used by the Currently in Premises modal to show visit history."""
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
+                   s.total_sightings, s.closed, s.closed_at,
+                   CAST((julianday(COALESCE(s.closed_at, datetime('now'))) -
+                         julianday(s.first_seen)) * 86400 AS INTEGER) AS duration_seconds,
+                   CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS had_alert
+            FROM sessions s
+            LEFT JOIN alerts a ON a.session_id = s.id
+            WHERE s.badge = ?
+            ORDER BY s.first_seen DESC LIMIT ?
+        """, (badge, limit)).fetchall()
+        return [{
+            "id": r["id"],
+            "badge": r["badge"],
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
+            "last_camera": r["last_camera"],
+            "total_sightings": r["total_sightings"],
+            "closed": bool(r["closed"]),
+            "closed_at": r["closed_at"],
+            "duration_seconds": r["duration_seconds"] or 0,
+            "had_alert": bool(r["had_alert"]),
+        } for r in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/api/sessions/{session_id}/detections")
+def api_session_detections(session_id: int):
+    """Return all detections belonging to a single session, oldest first.
+    Used by the premises modal to show the full detection log for a visit."""
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT id, filename, camera, badge, timestamp, type
+            FROM detections WHERE session_id=?
+            ORDER BY timestamp ASC
+        """, (session_id,)).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
+        return [{
+            "id": r["id"],
+            "filename": r["filename"],
+            "camera": r["camera"],
+            "badge": r["badge"],
+            "timestamp": r["timestamp"],
+            "type": r["type"],
+            "has_image": (archive / r["filename"]).exists(),
+        } for r in rows]
+    finally:
+        conn.close()
+
+
 # ─── /api/visits — list of all visits (sessions) with duration + badge ────
 @app.get("/api/visits")
 def api_visits(badge: Optional[str] = None, status: str = "all",
