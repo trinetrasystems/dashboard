@@ -235,6 +235,49 @@
   }
   .btn-modal-confirm.active { opacity: 1; pointer-events: auto; }
   .btn-modal-confirm.active:hover { background: #ff2222; }
+
+  /* ── Test Data Generator ── */
+  .sim-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  }
+  .sim-grid .setting-row { border-bottom: 1px solid var(--border); }
+  .sim-grid .setting-row:nth-child(odd):last-child { grid-column: span 2; }
+  .scenario-cards {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }
+  .scenario-card {
+    border: 1.5px solid var(--border); border-radius: 10px;
+    padding: 14px 14px 12px; cursor: pointer;
+    transition: all 0.18s; background: var(--card);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .scenario-card:hover { border-color: var(--cyan); background: var(--cyan-dim); }
+  .scenario-card.selected {
+    border-color: var(--cyan); background: var(--cyan-dim);
+    box-shadow: 0 0 0 1px var(--cyan);
+  }
+  .scenario-card .sc-icon { font-size: 22px; }
+  .scenario-card .sc-name { font-size: 13px; font-weight: 700; }
+  .scenario-card .sc-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+  .sim-log {
+    padding: 12px 20px; max-height: 150px; overflow-y: auto;
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    background: rgba(0,0,0,0.2);
+  }
+  .sim-log-entry { padding: 2px 0; }
+  .sim-log-entry.ok  { color: var(--green); }
+  .sim-log-entry.err { color: var(--red); }
+  .btn-simulate {
+    padding: 11px 28px;
+    background: linear-gradient(135deg, #7c3aed, #4f46e5);
+    border: none; border-radius: 8px;
+    color: #fff; font-family: var(--font); font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s; letter-spacing: 0.04em;
+  }
+  .btn-simulate:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(124,58,237,0.4); }
+  .btn-simulate:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 </style>
 </head>
 <body>
@@ -461,6 +504,50 @@
       </div>
     </div>
 
+    <!-- ─── TEST DATA GENERATOR ────────────────────────────── -->
+    <div class="admin-section">
+      <div class="section-title">🧪 Drop Test Detection</div>
+      <div class="settings-card">
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Badge Name</div>
+            <div class="setting-hint">Letters, numbers and hyphens only · e.g. GOLI, TEST-1</div>
+          </div>
+          <input class="setting-input" type="text" id="sim-badge" value="TEST-BADGE" placeholder="TEST-BADGE">
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Camera Name</div>
+            <div class="setting-hint">Must match your camera IDs · e.g. cam-entrance, cam-gate</div>
+          </div>
+          <input class="setting-input" type="text" id="sim-camera" value="cam-entrance" placeholder="cam-entrance">
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Minutes Ago</div>
+            <div class="setting-hint">0 = right now · set &gt;15 to trigger loitering alert within 30s</div>
+          </div>
+          <input class="setting-input" type="number" id="sim-minutes" value="0" min="0" max="1440">
+        </div>
+
+        <!-- Action row -->
+        <div style="padding:16px 20px; display:flex; align-items:center; gap:16px; border-top: 1px solid var(--border);">
+          <button class="btn-simulate" id="sim-btn" onclick="runSimulation()">📥&nbsp; Drop Detection</button>
+          <button onclick="clearSimLog()" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:4px 8px;">Clear log</button>
+        </div>
+
+        <!-- Activity log -->
+        <div class="sim-log" id="sim-log">
+          <div class="sim-log-entry" style="color:var(--text-muted);">Dropped files will appear here…</div>
+        </div>
+
+      </div>
+    </div>
+
+
     <!-- ─── DANGER ZONE ──────────────────────────────────────── -->
     <div class="admin-section">
       <div class="section-title" style="color: var(--red);">☢️ Danger Zone</div>
@@ -641,6 +728,69 @@ async function clearDatabase() {
     alert(`Table '${table}' successfully cleared.`);
   } catch (e) {
     alert('Error clearing database: ' + e.message);
+  }
+}
+
+/* ── Test Data Generator ── */
+let _selectedScenario = 'single';
+
+function selectScenario(el) {
+  document.querySelectorAll('.scenario-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  _selectedScenario = el.dataset.scenario;
+  // Hide minutes row for scenarios that manage their own timing
+  const hideMinutes = ['multi_badge', 'loitering_resight'];
+  document.getElementById('sim-minutes-row').style.display =
+    hideMinutes.includes(_selectedScenario) ? 'none' : '';
+}
+
+function simLog(msg, type = 'info') {
+  const log = document.getElementById('sim-log');
+  const entry = document.createElement('div');
+  entry.className = 'sim-log-entry' + (type === 'ok' ? ' ok' : type === 'err' ? ' err' : '');
+  const ts = new Date().toLocaleTimeString();
+  entry.textContent = `[${ts}] ${msg}`;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearSimLog() {
+  document.getElementById('sim-log').innerHTML =
+    '<div class="sim-log-entry" style="color:var(--text-muted);">Log cleared.</div>';
+}
+
+async function runSimulation() {
+  const btn = document.getElementById('sim-btn');
+  const badge      = document.getElementById('sim-badge').value.trim().toUpperCase() || 'TEST-BADGE';
+  const camera     = document.getElementById('sim-camera').value.trim().toLowerCase() || 'cam-entrance';
+  const minutes_ago = parseInt(document.getElementById('sim-minutes').value) || 0;
+
+  btn.disabled = true;
+  btn.textContent = 'Dropping…';
+
+  simLog(`Dropping: badge=${badge} camera=${camera} minutes_ago=${minutes_ago}`);
+
+  try {
+    const r = await fetch('/api/admin/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ badge, camera, minutes_ago }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || 'Server error');
+    }
+    const result = await r.json();
+    simLog(`  ✓ ${result.filename}`, 'ok');
+    if (minutes_ago >= 15) {
+      simLog('  ⏳ Loitering threshold exceeded — alert fires within 30s', 'info');
+    }
+  } catch (e) {
+    simLog(`Error: ${e.message}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📥\u00a0 Drop Detection';
   }
 }
 
