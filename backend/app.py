@@ -1445,11 +1445,16 @@ async def admin_simulate(request: Request):
     incoming = Path(config.INCOMING_DIR)
     incoming.mkdir(parents=True, exist_ok=True)
 
+    # Pick a random test image from backend/test_images/ if available
+    test_images_dir = Path(__file__).parent / "test_images"
+    test_images = sorted(test_images_dir.glob("*.jpg")) if test_images_dir.exists() else []
+    image_bytes = random.choice(test_images).read_bytes() if test_images else MINIMAL_JPEG
+
     ts = datetime.now() - timedelta(minutes=minutes_ago)
     filename = f"{camera}_{badge}_{ts.strftime('%Y%m%d-%H%M%S')}.jpg"
-    (incoming / filename).write_bytes(MINIMAL_JPEG)
+    (incoming / filename).write_bytes(image_bytes)
 
-    return {"ok": True, "filename": filename}
+    return {"ok": True, "filename": filename, "test_image_used": test_images_dir.exists() and bool(test_images)}
 
 
 @app.post("/api/admin/reset")
