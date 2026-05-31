@@ -250,7 +250,12 @@ def handle_new_file(path: Path):
                     (det_type, session_id, detection_id)
                 )
                 # If this badge is already loitering, fetch session info for re-alert
-                if is_loitering and session_id and det_type == "sighting":
+                # but ONLY if the badge is not whitelisted (may have been added after first alert)
+                is_whitelisted = conn.execute(
+                    "SELECT 1 FROM whitelist WHERE badge=?", (badge,)
+                ).fetchone() is not None
+
+                if is_loitering and session_id and det_type == "sighting" and not is_whitelisted:
                     sess_row = conn.execute(
                         "SELECT first_seen, last_seen, last_camera FROM sessions WHERE id=?",
                         (session_id,)
@@ -268,6 +273,8 @@ def handle_new_file(path: Path):
                     }
                 else:
                     loiter_resight = None
+                    if is_loitering and is_whitelisted:
+                        print(f"[loiter] re-alert suppressed: {badge} is now whitelisted")
         finally:
             conn.close()
 
