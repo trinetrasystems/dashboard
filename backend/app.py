@@ -1492,16 +1492,30 @@ def admin_clear_database_table(request: Request, table: str):
         conn.close()
 
 
+@app.get("/api/admin/test_images")
+def admin_get_test_images(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    test_images_dir = Path(__file__).parent / "test_images"
+    if not test_images_dir.exists():
+        return []
+    images = [f.name for f in test_images_dir.glob("*.jpg")]
+    return sorted(images)
+
 @app.post("/api/admin/simulate")
 async def admin_simulate(request: Request):
-    """Drop a single detection file into incoming/ with a backdated timestamp."""
+    """Drop a single detection file into incoming/ with a specific timestamp."""
     if not _check_admin(request):
         raise HTTPException(401, "Not authenticated")
 
     body = await request.json()
     badge       = (body.get("badge") or "TEST-BADGE").strip().upper()
     camera      = (body.get("camera") or "cam-entrance").strip().lower()
-    minutes_ago = max(0, int(body.get("minutes_ago") or 0))
+    
+    date_str     = body.get("date")
+    time_str     = body.get("time")
+    image_base64 = body.get("image_base64")
+    image_file   = body.get("image")
 
     if not re.match(r'^[A-Za-z0-9-]+$', badge):
         raise HTTPException(400, "Badge name may only contain letters, numbers and hyphens")
@@ -1511,16 +1525,43 @@ async def admin_simulate(request: Request):
     incoming = Path(config.INCOMING_DIR)
     incoming.mkdir(parents=True, exist_ok=True)
 
-    # Pick a random test image from backend/test_images/ if available
+    import base64
     test_images_dir = Path(__file__).parent / "test_images"
-    test_images = sorted(test_images_dir.glob("*.jpg")) if test_images_dir.exists() else []
-    image_bytes = random.choice(test_images).read_bytes() if test_images else MINIMAL_JPEG
+    image_bytes = MINIMAL_JPEG
+    test_image_used = False
+    
+    if image_base64:
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            test_image_used = True
+        except Exception:
+            pass
+    elif image_file:
+        safe_img = Path(image_file).name
+        img_path = test_images_dir / safe_img
+        if img_path.exists():
+            image_bytes = img_path.read_bytes()
+            test_image_used = True
+    else:
+        # Fallback to random if none provided
+        test_images = sorted(test_images_dir.glob("*.jpg")) if test_images_dir.exists() else []
+        if test_images:
+            image_bytes = random.choice(test_images).read_bytes()
+            test_image_used = True
 
-    ts = datetime.now() - timedelta(minutes=minutes_ago)
+    now = datetime.now()
+    parsed_date = date_str if (date_str and date_str.strip()) else now.strftime("%Y-%m-%d")
+    parsed_time = time_str if (time_str and time_str.strip()) else now.strftime("%H:%M")
+
+    try:
+        ts = datetime.strptime(f"{parsed_date} {parsed_time}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        ts = now
+        
     filename = f"{camera}_{badge}_{ts.strftime('%Y%m%d-%H%M%S')}.jpg"
     (incoming / filename).write_bytes(image_bytes)
 
-    return {"ok": True, "filename": filename, "test_image_used": test_images_dir.exists() and bool(test_images)}
+    return {"ok": True, "filename": filename, "test_image_used": test_image_used}
 
 
 @app.post("/api/admin/reset")
