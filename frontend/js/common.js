@@ -14,14 +14,14 @@ function fmtTime(d) {
 }
 function fmtDate(d) {
   d = (d instanceof Date) ? d : new Date(d);
-  return `${pad(d.getDate())} ${d.toLocaleString('default',{month:'short'}).toUpperCase()} ${d.getFullYear()}`;
+  return `${pad(d.getDate())} ${d.toLocaleString('default', { month: 'short' }).toUpperCase()} ${d.getFullYear()}`;
 }
 function fmtDuration(secs) {
   const m = Math.floor(secs / 60);
   const s = Math.floor(secs % 60);
   if (m >= 60) {
     const h = Math.floor(m / 60);
-    return `${pad(h)}:${pad(m%60)}:${pad(s)}`;
+    return `${pad(h)}:${pad(m % 60)}:${pad(s)}`;
   }
   return `${pad(m)}:${pad(s)}`;
 }
@@ -30,48 +30,46 @@ function fmtRelative(d) {
   const sec = Math.floor((Date.now() - d.getTime()) / 1000);
   if (sec < 5) return 'just now';
   if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
-  if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
-  return `${Math.floor(sec/86400)}d ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => (
-    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
 }
 
-/* ─── Topbar HTML — injected by each page ─── */
-const TRINETRA_LOGO_SVG = `
-<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <ellipse cx="12" cy="5.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
-  <circle cx="12" cy="5.5" r="1.1" fill="#0a0e17"/>
-  <ellipse cx="5.5" cy="16.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
-  <circle cx="5.5" cy="16.5" r="1.1" fill="#0a0e17"/>
-  <ellipse cx="18.5" cy="16.5" rx="3.2" ry="2.2" fill="#fff" opacity="0.95"/>
-  <circle cx="18.5" cy="16.5" r="1.1" fill="#0a0e17"/>
-  <path d="M 12 8 L 5.5 14.5 M 12 8 L 18.5 14.5 M 8.5 16.5 L 15.5 16.5"
-        stroke="#fff" stroke-width="0.8" opacity="0.4" stroke-linecap="round"/>
-</svg>`;
+/* ─── Brand logo — full lockup, one file per theme ─── */
+const LOGO_SRC = {
+  dark: 'assets/Trinetra-Logo-Full-Dark.png',
+  light: 'assets/Trinetra-Logo-Full-Light.png',
+};
 
+function savedTheme() {
+  return localStorage.getItem('trinetra-theme') === 'light' ? 'light' : 'dark';
+}
+
+/* ─── Topbar HTML — injected by each page ─── */
 function renderTopbar(activeTab) {
   const stats = dummyStats();
   const tab = (id, label, href) => `
-    <a href="${href}" class="tab ${id===activeTab?'active':''}">${label}</a>`;
+    <a href="${href}" class="tab ${id === activeTab ? 'active' : ''}">${label}</a>`;
   return `
 <div class="topbar">
   <div class="brand">
-    <div class="logo">${TRINETRA_LOGO_SVG}</div>
-    <div class="brand-name">TRINETRA SYSTEMS<span>monitor</span></div>
+    <img id="brand-logo" class="logo" src="${LOGO_SRC[savedTheme()]}" alt="Trinetra Systems">
+    <div class="brand-tag">monitor</div>
   </div>
   <div class="tabs">
     ${tab('live', 'Live', 'index.html')}
     ${tab('logs', 'Logs & Charts', 'logs.html')}
     ${tab('visits', 'Visits', 'visits.html')}
-    ${tab('wl',   'Whitelist', 'whitelist.html')}
+    ${tab('wl', 'Whitelist', 'whitelist.html')}
   </div>
   <div class="status-cluster">
     <div class="status-pill"><span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span></div>
-    <div class="status-pill ${stats.loitering_count?'alert':''}"><span class="dot ${stats.loitering_count?'red':''}"></span><span>${stats.loitering_count} LOITERING</span></div>
+    <div class="status-pill ${stats.loitering_count ? 'alert' : ''}"><span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span></div>
     <div class="status-pill"><span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span></div>
   </div>
   <div class="topbar-right">
@@ -100,9 +98,11 @@ function applyTheme(theme) {
   localStorage.setItem('trinetra-theme', theme);
   const btn = document.getElementById('theme-toggle');
   if (btn) btn.textContent = theme === 'dark' ? '☾' : '☀';
+  const logo = document.getElementById('brand-logo');
+  if (logo) logo.src = LOGO_SRC[theme] || LOGO_SRC.dark;
 }
 function initTheme() {
-  const saved = localStorage.getItem('trinetra-theme') || 'dark';
+  const saved = savedTheme();
   applyTheme(saved);
   const btn = document.getElementById('theme-toggle');
   if (btn) btn.addEventListener('click', () => {
@@ -152,9 +152,9 @@ function openBadgeLastImage(session) {
   const modal = document.querySelector('.modal');
   modal.classList.remove('modal-detail');
 
-  const badge      = session.badge || '—';
+  const badge = session.badge || '—';
   const lastCamera = session.last_camera || '—';
-  const sightings  = session.total_sightings || 0;
+  const sightings = session.total_sightings || 0;
 
   // Duration (live)
   const firstDt = session.first_seen
@@ -362,7 +362,7 @@ function thumbSVG(badge) {
   return `<svg viewBox="0 0 56 36" preserveAspectRatio="none" style="width:100%;height:100%;">
     <rect width="56" height="36" fill="hsl(${hue},25%,28%)" opacity="0.4"/>
     <circle cx="22" cy="18" r="6" fill="hsl(${hue},65%,55%)" opacity="0.9"/>
-    <rect x="32" y="10" width="14" height="20" rx="2" fill="hsl(${(hue+60)%360},55%,55%)" opacity="0.7"/>
+    <rect x="32" y="10" width="14" height="20" rx="2" fill="hsl(${(hue + 60) % 360},55%,55%)" opacity="0.7"/>
   </svg>`;
 }
 
@@ -379,14 +379,14 @@ window.closeModal = closeModal;
 function durationClass(secs) {
   const m = secs / 60;
   if (m >= LOITER_MIN) return 'alert';
-  if (m >= WARN_MIN)   return 'warn';
+  if (m >= WARN_MIN) return 'warn';
   return 'ok';
 }
 function statusForSession(session) {
   const secs = (Date.now() - session.first_seen.getTime()) / 1000;
   if (session.whitelisted) return { cls: 'wl', label: 'WHITELIST' };
   if (secs / 60 >= LOITER_MIN) return { cls: 'alert', label: 'LOITERING' };
-  if (secs / 60 >= WARN_MIN)   return { cls: 'warn',  label: 'APPROACHING' };
+  if (secs / 60 >= WARN_MIN) return { cls: 'warn', label: 'APPROACHING' };
   return { cls: 'ok', label: 'OK' };
 }
 
