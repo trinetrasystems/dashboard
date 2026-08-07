@@ -17,7 +17,7 @@ async function refreshAll() {
   } catch (e) {
     console.error('visits fetch failed:', e);
     document.getElementById('visits-body').innerHTML =
-      `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--red);">failed to load: ${escapeHtml(e.message)}</td></tr>`;
+      `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--red);">failed to load: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -48,7 +48,7 @@ function renderVisitsTable() {
     `showing ${visits.length} of ${cachedVisits.length}`;
 
   if (visits.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-dim);">no visits match filters</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-dim);">no visits match filters</td></tr>`;
     return;
   }
 
@@ -82,6 +82,7 @@ function renderVisitsTable() {
       <tr class="clickable" onclick="showVisitTimeline(${v.id})">
         <td class="mono"><span style="color:var(--text-dim)">#${v.id}</span></td>
         <td class="mono"><b>${escapeHtml(v.badge)}</b></td>
+        <td class="mono">${pad(first.getDate())}/${pad(first.getMonth() + 1)}/${first.getFullYear().toString().slice(-2)}</td>
         <td class="mono">${enteredStr}</td>
         <td class="mono">${exitedStr}</td>
         <td><span class="duration-pill ${dCls}">${fmtDuration(duration)}</span></td>
