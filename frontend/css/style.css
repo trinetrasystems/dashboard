@@ -69,7 +69,7 @@ body {
   background-image: var(--bg-pattern);
   color: var(--text);
   min-height: 100vh;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
 }
 
@@ -92,7 +92,7 @@ select {
   display: flex;
   align-items: center;
   gap: 24px;
-  padding: 14px 24px;
+  padding: 18px 28px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
@@ -105,7 +105,7 @@ select {
 }
 
 .logo {
-  height: 40px;
+  height: 46px;
   width: auto;
   display: block;
   flex-shrink: 0;
@@ -114,7 +114,7 @@ select {
 .brand-tag {
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 400;
   padding-left: 12px;
   border-left: 1px solid var(--border);
@@ -128,9 +128,10 @@ select {
 }
 
 .tab {
-  padding: 8px 14px;
+  padding: 9px 17px;
+  white-space: nowrap;          /* never split "LOGS & CHARTS" across lines */
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text-muted);
   background: transparent;
@@ -163,12 +164,12 @@ select {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 8px 15px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 20px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .status-pill.alert {
@@ -216,8 +217,8 @@ select {
 }
 
 .icon-btn {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -227,7 +228,7 @@ select {
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
   text-decoration: none;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .icon-btn:hover {
@@ -237,7 +238,7 @@ select {
 
 .time-stamp {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
   padding: 6px 12px;
   background: var(--surface-2);
@@ -282,13 +283,13 @@ select {
   gap: 10px;
   color: var(--red);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
   flex-shrink: 0;
 }
 
 .alert-icon {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   background: var(--red);
   color: #fff;
   border-radius: 6px;
@@ -324,33 +325,33 @@ select {
 
 .loiter-item .label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
 
 .loiter-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
 .loiter-item .duration {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--red);
   padding: 0 4px;
 }
 
 .ack-btn {
-  padding: 6px 10px;
+  padding: 7px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border-bright);
   color: var(--text);
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -375,8 +376,8 @@ select {
 
 /* ─── CONTAINER ─── */
 .container {
-  padding: 20px 24px;
-  max-width: 1600px;
+  padding: 26px 28px;
+  max-width: 1800px;
   margin: 0 auto;
 }
 
@@ -425,7 +426,7 @@ select {
 
 .kpi-label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -433,7 +434,7 @@ select {
 }
 
 .kpi-value {
-  font-size: 34px;
+  font-size: 44px;
   font-weight: 600;
   letter-spacing: -0.03em;
   font-family: 'JetBrains Mono', monospace;
@@ -446,7 +447,7 @@ select {
 }
 
 .kpi-delta {
-  font-size: 12px;
+  font-size: 14px;
   font-family: 'JetBrains Mono', monospace;
   color: var(--text-muted);
 }
@@ -474,14 +475,14 @@ select {
 }
 
 .card-title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .card-sub {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
 }
 
@@ -495,7 +496,7 @@ thead th {
   text-align: left;
   padding: 9px 18px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -506,7 +507,7 @@ thead th {
 
 tbody td {
   padding: 10px 18px;
-  font-size: 13px;
+  font-size: 15px;
   vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
@@ -533,7 +534,7 @@ tbody tr.clickable:hover td {
 
 tbody td.mono {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* ─── PILLS & TAGS ─── */
@@ -544,7 +545,7 @@ tbody td.mono {
   padding: 4px 10px;
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -570,7 +571,7 @@ tbody td.mono {
   padding: 3px 8px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -605,7 +606,7 @@ tbody td.mono {
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -666,7 +667,7 @@ tbody td.mono {
   border-radius: 6px;
   color: var(--text);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .filter-input:focus,
@@ -682,7 +683,7 @@ tbody td.mono {
 
 .filter-label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -696,7 +697,7 @@ tbody td.mono {
   border: none;
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -753,14 +754,14 @@ tbody td.mono {
 }
 
 .modal-header h2 {
-  font-size: 20px;
+  font-size: 23px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .modal-header .sub {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -772,7 +773,7 @@ tbody td.mono {
   border: 1px solid var(--border);
   border-radius: 8px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .modal-body {
@@ -792,7 +793,7 @@ tbody td.mono {
   padding: 60px 20px;
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 /* ─── WHITELIST PAGE ─── */
@@ -824,7 +825,7 @@ tbody td.mono {
   border-radius: 6px;
   color: var(--text);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .admin-input input:focus {
@@ -840,7 +841,7 @@ tbody td.mono {
   border-radius: 6px;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -858,20 +859,20 @@ tbody td.mono {
 
 .wl-row .label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .wl-row .reason {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-left: 16px;
 }
 
 .wl-row .added {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   margin-right: 12px;
 }
@@ -883,7 +884,7 @@ tbody td.mono {
   border: 1px solid var(--red-border);
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -895,14 +896,14 @@ tbody td.mono {
   background: var(--amber-bg);
   border: 1px solid var(--amber-border);
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
 }
 
 .notice b {
   color: var(--amber);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -924,7 +925,7 @@ tbody td.mono {
 }
 
 .notif-header {
-  padding: 14px 18px;
+  padding: 17px 20px;
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
@@ -937,7 +938,7 @@ tbody td.mono {
 }
 
 .notif-item {
-  padding: 10px 14px;
+  padding: 13px 17px;
   border-bottom: 1px solid var(--border);
   display: flex;
   gap: 10px;
@@ -954,8 +955,8 @@ tbody td.mono {
 }
 
 .notif-item .thumb {
-  width: 48px;
-  height: 32px;
+  width: 56px;
+  height: 38px;
   flex-shrink: 0;
 }
 
@@ -966,21 +967,21 @@ tbody td.mono {
 
 .notif-item .title {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
 
 .notif-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
 }
 
 .notif-time {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   flex-shrink: 0;
 }
@@ -990,7 +991,7 @@ tbody td.mono {
   text-align: center;
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* ─── BADGE DETAIL MODAL (image + log history) ────────────────────────── */
@@ -1001,7 +1002,7 @@ tbody td.mono {
 .modal-log-list-header {
   padding: 10px 24px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1051,14 +1052,14 @@ tbody td.mono {
 
 .modal-log-item .time {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   font-weight: 600;
 }
 
 .modal-log-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-top: 2px;
 }
@@ -1071,7 +1072,7 @@ tbody td.mono {
   border-radius: 4px;
   background: var(--surface-3);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
@@ -1088,6 +1089,14 @@ tbody td.mono {
   text-align: center;
 }
 
+/* With the larger type, table columns squeeze — keep short atomic values on
+   one line so badges and status tags don't break mid-word. */
+.status-tag,
+table td.mono b,
+.duration-pill {
+  white-space: nowrap;
+}
+
 /* ─── LIVE DASHBOARD HERO ROW (alerts + locations, side by side) ─── */
 .hero-grid {
   display: grid;
@@ -1098,8 +1107,8 @@ tbody td.mono {
 }
 
 .hero-grid .notif-card {
-  height: 460px;
-  max-height: 460px;
+  height: 560px;
+  max-height: 560px;
 }
 
 /* Pulsing dot on the Live Alerts header */
@@ -1130,8 +1139,8 @@ tbody td.mono {
 .loc-item {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 11px 14px;
+  gap: 13px;
+  padding: 14px 17px;
   border-bottom: 1px solid var(--border);
   border-left: 2px solid transparent;
   cursor: pointer;
@@ -1144,8 +1153,8 @@ tbody td.mono {
 .loc-item.loc-warn  { border-left-color: var(--amber); }
 
 .loc-thumb {
-  width: 44px;
-  height: 30px;
+  width: 52px;
+  height: 36px;
   flex-shrink: 0;
   border-radius: 4px;
   overflow: hidden;
@@ -1162,14 +1171,14 @@ tbody td.mono {
 
 .loc-badge {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12.5px;
+  font-size: 14.5px;
   font-weight: 700;
   color: var(--text);
 }
 
 .loc-where {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--cyan);
   padding: 1px 7px;
@@ -1181,12 +1190,12 @@ tbody td.mono {
 
 .loc-meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12.5px;
   color: var(--text-dim);
   margin-top: 4px;
 }
 
-.loc-meta .duration-pill { font-size: 10px; padding: 0 5px; }
+.loc-meta .duration-pill { font-size: 12px; padding: 0 5px; }
 
 .loc-right {
   display: flex;
@@ -1200,7 +1209,27 @@ tbody td.mono {
 
 @media (max-width: 1100px) {
   .hero-grid { grid-template-columns: 1fr; }
-  .hero-grid .notif-card { height: 380px; max-height: 380px; }
+  .hero-grid .notif-card { height: 440px; max-height: 440px; }
+}
+
+/* The enlarged topbar needs a lot of horizontal room. Step the chrome back
+   down in two tiers so tabs and pills stay on a single line. */
+@media (max-width: 1750px) {
+  .topbar { gap: 14px; padding: 14px 18px; }
+  .brand-tag { display: none; }
+  .logo { height: 38px; }
+  .tab { font-size: 12px; padding: 8px 12px; }
+  .status-pill { font-size: 12px; padding: 6px 11px; gap: 6px; }
+  .time-stamp { font-size: 12px; padding: 5px 10px; }
+  .icon-btn { width: 36px; height: 36px; font-size: 14px; }
+}
+
+@media (max-width: 1250px) {
+  .topbar { gap: 10px; padding: 12px 14px; }
+  .logo { height: 32px; }
+  .tab { font-size: 11px; padding: 7px 9px; }
+  .status-pill { font-size: 11px; padding: 5px 9px; }
+  .time-stamp { display: none; }   /* clock is the least critical item */
 }
 
 /* ─── MOVEMENT ALERTS (live notifications feed) ─── */
@@ -1216,7 +1245,7 @@ tbody td.mono {
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
@@ -1236,7 +1265,7 @@ tbody td.mono {
 .move-icon {
   flex-shrink: 0;
   width: 26px;
-  font-size: 15px;
+  font-size: 17px;
   line-height: 1;
   text-align: center;
 }
@@ -1264,7 +1293,7 @@ tbody td.mono {
   border: 1px solid var(--cyan);
   color: var(--cyan);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
@@ -1283,7 +1312,7 @@ tbody td.mono {
 
 .video-none {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
