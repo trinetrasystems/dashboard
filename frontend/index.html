@@ -37,10 +37,10 @@
       <div class="kpi-value" id="kpi-active">—</div>
       <div class="kpi-delta">active sessions</div>
     </div>
-    <div class="kpi-card red">
+    <div class="kpi-card red" id="kpi-loiter-card">
       <div class="kpi-label">Active Loitering Alerts</div>
       <div class="kpi-value" id="kpi-loiter">—</div>
-      <div class="kpi-delta red">⚠ &gt; 15 min threshold</div>
+      <div class="kpi-delta red">⚠ over threshold</div>
     </div>
   </div>
 
@@ -81,7 +81,11 @@
       <div class="notif-header">
         <div>
           <div class="card-title">Live Notifications</div>
-          <div class="card-sub" id="notif-meta">latest detections</div>
+          <div class="card-sub" id="notif-meta">movement alerts</div>
+        </div>
+        <div class="notif-tabs">
+          <button class="notif-tab active" id="feed-movements">Movements</button>
+          <button class="notif-tab" id="feed-detections">All</button>
         </div>
       </div>
       <div class="notif-list" id="notif-list">

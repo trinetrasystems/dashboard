@@ -14,7 +14,8 @@ The system operates on a continuous event-driven loop:
 3. **Session Management (Visits)**: The system groups rapid, successive detections of the same badge into a continuous **Session**. If a person is seen, their session opens. If they aren't seen for a certain gap (e.g., 5 mins) or they pass an "Exit Camera" (e.g., `cam-gate`), their session closes.
 4. **Loitering Check**: A background loop continuously checks open sessions. If a session stays open longer than the configured threshold (e.g., 15 mins), a loitering **Alert** is fired, and a red banner appears on the dashboard.
 5. **Dashboard & Admin**: The frontend uses a WebSocket to receive live updates. Users can acknowledge alerts (which auto-whitelists the badge) or manage the settings and database directly via the Admin panel.
-6. **Visit Recordings**: If a video file for a visit exists on local storage, the Visits tab plays it inline or offers it for download. See [Visit Recordings](#visit-recordings-video-playback) for the required naming and file format.
+6. **Movement Alerts**: Independently of loitering, every time a badge is seen at a *different* camera than last time, an alert is sent describing the transition ("CAR-99 moved from Entrance into Washing"). See [Movement Alerts](#movement-alerts).
+7. **Visit Recordings**: If a video file for a visit exists on local storage, the Visits tab plays it inline or offers it for download. See [Visit Recordings](#visit-recordings-video-playback) for the required naming and file format.
 
 ---
 
@@ -81,6 +82,78 @@ To keep the system running efficiently indefinitely, two background loops run co
 Configuration can be updated on the fly without touching code via the **⚙ Admin Panel**. Settings are saved directly to the `.env` file and hot-reloaded into memory instantly. 
 
 Settings include thresholds, retention policies, the visit-recording directory, Telegram alert integrations, and SMTP configurations for email notifications.
+
+---
+
+## Two Independent Alert Types
+
+Trinetra has two alarm systems and each has its own master switch, so you can run either, both, or neither:
+
+| | Loitering Alerts | Movement Alerts |
+|---|---|---|
+| Trigger | **Time** — stayed longer than the threshold | **Event** — appeared at a different camera |
+| Setting | `TRINETRA_LOITER_ALERTS` | `TRINETRA_MOVEMENT_ALERTS` |
+| Good for | People/security — someone hanging around | Vehicles/workflow — tracking bay to bay |
+
+**For vehicle tracking, turn loitering off.** A car parked in a service bay for two hours is normal, not suspicious, so the time-based alarm is pure noise. Setting `TRINETRA_LOITER_ALERTS=0`:
+
+- raises no alerts and sends no Telegram/email for loitering
+- hides the red LOITERING banner, the "Active Loitering Alerts" KPI card, the topbar LOITERING pill, and every LOITERING / APPROACHING tag on the Live and Visits tabs
+- leaves duration pills neutral instead of turning them amber/red
+- keeps session housekeeping running — stale sessions still auto-close, since that is not part of the alarm
+
+Nothing is deleted. Flip it back to `1` (in `.env` or the Admin Panel, applied without a restart) and the banner, KPI and tags all return. Existing rows in the `alerts` table are left untouched either way.
+
+---
+
+## Movement Alerts
+
+Movement alerts are **event-based**: one alert every time a badge changes camera location, no matter how briefly it was there.
+
+A movement alert reads as a plain sentence:
+
+```
+🚗 MOVEMENT
+━━━━━━━━━━━━━━━━━━━━━
+CAR-GJ18BR9090 moved from Entrance into Electrical Bay.
+
+🪪 Badge  : CAR-GJ18BR9090
+📍 Route  : Entrance → Electrical Bay
+🕐 Time   : 10 Aug 2026  10:02:00
+```
+
+It is delivered to every configured Telegram chat (with the photo captured at the destination camera attached), by email if SMTP is configured, and over the WebSocket to any open dashboard.
+
+### What counts as a movement
+
+| Situation | Event | Alert? |
+|---|---|---|
+| First time a badge is seen in a visit | `entry` | ✅ `CAR-99 entered at Entrance.` |
+| Seen at a **different** camera than last time | `move` | ✅ `CAR-99 moved from Washing into Inspection.` |
+| Seen at an exit camera | `exit` | ✅ `CAR-99 moved from Inspection and exited via Exit.` |
+| Seen **again at the same camera** | — | ❌ not a movement, never alerts |
+
+That last row is the important one. A car parked in front of one camera may generate hundreds of detections, but it has not moved — so it produces exactly **one** alert when it arrives and the next one only when it leaves for another camera.
+
+Camera names are turned into readable labels automatically: `cam-electrical-bay` becomes **Electrical Bay**. Name your cameras after the bay they watch and the alerts read naturally with no extra configuration.
+
+### Configuration
+
+```bash
+TRINETRA_MOVEMENT_ALERTS=1     # 1 = on (default), 0 = off
+```
+
+Also togglable under **Detection & Loitering** in the Admin Panel, applied immediately without a restart. Which cameras count as exits is controlled by the existing `TRINETRA_EXIT_CAMERAS` setting.
+
+### Where they show up
+
+- **Telegram / email** — as above, one message per movement
+- **Live tab → Live Notifications** — the **Movements** feed shows each statement with its route and how long ago it happened, colour-coded by event type. The **All** toggle switches back to the raw per-frame detection feed.
+- **`GET /api/movements`** — full history as JSON, filterable by `badge`, `event` (`entry`/`move`/`exit`), `date` (`YYYY-MM-DD`, local), and `limit`
+
+Every movement is stored in the `movements` table with its from/to cameras, the sentence as it was sent, the linked detection and visit, and whether notification succeeded — so the history survives restarts and stays queryable.
+
+> **A note on volume.** With `TRINETRA_MOVEMENT_ALERTS=1` there is no rate limiting by design — you asked for every event. Telegram throttles roughly 20 messages/minute to one group, so a site where many badges cross cameras constantly can hit that ceiling. If you see dropped alerts, either narrow which cameras report movement or turn the feature off and rely on the `/api/movements` feed in the dashboard.
 
 ---
 

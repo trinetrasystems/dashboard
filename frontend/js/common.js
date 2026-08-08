@@ -2,8 +2,24 @@
  * COMMON HELPERS — used by all pages.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-const LOITER_MIN = 15;   // loitering threshold (minutes)
-const WARN_MIN = 5;      // approaching threshold (minutes)
+/* Loitering display settings — seeded from /api/stats so they follow the
+   server's .env instead of drifting from it. LOITER_ENABLED=false hides the
+   banner, the KPI card and all LOITERING/APPROACHING styling. */
+let LOITER_MIN = 15;         // loitering threshold (minutes) — server overrides
+let WARN_MIN = 5;            // approaching threshold (minutes)
+let LOITER_ENABLED = true;   // server overrides via loiter_alerts_enabled
+
+function applyServerConfig(stats) {
+  if (!stats) return;
+  if (typeof stats.loiter_minutes === 'number' && stats.loiter_minutes > 0) {
+    LOITER_MIN = stats.loiter_minutes;
+    WARN_MIN = Math.max(1, Math.round(stats.loiter_minutes / 3));
+  }
+  if (typeof stats.loiter_alerts_enabled === 'boolean') {
+    LOITER_ENABLED = stats.loiter_alerts_enabled;
+  }
+  document.body.classList.toggle('loiter-off', !LOITER_ENABLED);
+}
 
 /* ─── Formatters ─── */
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -52,7 +68,10 @@ function savedTheme() {
 
 /* ─── Topbar HTML — injected by each page ─── */
 function renderTopbar(activeTab) {
-  const stats = dummyStats();
+  // Placeholders only — real numbers arrive from /api/stats via initTopbarStats().
+  // (Previously seeded from dummyStats(), which left Logs/Visits/Whitelist
+  //  permanently showing invented counts.)
+  const now = new Date();
   const tab = (id, label, href) => `
     <a href="${href}" class="tab ${id === activeTab ? 'active' : ''}">${label}</a>`;
   return `
@@ -67,13 +86,13 @@ function renderTopbar(activeTab) {
     ${tab('visits', 'Visits', 'visits.html')}
     ${tab('wl', 'Whitelist', 'whitelist.html')}
   </div>
-  <div class="status-cluster">
-    <div class="status-pill"><span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span></div>
-    <div class="status-pill ${stats.loitering_count ? 'alert' : ''}"><span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span></div>
-    <div class="status-pill"><span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span></div>
+  <div class="status-cluster" id="status-cluster">
+    <div class="status-pill" id="pill-jetsons"><span class="dot"></span><span>— JETSONS ONLINE</span></div>
+    <div class="status-pill" id="pill-loiter"><span class="dot"></span><span>— LOITERING</span></div>
+    <div class="status-pill" id="pill-premises"><span class="dot"></span><span>— IN PREMISES</span></div>
   </div>
   <div class="topbar-right">
-    <div class="time-stamp"><b id="clock">${fmtDate(NOW)} · ${fmtTime(NOW)}</b></div>
+    <div class="time-stamp"><b id="clock">${fmtDate(now)} · ${fmtTime(now)}</b></div>
     <a href="admin.html" class="icon-btn" title="Admin Panel" style="text-decoration:none;font-size:15px;">⚙</a>
     <button class="icon-btn" id="theme-toggle" title="Toggle theme">☾</button>
     <button class="icon-btn" onclick="location.reload()" title="Refresh">↻</button>
@@ -382,7 +401,9 @@ function closeModal(e) {
 window.closeModal = closeModal;
 
 /* ─── Status helpers ─── */
+/* With loitering disabled every duration is neutral — nothing is "too long". */
 function durationClass(secs) {
+  if (!LOITER_ENABLED) return 'ok';
   const m = secs / 60;
   if (m >= LOITER_MIN) return 'alert';
   if (m >= WARN_MIN) return 'warn';
@@ -391,9 +412,45 @@ function durationClass(secs) {
 function statusForSession(session) {
   const secs = (Date.now() - session.first_seen.getTime()) / 1000;
   if (session.whitelisted) return { cls: 'wl', label: 'WHITELIST' };
+  if (!LOITER_ENABLED) return { cls: 'ok', label: 'IN PREMISES' };
   if (secs / 60 >= LOITER_MIN) return { cls: 'alert', label: 'LOITERING' };
   if (secs / 60 >= WARN_MIN) return { cls: 'warn', label: 'APPROACHING' };
   return { cls: 'ok', label: 'OK' };
+}
+
+/* ─── Topbar status pills — shared by every page ─── */
+function renderTopbarStats(stats) {
+  if (!stats) return;
+  applyServerConfig(stats);
+
+  const jetsons = document.getElementById('pill-jetsons');
+  if (jetsons) jetsons.innerHTML =
+    `<span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span>`;
+
+  const premises = document.getElementById('pill-premises');
+  if (premises) premises.innerHTML =
+    `<span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span>`;
+
+  // Loitering pill is removed entirely when the feature is off.
+  const loiter = document.getElementById('pill-loiter');
+  if (loiter) {
+    if (!LOITER_ENABLED) {
+      loiter.style.display = 'none';
+    } else {
+      loiter.style.display = '';
+      loiter.className = `status-pill ${stats.loitering_count ? 'alert' : ''}`;
+      loiter.innerHTML =
+        `<span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span>`;
+    }
+  }
+}
+
+async function initTopbarStats() {
+  try {
+    renderTopbarStats(await getStats());
+  } catch (e) {
+    console.warn('topbar stats unavailable:', e.message);
+  }
 }
 
 /* ─── Bootstrap (call from each page) ─── */
@@ -402,4 +459,7 @@ function bootstrap(activeTab) {
   ensureModal();
   startClock();
   initTheme();
+  // Pages can `await window._topbarStatsReady` before their first render to
+  // avoid a flash of LOITERING styling before the server config is known.
+  window._topbarStatsReady = initTopbarStats();
 }

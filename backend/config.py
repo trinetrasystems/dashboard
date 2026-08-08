@@ -102,6 +102,26 @@ EXIT_CAMERAS = {
     if c.strip()
 }
 
+# ─── MOVEMENT ALERTS ─────────────────────────────────────────────────────────
+# Event-driven, NOT time-based: one alert each time a badge is seen at a
+# different camera than the one it was last seen at. Independent of loitering.
+def _as_bool(value: str, default: bool) -> bool:
+    v = (value or "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
+MOVEMENT_ALERTS = _as_bool(os.environ.get("TRINETRA_MOVEMENT_ALERTS", ""), True)
+
+# ─── LOITERING ALERTS (master switch) ────────────────────────────────────────
+# Turn the whole time-based loitering feature off — no alerts are raised, no
+# Telegram/email is sent, and the dashboard hides the banner, the KPI card and
+# the LOITERING/APPROACHING status tags. Useful when tracking vehicles, where
+# "parked for a while" is normal and only movement between bays matters.
+# Session housekeeping (auto-closing stale sessions) keeps running regardless.
+LOITER_ALERTS = _as_bool(os.environ.get("TRINETRA_LOITER_ALERTS", ""), True)
+
 # ─── IMAGE CLEANUP ────────────────────────────────────────────────────────────
 # Delete archived images older than this many days. 0 = keep forever (disabled).
 IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "0"))
@@ -150,4 +170,7 @@ def print_summary():
     print(f"[config] GAP_MIN       = {SESSION_GAP_MINUTES} min")
     print(f"[config] AUTO_CLOSE    = {SESSION_AUTO_CLOSE_MINUTES} min")
     print(f"[config] EXIT_CAMERAS  = {sorted(EXIT_CAMERAS)}")
+    print(f"[config] MOVE_ALERTS   = {'on' if MOVEMENT_ALERTS else 'off'}")
+    print(f"[config] LOITER_ALERTS = {'on' if LOITER_ALERTS else 'off'}"
+          f"{'' if LOITER_ALERTS else '  (banner + KPI hidden, no alerts raised)'}")
     print(f"[config] IMAGE_CLEANUP = {'disabled' if IMAGE_RETENTION_DAYS == 0 else f'{IMAGE_RETENTION_DAYS} days'}")

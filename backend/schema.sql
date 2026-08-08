@@ -51,6 +51,27 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(acknowledged, triggered_at DESC);
 
+-- Camera-to-camera movement events (one row per transition, no time threshold).
+-- Written on ingest whenever a badge appears at a different camera than the one
+-- it was last seen at — plus its first appearance (entry) and exit-gate hits.
+-- Repeat sightings at the SAME camera are not movements and are not recorded.
+CREATE TABLE IF NOT EXISTS movements (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    badge         TEXT NOT NULL,
+    session_id    INTEGER REFERENCES sessions(id),
+    detection_id  INTEGER REFERENCES detections(id),
+    from_camera   TEXT,                       -- NULL when this is the first sighting
+    to_camera     TEXT NOT NULL,
+    event         TEXT NOT NULL,              -- 'entry' | 'move' | 'exit'
+    statement     TEXT NOT NULL,              -- human-readable sentence, as alerted
+    timestamp     DATETIME NOT NULL,
+    filename      TEXT,                       -- image captured at the destination
+    notified      INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_move_ts      ON movements(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_move_badge   ON movements(badge);
+CREATE INDEX IF NOT EXISTS idx_move_session ON movements(session_id);
+
 -- Badges exempt from loitering alerts (staff, etc.)
 CREATE TABLE IF NOT EXISTS whitelist (
     badge      TEXT PRIMARY KEY,

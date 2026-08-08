@@ -76,7 +76,7 @@ function renderVisitsTable() {
       ? '<span class="status-tag" style="background:rgba(155,138,255,0.15);color:var(--violet);border:1px solid var(--violet);">COMPLETED</span>'
       : (v.whitelisted
         ? '<span class="status-tag wl">WHITELIST</span>'
-        : duration / 60 >= LOITER_MIN
+        : (LOITER_ENABLED && duration / 60 >= LOITER_MIN)
           ? '<span class="status-tag alert">LOITERING</span>'
           : '<span class="status-tag ok">IN PREMISES</span>');
 
@@ -264,6 +264,7 @@ function initFilters() {
 document.addEventListener('DOMContentLoaded', async () => {
   bootstrap('visits');
   initFilters();
+  await window._topbarStatsReady;   // know LOITER_ENABLED before first render
   await Promise.all([refreshAll(), populateBadgeDropdown()]);
   setInterval(refreshAll, 10000);
 });

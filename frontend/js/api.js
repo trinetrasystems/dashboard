@@ -198,6 +198,16 @@ async function getSessionDetections(sessionId) {
   return await apiGet(`/api/sessions/${sessionId}/detections`);
 }
 
+async function getMovements(filters = {}) {
+  if (USE_DUMMY_DATA) return [];
+  const params = new URLSearchParams();
+  if (filters.badge) params.set('badge', filters.badge);
+  if (filters.event) params.set('event', filters.event);
+  if (filters.date)  params.set('date',  filters.date);
+  params.set('limit', filters.limit || 100);
+  return await apiGet(`/api/movements?${params.toString()}`);
+}
+
 async function getWhitelist() {
   if (USE_DUMMY_DATA) {
     return DUMMY_WHITELIST.map(w => ({

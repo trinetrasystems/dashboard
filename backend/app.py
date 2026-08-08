@@ -152,7 +152,12 @@ def parse_filename(name: str):
         # Filename timestamp is LOCAL time on the edge Jetson.
         # Convert to UTC for consistent storage (server stores everything in UTC).
         dt_local = datetime.strptime(m["ts"], "%Y%m%d-%H%M%S")
-        local_offset = datetime.now() - datetime.utcnow()
+        # now()-utcnow() is a few microseconds short of the true offset (the two
+        # calls don't happen at the same instant). Rounding to whole seconds
+        # keeps stored timestamps exact — otherwise 10:00:00 is stored as
+        # 09:59:59.999982 and every display truncates it back to 09:59:59.
+        offset = datetime.now() - datetime.utcnow()
+        local_offset = timedelta(seconds=round(offset.total_seconds()))
         dt = dt_local - local_offset
     except ValueError:
         return None
@@ -162,9 +167,11 @@ def parse_filename(name: str):
 def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
     """
     Find open session for badge, extend it OR close it (on exit) OR open new one.
-    Returns (session_id, detection_type, is_loitering)
-      where type is 'entry' | 'sighting' | 'exit'
-      and is_loitering=True if the session already had alert_sent=1.
+    Returns (session_id, detection_type, is_loitering, prev_camera)
+      where type is 'entry' | 'sighting' | 'exit',
+      is_loitering=True if the session already had alert_sent=1,
+      and prev_camera is the camera this badge was last seen at (None on a
+      brand-new session) — used to build movement alerts.
     """
     gap = timedelta(minutes=config.SESSION_GAP_MINUTES)
 
@@ -184,7 +191,7 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
             "closed=1, closed_at=? WHERE id=?",
             (ts.isoformat(), camera, json.dumps(cams), ts.isoformat(), row["id"])
         )
-        return row["id"], "exit", False
+        return row["id"], "exit", False, row["last_camera"]
 
     if row:
         last_seen = datetime.fromisoformat(row["last_seen"])
@@ -198,21 +205,70 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
                 (ts.isoformat(), camera, json.dumps(cams), row["id"])
             )
             already_loitering = bool(row["alert_sent"])
-            return row["id"], "sighting", already_loitering
+            return row["id"], "sighting", already_loitering, row["last_camera"]
         # Gap too long → close old session, open new one below
         conn.execute("UPDATE sessions SET closed=1, closed_at=? WHERE id=?",
                      (ts.isoformat(), row["id"]))
 
     if is_exit:
         # Exit on a badge with no open session — just log it, no session
-        return None, "exit", False
+        return None, "exit", False, None
 
     cur = conn.execute(
         "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json) "
         "VALUES (?,?,?,?,?)",
         (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}))
     )
-    return cur.lastrowid, "entry", False
+    return cur.lastrowid, "entry", False, None
+
+
+def camera_label(camera: Optional[str]) -> str:
+    """'cam-electrical-bay' → 'Electrical Bay', for readable alert text."""
+    if not camera:
+        return "Unknown"
+    return re.sub(r"^cam[-_]", "", camera).replace("-", " ").replace("_", " ").title()
+
+
+def build_movement(badge: str, camera: str, prev_camera: Optional[str],
+                   det_type: str) -> Optional[dict]:
+    """Classify one detection as a movement event, or None if it isn't one.
+
+    Movement is a change of location — so a repeat sighting at the SAME camera
+    produces nothing, no matter how many frames arrive. Entry (first sighting of
+    a visit) and exit-gate hits are reported because they are location changes
+    too: from outside in, and from inside out.
+    """
+    to_label = camera_label(camera)
+
+    if det_type == "entry" or not prev_camera:
+        return {
+            "event": "entry",
+            "from_camera": None,
+            "to_camera": camera,
+            "statement": f"{badge} entered at {to_label}.",
+        }
+
+    from_label = camera_label(prev_camera)
+
+    if det_type == "exit":
+        return {
+            "event": "exit",
+            "from_camera": prev_camera,
+            "to_camera": camera,
+            "statement": (f"{badge} exited via {to_label}."
+                          if prev_camera == camera else
+                          f"{badge} moved from {from_label} and exited via {to_label}."),
+        }
+
+    if prev_camera != camera:
+        return {
+            "event": "move",
+            "from_camera": prev_camera,
+            "to_camera": camera,
+            "statement": f"{badge} moved from {from_label} into {to_label}.",
+        }
+
+    return None   # same camera as last time — not a movement
 
 
 def handle_new_file(path: Path):
@@ -230,6 +286,7 @@ def handle_new_file(path: Path):
 
     camera, badge, ts = parsed
     session_id, det_type, is_loitering = None, None, False
+    movement = None
 
     with _db_lock:
         conn = db()
@@ -244,19 +301,42 @@ def handle_new_file(path: Path):
                     return  # duplicate filename
                 detection_id = cur.lastrowid
                 is_exit = camera in config.EXIT_CAMERAS
-                session_id, det_type, is_loitering = update_session(conn, badge, camera, ts, is_exit)
+                session_id, det_type, is_loitering, prev_camera = update_session(
+                    conn, badge, camera, ts, is_exit
+                )
                 # Stamp the detection with its session (visit) ID and final type
                 conn.execute(
                     "UPDATE detections SET type=?, session_id=? WHERE id=?",
                     (det_type, session_id, detection_id)
                 )
+
+                # Record a movement whenever the badge changed location.
+                movement = build_movement(badge, camera, prev_camera, det_type)
+                if movement:
+                    movement.update({
+                        "badge": badge,
+                        "session_id": session_id,
+                        "detection_id": detection_id,
+                        "timestamp": ts.isoformat(),
+                        "filename": path.name,
+                    })
+                    mcur = conn.execute(
+                        "INSERT INTO movements(badge, session_id, detection_id, from_camera,"
+                        " to_camera, event, statement, timestamp, filename) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (badge, session_id, detection_id, movement["from_camera"],
+                         movement["to_camera"], movement["event"], movement["statement"],
+                         ts.isoformat(), path.name)
+                    )
+                    movement["id"] = mcur.lastrowid
                 # If this badge is already loitering, fetch session info for re-alert
                 # but ONLY if the badge is not whitelisted (may have been added after first alert)
                 is_whitelisted = conn.execute(
                     "SELECT 1 FROM whitelist WHERE badge=?", (badge,)
                 ).fetchone() is not None
 
-                if is_loitering and session_id and det_type == "sighting" and not is_whitelisted:
+                if (config.LOITER_ALERTS and is_loitering and session_id
+                        and det_type == "sighting" and not is_whitelisted):
                     sess_row = conn.execute(
                         "SELECT first_seen, last_seen, last_camera FROM sessions WHERE id=?",
                         (session_id,)
@@ -295,6 +375,13 @@ def handle_new_file(path: Path):
         "session_id": session_id,
         "detection_type": det_type,
     })
+
+    # Movement alert — also fired after archiving so the photo is readable.
+    if movement and config.MOVEMENT_ALERTS and _main_loop:
+        print(f"[movement] {movement['statement']}")
+        asyncio.run_coroutine_threadsafe(fire_movement_alert(movement), _main_loop)
+    elif movement:
+        broadcast_sync({"type": "movement", **movement})
 
     # Fire re-alert AFTER archiving so the image file exists when Telegram reads it
     if loiter_resight and _main_loop:
@@ -337,6 +424,78 @@ def start_watcher() -> Observer:
     obs.start()
     print(f"[ingest] watching {config.INCOMING_DIR}")
     return obs
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MOVEMENT ALERT — fires on every camera-to-camera transition (no time threshold)
+# ════════════════════════════════════════════════════════════════════════════
+
+_MOVEMENT_STYLE = {
+    "entry": ("🟢", "ENTERED"),
+    "move":  ("🚗", "MOVEMENT"),
+    "exit":  ("🔵", "EXITED"),
+}
+
+
+async def fire_movement_alert(movement: dict):
+    """Notify that a badge changed camera location, and broadcast to dashboards."""
+    icon, heading = _MOVEMENT_STYLE.get(movement["event"], ("🚗", "MOVEMENT"))
+
+    ts_local = _utc_to_local(datetime.fromisoformat(movement["timestamp"]))
+    route = (f"{camera_label(movement['from_camera'])} → {camera_label(movement['to_camera'])}"
+             if movement["from_camera"] else camera_label(movement["to_camera"]))
+
+    text = (
+        f"{icon} {heading}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{movement['statement']}\n\n"
+        f"🪪 Badge  : {movement['badge']}\n"
+        f"📍 Route  : {route}\n"
+        f"🕐 Time   : {ts_local.strftime('%d %b %Y  %H:%M:%S')}"
+    )
+
+    sent = False
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
+        photo_path = Path(config.ARCHIVE_DIR) / movement["filename"] if movement.get("filename") else None
+        has_photo = bool(photo_path and photo_path.exists() and photo_path.stat().st_size > 0)
+        for chat_id in config.TELEGRAM_CHAT_IDS:
+            try:
+                if has_photo:
+                    await _send_telegram_photo(chat_id, text, photo_path)
+                else:
+                    await _send_telegram(chat_id, text)
+                sent = True
+            except Exception as e:
+                print(f"[movement] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                try:
+                    await _send_telegram(chat_id, text)
+                    sent = True
+                except Exception as e2:
+                    print(f"[movement] text fallback also failed for chat_id={chat_id}: {e2}")
+
+    if config.SMTP_USER and config.SMTP_TO and config.SMTP_PASS:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, _send_email, f"Trinetra · {heading} · {movement['badge']}", text
+            )
+            sent = True
+        except Exception as e:
+            print(f"[movement] email failed: {e}")
+
+    if sent and movement.get("id"):
+        _mark_movement_notified(movement["id"])
+
+    await wsm.broadcast({"type": "movement", **movement})
+
+
+def _mark_movement_notified(movement_id: int):
+    with _db_lock:
+        conn = db()
+        try:
+            with conn:
+                conn.execute("UPDATE movements SET notified=1 WHERE id=?", (movement_id,))
+        finally:
+            conn.close()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -421,11 +580,14 @@ async def check_loitering():
             # how old last_seen is. This matters when a back-dated image file
             # is dropped: last_seen == ts (in the past), but first_seen also
             # shows the badge has been here long enough to loiter.
+            #
+            # Skipped entirely when LOITER_ALERTS is off. STEP 2 below still
+            # runs — session housekeeping must not depend on this switch.
             rows = conn.execute("""
                 SELECT id, badge, first_seen, last_seen, last_camera FROM sessions
                 WHERE closed=0 AND alert_sent=0
                   AND badge NOT IN (SELECT badge FROM whitelist)
-            """).fetchall()
+            """).fetchall() if config.LOITER_ALERTS else []
 
             for r in rows:
                 first = datetime.fromisoformat(r["first_seen"])
@@ -714,8 +876,13 @@ async def image_cleanup_loop():
 # ════════════════════════════════════════════════════════════════════════════
 
 def _utc_to_local(dt: datetime) -> datetime:
-    """DB timestamps are naive UTC — shift to server-local wall time."""
-    return dt + (datetime.now() - datetime.utcnow())
+    """DB timestamps are naive UTC — shift to server-local wall time.
+
+    Rounded to the nearest second: rows written before the parse_filename fix
+    carry sub-second noise, and truncating that renders 10:00:00 as 09:59:59.
+    """
+    local = dt + (datetime.now() - datetime.utcnow())
+    return (local + timedelta(milliseconds=500)).replace(microsecond=0)
 
 
 def index_videos() -> list[tuple[str, str]]:
@@ -914,7 +1081,7 @@ def api_stats():
             "WHERE closed=0 "
             "AND (julianday('now') - julianday(first_seen)) * 1440 >= ?"
             , (config.LOITER_MINUTES,)
-        ).fetchone()[0]
+        ).fetchone()[0] if config.LOITER_ALERTS else 0
 
         by_badge = conn.execute("""
             SELECT badge, COUNT(*) AS c FROM detections
@@ -973,6 +1140,11 @@ def api_stats():
             "total_today": total_today,
             "active_sessions": active,
             "loitering_count": loitering,
+            # Drives whether the dashboard shows the banner, KPI and status
+            # tags at all. loiter_minutes replaces the frontend's hardcoded 15.
+            "loiter_alerts_enabled": config.LOITER_ALERTS,
+            "movement_alerts_enabled": config.MOVEMENT_ALERTS,
+            "loiter_minutes": config.LOITER_MINUTES,
             "jetsons_online": js["online"],
             "jetsons_total": js["total"],
             "by_badge": [[r["badge"], r["c"]] for r in by_badge],
@@ -1340,6 +1512,58 @@ def api_detections_export(date: Optional[str] = None, month: Optional[str] = Non
     )
 
 
+# ─── /api/movements — camera-to-camera transition feed ────────────────────
+@app.get("/api/movements")
+def api_movements(badge: Optional[str] = None, event: Optional[str] = None,
+                  date: Optional[str] = None, limit: int = 100):
+    """Movement events, newest first.
+
+    Query params:
+      badge: filter by badge
+      event: 'entry' | 'move' | 'exit'
+      date:  YYYY-MM-DD (local date of the event)
+      limit: max rows
+    """
+    where, params = [], []
+    if badge:
+        where.append("badge = ?"); params.append(badge)
+    if event:
+        where.append("event = ?"); params.append(event)
+    if date:
+        where.append("date(timestamp,'localtime') = ?"); params.append(date)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    conn = db()
+    try:
+        rows = conn.execute(f"""
+            SELECT id, badge, session_id, detection_id, from_camera, to_camera,
+                   event, statement, timestamp, filename, notified
+            FROM movements
+            {where_sql}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """, [*params, limit]).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
+        return [{
+            "id": r["id"],
+            "badge": r["badge"],
+            "session_id": r["session_id"],
+            "detection_id": r["detection_id"],
+            "from_camera": r["from_camera"],
+            "to_camera": r["to_camera"],
+            "from_label": camera_label(r["from_camera"]) if r["from_camera"] else None,
+            "to_label": camera_label(r["to_camera"]),
+            "event": r["event"],
+            "statement": r["statement"],
+            "timestamp": r["timestamp"],
+            "filename": r["filename"],
+            "notified": bool(r["notified"]),
+            "has_image": bool(r["filename"] and (archive / r["filename"]).exists()),
+        } for r in rows]
+    finally:
+        conn.close()
+
+
 # ─── /api/jetsons/status ──────────────────────────────────────────────────
 @app.get("/api/jetsons/status")
 def api_jetsons_status():
@@ -1508,6 +1732,8 @@ def admin_get_config(request: Request):
         "TRINETRA_SESSION_GAP_MINUTES":       config.SESSION_GAP_MINUTES,
         "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": config.SESSION_AUTO_CLOSE_MINUTES,
         "TRINETRA_EXIT_CAMERAS":              ",".join(sorted(config.EXIT_CAMERAS)),
+        "TRINETRA_MOVEMENT_ALERTS":           "1" if config.MOVEMENT_ALERTS else "0",
+        "TRINETRA_LOITER_ALERTS":             "1" if config.LOITER_ALERTS else "0",
         "TRINETRA_IMAGE_RETENTION_DAYS":      config.IMAGE_RETENTION_DAYS,
         "TRINETRA_VIDEO_DIR":                 config.VIDEO_DIR,
         "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
@@ -1582,6 +1808,10 @@ def _apply_config(updates: dict):
                                                 lambda v: config.resolve_dir(v, config.VIDEO_DIR)),
         "TRINETRA_EXIT_CAMERAS":               ("EXIT_CAMERAS",
                                                 lambda v: {c.strip() for c in v.split(",") if c.strip()}),
+        "TRINETRA_MOVEMENT_ALERTS":            ("MOVEMENT_ALERTS",
+                                                lambda v: str(v).strip().lower() in ("1", "true", "yes", "on")),
+        "TRINETRA_LOITER_ALERTS":              ("LOITER_ALERTS",
+                                                lambda v: str(v).strip().lower() in ("1", "true", "yes", "on")),
         "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
                                                 lambda v: [j.strip() for j in v.split(",") if j.strip()]),
         "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",    str),

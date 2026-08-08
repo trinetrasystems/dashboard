@@ -7,15 +7,27 @@ const NOTIF_MAX = 50;
 let activeSessions = [];
 let cachedStats = null;
 let cachedNotifications = [];
+let cachedMovements = [];
 let _premisesMap = {};   // badge → session object, for row-click lookup
+let _notifFeed = 'movements';   // 'movements' | 'detections'
+let _movementsAvailable = true; // false when the backend has no /api/movements
 
 async function refreshAll() {
   try {
-    const [sessions, stats, recentDetections] = await Promise.all([
+    const [sessions, stats, recentDetections, movements] = await Promise.all([
       getSessions(),
       getStats(),
       getDetections({}),   // today's detections, newest first
+      // Non-fatal: an older backend has no /api/movements, and a failure here
+      // must not stop the premises table and KPIs from rendering.
+      getMovements({ limit: NOTIF_MAX }).catch(e => {
+        console.warn('movement feed unavailable:', e.message);
+        return null;
+      }),
     ]);
+    // null = endpoint unavailable, [] = available but nothing recorded yet
+    _movementsAvailable = movements !== null;
+    cachedMovements = movements || [];
     activeSessions = sessions.map(s => ({
       ...s,
       first_seen_dt: new Date(s.first_seen.endsWith('Z') ? s.first_seen : s.first_seen + 'Z'),
@@ -24,15 +36,8 @@ async function refreshAll() {
     cachedStats = stats;
     cachedNotifications = (recentDetections || []).slice(0, NOTIF_MAX);
 
-    // Topbar status pills
-    const pills = document.querySelectorAll('.status-pill');
-    if (pills.length >= 3 && stats) {
-      pills[0].innerHTML = `<span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span>`;
-      const loiterCls = stats.loitering_count ? 'alert' : '';
-      pills[1].className = `status-pill ${loiterCls}`;
-      pills[1].innerHTML = `<span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span>`;
-      pills[2].innerHTML = `<span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span>`;
-    }
+    // Topbar status pills (shared helper — also applies loiter on/off state)
+    renderTopbarStats(stats);
 
     renderLoiterBanner();
     renderKPIs();
@@ -47,6 +52,7 @@ async function refreshAll() {
 function renderLoiterBanner() {
   const banner = document.getElementById('loiter-banner');
   const list = document.getElementById('loiter-list');
+  if (!LOITER_ENABLED) { banner.style.display = 'none'; return; }
   // Show ALL sessions loitering by time — both whitelisted and non-whitelisted.
   // Whitelisted ones get a Remove WL button; others get an Ack button.
   const loitering = activeSessions.filter(s => {
@@ -91,7 +97,13 @@ function renderKPIs() {
   if (!cachedStats) return;
   document.getElementById('kpi-total').textContent = cachedStats.total_today;
   document.getElementById('kpi-active').textContent = cachedStats.active_sessions;
-  document.getElementById('kpi-loiter').textContent = cachedStats.loitering_count;
+  // Whole loitering card is pulled when the feature is off — the remaining two
+  // KPIs stretch to fill the row via .kpi-row on body.loiter-off.
+  const card = document.getElementById('kpi-loiter-card');
+  if (card) card.style.display = LOITER_ENABLED ? '' : 'none';
+  if (LOITER_ENABLED) {
+    document.getElementById('kpi-loiter').textContent = cachedStats.loitering_count;
+  }
 }
 
 function renderTodayChart() {
@@ -138,6 +150,7 @@ function renderPremisesTable() {
     const dCls = durationClass(secs);
     let status;
     if (s.whitelisted) status = { cls: 'wl', label: 'WHITELIST' };
+    else if (!LOITER_ENABLED) status = { cls: 'ok', label: 'IN PREMISES' };
     else if (secs / 60 >= LOITER_MIN) status = { cls: 'alert', label: 'LOITERING' };
     else if (secs / 60 >= WARN_MIN) status = { cls: 'warn', label: 'APPROACHING' };
     else status = { cls: 'ok', label: 'OK' };
@@ -191,7 +204,55 @@ async function removeFromWhitelist(badge) {
 window.removeFromWhitelist = removeFromWhitelist;
 
 /* ─── Live Notifications panel ─── */
+const MOVE_ICON = { entry: '🟢', move: '🚗', exit: '🔵' };
+
 function renderNotifications() {
+  if (_notifFeed === 'movements') return renderMovementFeed();
+  return renderDetectionFeed();
+}
+
+/* Movement alerts — one entry per camera-to-camera transition */
+function renderMovementFeed() {
+  const list = document.getElementById('notif-list');
+  const meta = document.getElementById('notif-meta');
+  if (!list) return;
+
+  if (!_movementsAvailable) {
+    list.innerHTML = `<div class="notif-empty">movement feed unavailable — restart the server to enable it</div>`;
+    if (meta) meta.textContent = 'unavailable';
+    return;
+  }
+  if (cachedMovements.length === 0) {
+    list.innerHTML = `<div class="notif-empty">no movements yet — alerts appear here when a badge changes camera</div>`;
+    if (meta) meta.textContent = 'movement alerts';
+    return;
+  }
+  if (meta) meta.textContent =
+    `${cachedMovements.length} movement${cachedMovements.length > 1 ? 's' : ''}`;
+
+  list.innerHTML = cachedMovements.map(m => {
+    const ts = new Date(m.timestamp.endsWith('Z') ? m.timestamp : m.timestamp + 'Z');
+    const route = m.from_label
+      ? `${escapeHtml(m.from_label)} <span class="move-arrow">→</span> ${escapeHtml(m.to_label)}`
+      : escapeHtml(m.to_label);
+    return `
+      <div class="notif-item move-${escapeHtml(m.event)}"
+           onclick='showNotificationImage(${JSON.stringify({
+             badge: m.badge, camera: m.to_camera, timestamp: m.timestamp,
+             type: m.event, filename: m.filename, has_image: m.has_image,
+           }).replace(/'/g, "&#39;")})'>
+        <div class="move-icon">${MOVE_ICON[m.event] || '🚗'}</div>
+        <div class="info">
+          <div class="title">${escapeHtml(m.statement)}</div>
+          <div class="meta">${route} · ${fmtTime(ts)}</div>
+        </div>
+        <div class="notif-time">${fmtRelative(ts)}</div>
+      </div>`;
+  }).join('');
+}
+
+/* Raw detection feed — every frame, including repeats at the same camera */
+function renderDetectionFeed() {
   const list = document.getElementById('notif-list');
   const meta = document.getElementById('notif-meta');
   if (!list) return;
@@ -201,7 +262,7 @@ function renderNotifications() {
     if (meta) meta.textContent = 'no events yet';
     return;
   }
-  if (meta) meta.textContent = `${cachedNotifications.length} event${cachedNotifications.length > 1 ? 's' : ''} today`;
+  if (meta) meta.textContent = `${cachedNotifications.length} detection${cachedNotifications.length > 1 ? 's' : ''} today`;
 
   list.innerHTML = cachedNotifications.map(d => {
     const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
@@ -253,8 +314,25 @@ function connectWS() {
   ws.onerror = () => { try { ws.close(); } catch (e) { } };
 }
 
+function initNotifTabs() {
+  const tabs = {
+    movements: document.getElementById('feed-movements'),
+    detections: document.getElementById('feed-detections'),
+  };
+  Object.entries(tabs).forEach(([feed, btn]) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      _notifFeed = feed;
+      Object.values(tabs).forEach(b => b && b.classList.remove('active'));
+      btn.classList.add('active');
+      renderNotifications();
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   bootstrap('live');
+  initNotifTabs();
   await refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(tickDurations, 1000);
