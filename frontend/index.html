@@ -37,6 +37,11 @@
       <div class="kpi-value" id="kpi-active">—</div>
       <div class="kpi-delta">active sessions</div>
     </div>
+    <div class="kpi-card cyan" id="kpi-moves-card">
+      <div class="kpi-label">Movements Today</div>
+      <div class="kpi-value" id="kpi-moves">—</div>
+      <div class="kpi-delta">camera-to-camera</div>
+    </div>
     <div class="kpi-card red" id="kpi-loiter-card">
       <div class="kpi-label">Active Loitering Alerts</div>
       <div class="kpi-value" id="kpi-loiter">—</div>
@@ -44,43 +49,13 @@
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <div class="card-title">Today's Detections</div>
-        <div class="card-sub">hourly · auto-refreshing</div>
-      </div>
-      <div class="card-sub" id="chart-meta">—</div>
-    </div>
-    <div class="chart-container" id="today-chart">—</div>
-  </div>
-
-  <div class="main-grid">
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <div class="card-title">Currently in Premises</div>
-          <div class="card-sub">click row for last-seen image + history · threshold 15 min</div>
-        </div>
-        <div class="card-sub">▼ longest first</div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Badge</th><th>Entered</th><th>Last Seen</th>
-            <th>Duration</th><th>Status</th><th>Sightings</th>
-          </tr>
-        </thead>
-        <tbody id="premises-body">
-          <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
+  <!-- ── PRIMARY ROW: live alerts + current locations ── -->
+  <div class="hero-grid">
 
     <div class="card notif-card">
       <div class="notif-header">
         <div>
-          <div class="card-title">Live Notifications</div>
+          <div class="card-title"><span class="live-dot"></span>Live Alerts</div>
           <div class="card-sub" id="notif-meta">movement alerts</div>
         </div>
         <div class="notif-tabs">
@@ -92,6 +67,32 @@
         <div class="notif-empty">waiting for events…</div>
       </div>
     </div>
+
+    <div class="card notif-card">
+      <div class="notif-header">
+        <div>
+          <div class="card-title">Current Locations</div>
+          <div class="card-sub" id="loc-meta">where everyone is right now</div>
+        </div>
+        <div class="card-sub">longest first</div>
+      </div>
+      <div class="loc-list" id="premises-list">
+        <div class="notif-empty">loading…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── SECONDARY: activity chart ── -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Today's Detections</div>
+        <div class="card-sub">hourly · auto-refreshing</div>
+      </div>
+      <div class="card-sub" id="chart-meta">—</div>
+    </div>
+    <div class="chart-container" id="today-chart">—</div>
   </div>
 
 </div>

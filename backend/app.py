@@ -1068,8 +1068,12 @@ app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan)
 def api_stats():
     conn = db()
     try:
+        # NOTE: timestamps are stored in UTC, so the date must be converted to
+        # local before comparing — otherwise this counts a different day than
+        # /api/detections does and the KPI contradicts the chart beside it.
         total_today = conn.execute(
-            "SELECT COUNT(*) FROM detections WHERE date(timestamp)=date('now','localtime')"
+            "SELECT COUNT(*) FROM detections "
+            "WHERE date(timestamp,'localtime')=date('now','localtime')"
         ).fetchone()[0]
         active = conn.execute("SELECT COUNT(*) FROM sessions WHERE closed=0").fetchone()[0]
         # Count sessions loitering by actual time elapsed, matching what the
@@ -1085,12 +1089,12 @@ def api_stats():
 
         by_badge = conn.execute("""
             SELECT badge, COUNT(*) AS c FROM detections
-            WHERE date(timestamp)=date('now','localtime')
+            WHERE date(timestamp,'localtime')=date('now','localtime')
             GROUP BY badge ORDER BY c DESC LIMIT 7
         """).fetchall()
         by_camera = conn.execute("""
             SELECT camera, COUNT(*) AS c FROM detections
-            WHERE date(timestamp)=date('now','localtime')
+            WHERE date(timestamp,'localtime')=date('now','localtime')
             GROUP BY camera ORDER BY c DESC
         """).fetchall()
 
@@ -1099,7 +1103,7 @@ def api_stats():
         rows = conn.execute("""
             SELECT CAST(strftime('%H', timestamp, 'localtime') AS INT) AS h, COUNT(*) AS c
             FROM detections
-            WHERE date(timestamp)=date('now','localtime')
+            WHERE date(timestamp,'localtime')=date('now','localtime')
             GROUP BY h
         """).fetchall()
         for r in rows:

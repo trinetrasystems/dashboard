@@ -104,12 +104,25 @@ function renderKPIs() {
   if (LOITER_ENABLED) {
     document.getElementById('kpi-loiter').textContent = cachedStats.loitering_count;
   }
+
+  // Movements recorded today (local date), from the cached feed
+  const movesEl = document.getElementById('kpi-moves');
+  const movesCard = document.getElementById('kpi-moves-card');
+  if (movesCard) movesCard.style.display = _movementsAvailable ? '' : 'none';
+  if (movesEl && _movementsAvailable) {
+    const today = new Date().toDateString();
+    movesEl.textContent = cachedMovements.filter(m => {
+      const ts = new Date(m.timestamp.endsWith('Z') ? m.timestamp : m.timestamp + 'Z');
+      return ts.toDateString() === today;
+    }).length;
+  }
 }
 
 function renderTodayChart() {
   if (!cachedStats) return;
   const data = cachedStats.hourly_today || new Array(24).fill(0);
-  const max = Math.max(...data, 1);
+  const peakCount = Math.max(...data, 0);   // real peak, 0 when nothing today
+  const max = Math.max(peakCount, 1);       // scale floor so bars never divide by 0
   const barW = 32, gap = 10, x0 = 50, chartH = 180;
   const chartW = x0 + 24 * (barW + gap);
   let bars = '', labels = '';
@@ -122,9 +135,11 @@ function renderTodayChart() {
       labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${pad(i)}:00</text>`;
     }
   }
-  const peakHr = data.indexOf(max);
+  // Previously used max (floored to 1), so an empty day printed "peak -1:00".
   document.getElementById('chart-meta').textContent =
-    max === 0 ? 'no detections yet today' : `peak ${pad(peakHr)}:00 · ${max} detections`;
+    peakCount === 0
+      ? 'no detections yet today'
+      : `peak ${pad(data.indexOf(peakCount))}:00 · ${peakCount} detections`;
   document.getElementById('today-chart').innerHTML = `
     <svg viewBox="0 0 ${chartW} 220" width="100%" preserveAspectRatio="none" style="display: block;">
       <line x1="${x0}" y1="${chartH}" x2="${chartW - 20}" y2="${chartH}" stroke="var(--border)"/>
@@ -136,50 +151,69 @@ function renderTodayChart() {
     </svg>`;
 }
 
+/* Current Locations — a list of who is where right now, longest-present first */
 function renderPremisesTable() {
   _premisesMap = {};
   const sorted = [...activeSessions].sort((a, b) => a.first_seen_dt - b.first_seen_dt);
-  const tbody = document.getElementById('premises-body');
+  const list = document.getElementById('premises-list');
+  const meta = document.getElementById('loc-meta');
+  if (!list) return;
+
+  if (meta) meta.textContent = sorted.length
+    ? `${sorted.length} on site`
+    : 'where everyone is right now';
+
   if (sorted.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">no active sessions</td></tr>`;
+    list.innerHTML = `<div class="notif-empty">nobody on site right now</div>`;
     return;
   }
-  tbody.innerHTML = sorted.map(s => {
+
+  list.innerHTML = sorted.map(s => {
     _premisesMap[s.badge] = s;   // store for modal lookup
     const secs = (Date.now() - s.first_seen_dt.getTime()) / 1000;
     const dCls = durationClass(secs);
+
     let status;
     if (s.whitelisted) status = { cls: 'wl', label: 'WHITELIST' };
-    else if (!LOITER_ENABLED) status = { cls: 'ok', label: 'IN PREMISES' };
+    else if (!LOITER_ENABLED) status = { cls: 'ok', label: 'ON SITE' };
     else if (secs / 60 >= LOITER_MIN) status = { cls: 'alert', label: 'LOITERING' };
     else if (secs / 60 >= WARN_MIN) status = { cls: 'warn', label: 'APPROACHING' };
     else status = { cls: 'ok', label: 'OK' };
-    const rowCls = (!s.whitelisted && status.cls === 'alert') ? 'alert-row'
-      : (!s.whitelisted && status.cls === 'warn') ? 'warn-row' : '';
+
+    const rowCls = (!s.whitelisted && status.cls === 'alert') ? 'loc-alert'
+      : (!s.whitelisted && status.cls === 'warn') ? 'loc-warn' : '';
+
     let actionBtn = '';
     if (s.whitelisted) {
       actionBtn = `<button class="ack-btn"
-          style="margin-left:8px;background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
+          style="background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
           onclick="event.stopPropagation();removeFromWhitelist('${escapeHtml(s.badge)}')"
-          title="Remove from whitelist — badge will be monitored for loitering again">
-          ✕ Remove WL</button>`;
+          title="Remove from whitelist">✕ WL</button>`;
     } else if (status.cls === 'alert' && s.alert_id) {
       actionBtn = `<button class="ack-btn"
           onclick="event.stopPropagation();ackAlert(${s.alert_id})"
-          title="Acknowledge — adds badge to whitelist">
-          ✓ Ack</button>`;
+          title="Acknowledge — adds badge to whitelist">✓ Ack</button>`;
     }
+
     return `
-      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}')">
-        <td class="mono"><b>${escapeHtml(s.badge)}</b></td>
-        <td class="mono">${fmtTime(s.first_seen_dt)}</td>
-        <td class="mono">${escapeHtml(s.last_camera || '—')} · ${fmtRelative(s.last_seen_dt)}</td>
-        <td><span class="duration-pill ${dCls}" data-since="${s.first_seen_dt.getTime()}">
-          ${dCls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}
-        </span></td>
-        <td><span class="status-tag ${status.cls}">${status.label}</span>${actionBtn}</td>
-        <td class="mono">${s.total_sightings}</td>
-      </tr>`;
+      <div class="loc-item ${rowCls}" onclick="showBadgeDetail('${escapeHtml(s.badge)}')">
+        <div class="loc-thumb">${thumbSVG(s.badge)}</div>
+        <div class="loc-info">
+          <div class="loc-top">
+            <span class="loc-badge">${escapeHtml(s.badge)}</span>
+            <span class="loc-where">📍 ${escapeHtml(cameraLabel(s.last_camera))}</span>
+          </div>
+          <div class="loc-meta">
+            on site <span class="duration-pill ${dCls}" data-since="${s.first_seen_dt.getTime()}">${fmtDuration(secs)}</span>
+            · ${s.total_sightings} sighting${s.total_sightings !== 1 ? 's' : ''}
+            · seen ${fmtRelative(s.last_seen_dt)}
+          </div>
+        </div>
+        <div class="loc-right">
+          <span class="status-tag ${status.cls}">${status.label}</span>
+          ${actionBtn}
+        </div>
+      </div>`;
   }).join('');
 }
 

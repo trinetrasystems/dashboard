@@ -383,7 +383,9 @@ select {
 /* ─── KPI CARDS ─── */
 .kpi-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* auto-fit so the row stays balanced however many cards are visible —
+     the loitering and movements cards can each be hidden at runtime */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 14px;
   margin-bottom: 16px;
 }
@@ -1086,11 +1088,119 @@ tbody td.mono {
   text-align: center;
 }
 
-/* ─── LOITERING DISABLED (body.loiter-off) ─── */
-/* The loitering KPI card is hidden, so the row drops to two columns instead
-   of leaving an empty third cell. */
-body.loiter-off .kpi-row {
-  grid-template-columns: repeat(2, 1fr);
+/* ─── LIVE DASHBOARD HERO ROW (alerts + locations, side by side) ─── */
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+  align-items: start;
+}
+
+.hero-grid .notif-card {
+  height: 460px;
+  max-height: 460px;
+}
+
+/* Pulsing dot on the Live Alerts header */
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 7px;
+  vertical-align: middle;
+  box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.6);
+  animation: livePulse 2s infinite;
+}
+
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.55); }
+  70%  { box-shadow: 0 0 0 7px rgba(0, 230, 118, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 230, 118, 0); }
+}
+
+/* ─── CURRENT LOCATIONS LIST ─── */
+.loc-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.loc-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.loc-item:hover { background: var(--surface-2); }
+.loc-item:last-child { border-bottom: none; }
+.loc-item.loc-alert { border-left-color: var(--red); background: rgba(255, 68, 68, 0.04); }
+.loc-item.loc-warn  { border-left-color: var(--amber); }
+
+.loc-thumb {
+  width: 44px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.loc-info { flex: 1; min-width: 0; }
+
+.loc-top {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.loc-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.loc-where {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cyan);
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  white-space: nowrap;
+}
+
+.loc-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.loc-meta .duration-pill { font-size: 10px; padding: 0 5px; }
+
+.loc-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* KPI accent used by the Movements card */
+.kpi-card.cyan::before { background: var(--cyan); }
+
+@media (max-width: 1100px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .hero-grid .notif-card { height: 380px; max-height: 380px; }
 }
 
 /* ─── MOVEMENT ALERTS (live notifications feed) ─── */

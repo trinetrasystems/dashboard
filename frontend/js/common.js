@@ -50,6 +50,13 @@ function fmtRelative(d) {
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
   return `${Math.floor(sec / 86400)}d ago`;
 }
+/* 'cam-electrical-bay' → 'Electrical Bay' (mirrors camera_label() in app.py) */
+function cameraLabel(camera) {
+  if (!camera) return 'Unknown';
+  return camera.replace(/^cam[-_]/, '').replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
