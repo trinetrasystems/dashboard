@@ -4,6 +4,7 @@
 
 const visitFilters = { search: '', status: 'all', badge: '', date: '' };
 let cachedVisits = [];
+let _visitVideos = {};   // visit id → video meta, for the ▶ / ⬇ buttons
 
 async function refreshAll() {
   try {
@@ -48,11 +49,12 @@ function renderVisitsTable() {
     `showing ${visits.length} of ${cachedVisits.length}`;
 
   if (visits.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-dim);">no visits match filters</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text-dim);">no visits match filters</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = visits.map((v, idx) => {
+  _visitVideos = {};
+  tbody.innerHTML = visits.map(v => {
     const first = new Date(v.first_seen.endsWith('Z') ? v.first_seen : v.first_seen + 'Z');
     const last  = new Date(v.last_seen.endsWith('Z')  ? v.last_seen  : v.last_seen  + 'Z');
     const duration = v.duration_seconds;
@@ -78,6 +80,21 @@ function renderVisitsTable() {
           ? '<span class="status-tag alert">LOITERING</span>'
           : '<span class="status-tag ok">IN PREMISES</span>');
 
+    // Recording for this visit, matched server-side by <badge>_<date>
+    let videoCell;
+    if (v.video) {
+      _visitVideos[v.id] = v.video;
+      const dl = `<a class="video-btn dl" href="/video/${encodeURIComponent(v.video.filename)}?download=1"
+                     download onclick="event.stopPropagation()"
+                     title="Download ${escapeHtml(v.video.filename)}">⬇</a>`;
+      videoCell = v.video.playable
+        ? `<button class="video-btn" onclick="event.stopPropagation();playVisitVideo(${v.id})"
+                   title="Play ${escapeHtml(v.video.filename)}">▶ Watch</button>${dl}`
+        : `<span class="video-none" title="${escapeHtml(v.video.filename)} — container not playable in browsers">⚠ no preview</span>${dl}`;
+    } else {
+      videoCell = `<span class="video-none" title="no recording named ${escapeHtml(v.badge)}_&lt;date&gt; in the video directory">—</span>`;
+    }
+
     return `
       <tr class="clickable" onclick="showVisitTimeline(${v.id})">
         <td class="mono"><span style="color:var(--text-dim)">#${v.id}</span></td>
@@ -89,9 +106,45 @@ function renderVisitsTable() {
         <td class="mono">${v.total_sightings}</td>
         <td>${camsBadges}</td>
         <td>${statusTag}</td>
+        <td class="video-cell">${videoCell}</td>
       </tr>`;
   }).join('');
 }
+
+/* ─── Visit recording player ─── */
+function fmtBytes(n) {
+  if (!n) return '—';
+  if (n < 1048576) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  const mb = n / 1048576;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
+}
+
+function playVisitVideo(visitId) {
+  const video = _visitVideos[visitId];
+  if (!video) return;
+  const visit = cachedVisits.find(v => v.id === visitId);
+
+  ensureModal();
+  document.querySelector('.modal')?.classList.remove('modal-detail');
+
+  const badge = visit ? visit.badge : '—';
+  document.getElementById('modal-title').innerHTML =
+    `${escapeHtml(badge)} <span style="color:var(--text-dim);font-weight:400;font-size:14px;">Visit #${visitId} · recording</span>`;
+  document.getElementById('modal-sub').textContent =
+    `${video.filename} · ${fmtBytes(video.size_bytes)}`;
+
+  const src = `/video/${encodeURIComponent(video.filename)}`;
+  document.getElementById('modal-body').innerHTML = `
+    <video class="modal-video" controls autoplay playsinline preload="metadata" src="${src}">
+      your browser cannot play this file
+    </video>
+    <div class="video-actions">
+      <a class="video-btn" href="${src}?download=1" download>⬇ Download recording</a>
+    </div>`;
+
+  document.getElementById('modal-overlay').classList.add('open');
+}
+window.playVisitVideo = playVisitVideo;
 
 /* ─── Visit timeline modal ─── */
 async function showVisitTimeline(visitId) {

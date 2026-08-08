@@ -18,6 +18,7 @@ import csv
 import uuid
 import io
 import json
+import mimetypes
 import random
 import os
 import re
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -701,6 +702,172 @@ async def image_cleanup_loop():
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# VISIT RECORDINGS — map a video file on local storage to a visit (session)
+#
+# Naming convention:  <badge>_<date>.<ext>   e.g. RED-CIRCLE_20260807.mp4
+#
+# The date is the visit's LOCAL start date — the same value the Visits table
+# prints in its Date column — so what you see in the UI is what you name the
+# file. Both 20260807 and 2026-08-07 are accepted, matching is case-insensitive,
+# and a file may carry an extra suffix (RED-CIRCLE_20260807_cam3.mp4) and still
+# resolve. Nothing is renamed or moved; the directory is read-only to Trinetra.
+# ════════════════════════════════════════════════════════════════════════════
+
+def _utc_to_local(dt: datetime) -> datetime:
+    """DB timestamps are naive UTC — shift to server-local wall time."""
+    return dt + (datetime.now() - datetime.utcnow())
+
+
+def index_videos() -> list[tuple[str, str]]:
+    """List VIDEO_DIR once as [(lowercased stem, real filename)].
+
+    Read fresh on each call so dropping a file in the directory shows up on the
+    next dashboard refresh without a server restart.
+    """
+    d = Path(config.VIDEO_DIR)
+    if not d.is_dir():
+        return []
+    out = []
+    try:
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.suffix.lower() in config.VIDEO_EXTENSIONS:
+                out.append((f.stem.lower(), f.name))
+    except OSError as e:
+        print(f"[video] cannot read VIDEO_DIR {d}: {e}")
+    return out
+
+
+def match_video(index: list[tuple[str, str]], badge: str, first_seen: str):
+    """Find the recording for one visit. Returns a dict or None."""
+    if not index:
+        return None
+    try:
+        start_local = _utc_to_local(datetime.fromisoformat(first_seen))
+    except (ValueError, TypeError):
+        return None
+
+    prefixes = [
+        f"{badge}_{start_local.strftime('%Y%m%d')}".lower(),
+        f"{badge}_{start_local.strftime('%Y-%m-%d')}".lower(),
+    ]
+    # Exact stem wins; otherwise accept a longer name with the same prefix.
+    for want in prefixes:
+        for stem, name in index:
+            if stem == want:
+                return _video_meta(name)
+    for want in prefixes:
+        for stem, name in index:
+            if stem.startswith(want):
+                return _video_meta(name)
+    return None
+
+
+def _video_meta(filename: str) -> dict:
+    p = Path(config.VIDEO_DIR) / filename
+    ext = p.suffix.lower()
+    try:
+        size = p.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "filename": filename,
+        "size_bytes": size,
+        # False for .mkv/.avi/.mov — the file is found, but no browser will
+        # decode it, so the UI offers download instead of playback.
+        "playable": ext in config.BROWSER_VIDEO_EXTENSIONS,
+    }
+
+
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _safe_video_path(filename: str) -> Path:
+    """Resolve a request filename inside VIDEO_DIR, refusing path escapes."""
+    p = Path(config.VIDEO_DIR) / Path(filename).name
+    if p.suffix.lower() not in config.VIDEO_EXTENSIONS:
+        raise HTTPException(404, "not a video file")
+    if not p.is_file():
+        raise HTTPException(404, "video not found")
+    return p
+
+
+def _build_video_response(filename: str, request: Request, download: int):
+    """Stream a recording with HTTP Range support.
+
+    Starlette 0.38 (pinned by fastapi 0.115) has no Range support in
+    FileResponse, and range support only landed upstream in 0.45 — outside that
+    pin. Without a 206 response Safari/iOS refuse to play at all and seeking
+    re-downloads from byte 0, so the partial-content path is implemented here.
+    """
+    p = _safe_video_path(filename)
+    file_size = p.stat().st_size
+    media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+
+    headers = {"accept-ranges": "bytes"}
+    if download:
+        headers["content-disposition"] = f'attachment; filename="{p.name}"'
+
+    range_header = (request.headers.get("range") or "").strip()
+    m = _RANGE_RE.fullmatch(range_header) if range_header else None
+    if not m:
+        # No (or unparseable) Range — serve the whole file.
+        return FileResponse(p, media_type=media_type, headers=headers)
+
+    start_raw, end_raw = m.group(1), m.group(2)
+    if start_raw:
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else file_size - 1
+    elif end_raw:
+        start = max(0, file_size - int(end_raw))   # suffix range: bytes=-N
+        end = file_size - 1
+    else:
+        return FileResponse(p, media_type=media_type, headers=headers)
+
+    if start >= file_size:
+        return Response(status_code=416,
+                        headers={"content-range": f"bytes */{file_size}"})
+    end = min(end, file_size - 1)
+    length = end - start + 1
+
+    def stream():
+        with open(p, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers["content-range"] = f"bytes {start}-{end}/{file_size}"
+    headers["content-length"] = str(length)
+    return StreamingResponse(stream(), status_code=206,
+                             media_type=media_type, headers=headers)
+
+
+def _lookup_visit_video(visit_id: int):
+    """Resolve the recording for one visit (used for a single-row re-check)."""
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT badge, first_seen FROM sessions WHERE id=?", (visit_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(404, f"visit {visit_id} not found")
+
+    video = match_video(index_videos(), row["badge"], row["first_seen"])
+    return {
+        "visit_id": visit_id,
+        "video_dir": config.VIDEO_DIR,
+        "available": video is not None,
+        "video": video,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -980,6 +1147,9 @@ def api_visits(badge: Optional[str] = None, status: str = "all",
             LIMIT ?
         """, [*params, limit]).fetchall()
 
+        # Listed once for the whole page, not once per row.
+        video_index = index_videos()
+
         visits = []
         for r in rows:
             first = datetime.fromisoformat(r["first_seen"])
@@ -987,6 +1157,7 @@ def api_visits(badge: Optional[str] = None, status: str = "all",
             duration = (last - first).total_seconds()
             cams = json.loads(r["cameras_json"] or "{}")
             visits.append({
+                "video": match_video(video_index, r["badge"], r["first_seen"]),
                 "id": r["id"],
                 "badge": r["badge"],
                 "first_seen": r["first_seen"],
@@ -1270,6 +1441,19 @@ def get_image(filename: str):
             return FileResponse(cand)
     raise HTTPException(404, "no image available")
 
+
+# ─── /video/{filename} — stream a visit recording (Range-aware) ───────────
+@app.get("/video/{filename}")
+def get_video(filename: str, request: Request, download: int = 0):
+    return _build_video_response(filename, request, download)
+
+
+# ─── /api/visits/{id}/video — resolve the recording for one visit ─────────
+@app.get("/api/visits/{visit_id}/video")
+def api_visit_video(visit_id: int):
+    return _lookup_visit_video(visit_id)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # ADMIN — login, config read/write
 # ════════════════════════════════════════════════════════════════════════════
@@ -1325,6 +1509,7 @@ def admin_get_config(request: Request):
         "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": config.SESSION_AUTO_CLOSE_MINUTES,
         "TRINETRA_EXIT_CAMERAS":              ",".join(sorted(config.EXIT_CAMERAS)),
         "TRINETRA_IMAGE_RETENTION_DAYS":      config.IMAGE_RETENTION_DAYS,
+        "TRINETRA_VIDEO_DIR":                 config.VIDEO_DIR,
         "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
         "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
         "TELEGRAM_TOKEN":                     config.TELEGRAM_TOKEN,
@@ -1392,6 +1577,9 @@ def _apply_config(updates: dict):
         "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": ("SESSION_AUTO_CLOSE_MINUTES",  int),
         "TRINETRA_IMAGE_RETENTION_DAYS":       ("IMAGE_RETENTION_DAYS",        int),
         "TRINETRA_HB_STALE":                   ("HEARTBEAT_STALE_SECONDS",     int),
+        # Relative paths anchor to PROJECT_ROOT, same as on startup.
+        "TRINETRA_VIDEO_DIR":                  ("VIDEO_DIR",
+                                                lambda v: config.resolve_dir(v, config.VIDEO_DIR)),
         "TRINETRA_EXIT_CAMERAS":               ("EXIT_CAMERAS",
                                                 lambda v: {c.strip() for c in v.split(",") if c.strip()}),
         "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",

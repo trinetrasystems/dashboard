@@ -52,6 +52,9 @@ DEAD_LETTER_DIR = _resolve_path(os.environ.get("TRINETRA_DEAD",     ""), DATA_DI
 HEARTBEATS_DIR  = _resolve_path(os.environ.get("TRINETRA_HEARTBEATS",""),DATA_DIR / "heartbeats")
 FRONTEND_DIR    = _resolve_path(os.environ.get("TRINETRA_FRONTEND", ""), PROJECT_ROOT / "frontend")
 CLASSES_FILE    = _resolve_path(os.environ.get("TRINETRA_CLASSES",  ""), BACKEND_DIR / "classes.txt")
+# Where visit recordings live. Point this anywhere on local storage — an
+# external drive, an NVR mount, etc. Files are matched to visits by name.
+VIDEO_DIR       = _resolve_path(os.environ.get("TRINETRA_VIDEO_DIR", ""), DATA_DIR / "videos")
 
 # Cast all to strings for backward compat with code that uses os.path
 DATA_DIR        = str(DATA_DIR)
@@ -62,6 +65,20 @@ DEAD_LETTER_DIR = str(DEAD_LETTER_DIR)
 HEARTBEATS_DIR  = str(HEARTBEATS_DIR)
 FRONTEND_DIR    = str(FRONTEND_DIR)
 CLASSES_FILE    = str(CLASSES_FILE)
+VIDEO_DIR       = str(VIDEO_DIR)
+
+
+def resolve_dir(value: str, fallback: str) -> str:
+    """Public wrapper around _resolve_path — used when the admin panel edits a
+    path at runtime, so a relative value still anchors to PROJECT_ROOT."""
+    return str(_resolve_path(value, Path(fallback)))
+
+
+# Extensions treated as playable recordings. Only .mp4/.webm play natively in
+# browsers; the rest are still listed so a wrong-container file is visible
+# (and reported) rather than silently missing.
+VIDEO_EXTENSIONS      = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v"}
+BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v"}
 
 # ─── SERVER ──────────────────────────────────────────────────────────────────
 HOST = os.environ.get("TRINETRA_HOST", "0.0.0.0")
@@ -126,6 +143,8 @@ def print_summary():
     print(f"[config] ARCHIVE_DIR   = {ARCHIVE_DIR}")
     print(f"[config] FRONTEND_DIR  = {FRONTEND_DIR}")
     print(f"[config] CLASSES_FILE  = {CLASSES_FILE}")
+    print(f"[config] VIDEO_DIR     = {VIDEO_DIR}"
+          f"{'' if Path(VIDEO_DIR).is_dir() else '  (does not exist yet)'}")
     print(f"[config] JETSONS       = {EXPECTED_JETSONS}")
     print(f"[config] LOITER_MIN    = {LOITER_MINUTES} min")
     print(f"[config] GAP_MIN       = {SESSION_GAP_MINUTES} min")

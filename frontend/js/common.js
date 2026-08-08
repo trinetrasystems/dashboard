@@ -371,6 +371,12 @@ window.openSessionDetail = openSessionDetail;
 window.selectBadgeDetailLog = selectBadgeDetailLog;
 function closeModal(e) {
   if (e && e.target.id !== 'modal-overlay' && e.target.className !== 'modal-close') return;
+  // Stop any playing recording — otherwise it keeps streaming audio after close.
+  document.querySelectorAll('#modal-body video').forEach(v => {
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+  });
   document.getElementById('modal-overlay').classList.remove('open');
 }
 window.closeModal = closeModal;

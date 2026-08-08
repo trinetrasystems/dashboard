@@ -734,6 +734,24 @@
         </div>
       </div>
 
+      <!-- Visit Recordings -->
+      <div class="admin-section">
+        <div class="section-title">🎬 Visit Recordings</div>
+        <div class="settings-card">
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Video Directory</div>
+              <div class="setting-hint">
+                TRINETRA_VIDEO_DIR · local path holding recordings named
+                &lt;badge&gt;_&lt;date&gt;.mp4 — applies immediately, no restart
+              </div>
+            </div>
+            <input class="setting-input" type="text" id="TRINETRA_VIDEO_DIR"
+                   placeholder="/mnt/nvr/recordings">
+          </div>
+        </div>
+      </div>
+
       <!-- Jetson Registry -->
       <div class="admin-section">
         <div class="section-title">📡 Jetson Registry</div>
@@ -1021,7 +1039,8 @@
         const FIELDS = [
           'TRINETRA_LOITER_MINUTES', 'TRINETRA_SESSION_GAP_MINUTES',
           'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_EXIT_CAMERAS',
-          'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
+          'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_VIDEO_DIR',
+        'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
           'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
           'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
           'ADMIN_EMAIL',
@@ -1269,7 +1288,8 @@
       const FIELDS = [
         'TRINETRA_LOITER_MINUTES', 'TRINETRA_SESSION_GAP_MINUTES',
         'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_EXIT_CAMERAS',
-        'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
+        'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_VIDEO_DIR',
+        'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
         'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
         'ADMIN_EMAIL',
