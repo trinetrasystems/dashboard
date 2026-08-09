@@ -868,6 +868,7 @@
                   style="width: auto; padding: 4px 8px; font-size: 13px;" onchange="loadDatabase()">
                   <option value="detections">detections</option>
                   <option value="sessions">sessions</option>
+                  <option value="movements">movements</option>
                   <option value="alerts">alerts</option>
                   <option value="whitelist">whitelist</option>
                 </select>
@@ -889,6 +890,52 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Erase Badge History -->
+      <div class="admin-section">
+        <div class="section-title">🧹 Erase Badge History</div>
+        <div class="settings-card">
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Badge</div>
+              <div class="setting-hint">
+                wipes every detection, visit, movement, alert, whitelist entry
+                and archived image for one badge — in one go
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <select class="setting-input" id="purge-badge" style="flex: 1;">
+                <option value="">— select a badge —</option>
+              </select>
+              <button class="btn-danger" style="padding: 9px 18px; font-size: 13px;"
+                      onclick="previewBadgePurge()">Preview</button>
+            </div>
+          </div>
+
+          <div class="setting-row" id="purge-result-row" style="display: none;">
+            <div>
+              <div class="setting-label">What will be deleted</div>
+              <div class="setting-hint" id="purge-range">—</div>
+            </div>
+            <div>
+              <div id="purge-summary" style="font-family: var(--mono); font-size: 13px; line-height: 1.9;"></div>
+              <div id="purge-confirm-block" style="margin-top: 14px; display: none;">
+                <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 7px;">
+                  This cannot be undone. Type <b id="purge-badge-echo" style="color: var(--red);"></b> to confirm:
+                </div>
+                <div style="display: flex; gap: 8px;">
+                  <input class="setting-input" id="purge-confirm-input" style="flex: 1;"
+                         placeholder="type the badge name" oninput="onPurgeConfirmInput()"
+                         autocomplete="off">
+                  <button class="btn-danger" id="purge-btn" disabled
+                          style="padding: 9px 18px; font-size: 13px; opacity: 0.45; cursor: not-allowed;"
+                          onclick="doBadgePurge()">🗑️ Erase Everything</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1018,6 +1065,13 @@
   </div>
 
   <script>
+    /* Escape untrusted values before putting them in innerHTML. */
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
     /* ── Auth ── */
     async function doLogin() {
       const btn = document.getElementById('login-btn');
@@ -1077,8 +1131,9 @@
           if (el && cfg[k] !== undefined) el.value = cfg[k];
         });
 
-        // Also load the database records
+        // Also load the database records + the badge list for the purge tool
         await loadDatabase();
+        await loadPurgeBadges();
       } catch (e) {
         console.error('loadConfig failed:', e);
       }
@@ -1116,7 +1171,10 @@
             let val = row[k];
             if (val === null) val = '—';
             else if (typeof val === 'string' && val.length > 50) val = val.substring(0, 47) + '...';
-            return `<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono);">${val}</td>`;
+            // Escaped: these values come from the DB, and whitelist.reason is
+            // writable via an unauthenticated POST /api/whitelist — rendering
+            // it raw let anyone plant script that runs in the admin's browser.
+            return `<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono);">${esc(val)}</td>`;
           }).join('');
 
           const rowId = row[pk];
@@ -1129,14 +1187,27 @@
       }
     }
 
+    /* Deleting a detection also removes its image and any movement derived
+       from it; deleting a session removes its alerts and movements and
+       detaches (does not delete) its detections. */
+    const CASCADE_NOTE = {
+      detections: '\n\nIts archived image and any movement alert derived from it will be removed too.',
+      sessions: '\n\nIts alerts and movements will be removed too. Its detections are kept, but detached from the visit.',
+    };
+
     async function deleteRecord(table, id) {
-      if (!confirm(`Are you sure you want to delete this record from ${table}? This action cannot be undone.`)) return;
+      if (!confirm(`Delete this record from ${table}? This cannot be undone.${CASCADE_NOTE[table] || ''}`)) return;
       try {
         const r = await fetch(`/api/admin/database/${table}/${id}`, {
           method: 'DELETE',
           credentials: 'same-origin'
         });
-        if (!r.ok) throw new Error('Failed to delete');
+        if (!r.ok) {
+          // Surface the server's reason — a bare "Failed to delete" hid a
+          // foreign-key error here for a long time.
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.detail || `HTTP ${r.status}`);
+        }
         await loadDatabase();
       } catch (e) {
         alert('Error deleting record: ' + e.message);
@@ -1162,6 +1233,107 @@
         alert(`Table '${table}' successfully cleared.`);
       } catch (e) {
         alert('Error clearing database: ' + e.message);
+      }
+    }
+
+    /* ── Erase Badge History ── */
+    let _purgeBadge = '';
+
+    async function loadPurgeBadges() {
+      const sel = document.getElementById('purge-badge');
+      try {
+        const d = await (await fetch('/api/badges')).json();
+        sel.innerHTML = '<option value="">— select a badge —</option>' +
+          (d.badges || []).map(b =>
+            `<option value="${esc(b.badge)}">${esc(b.badge)}</option>`).join('');
+      } catch (e) {
+        console.error('badge list failed:', e);
+      }
+    }
+
+    function resetPurgeUI() {
+      document.getElementById('purge-result-row').style.display = 'none';
+      document.getElementById('purge-confirm-block').style.display = 'none';
+      document.getElementById('purge-confirm-input').value = '';
+      setPurgeBtn(false);
+    }
+
+    function setPurgeBtn(enabled) {
+      const b = document.getElementById('purge-btn');
+      b.disabled = !enabled;
+      b.style.opacity = enabled ? '1' : '0.45';
+      b.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    }
+
+    function onPurgeConfirmInput() {
+      const typed = document.getElementById('purge-confirm-input').value.trim();
+      setPurgeBtn(typed === _purgeBadge);
+    }
+
+    async function previewBadgePurge() {
+      const badge = document.getElementById('purge-badge').value;
+      if (!badge) { alert('Pick a badge first.'); return; }
+      _purgeBadge = badge;
+      resetPurgeUI();
+
+      try {
+        const r = await fetch(`/api/admin/badges/${encodeURIComponent(badge)}/summary`,
+                              { credentials: 'same-origin' });
+        if (r.status === 401) { doLogout(); return; }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+
+        const c = d.counts;
+        const rows = [
+          ['detections', c.detections], ['visits (sessions)', c.sessions],
+          ['movement alerts', c.movements], ['loitering alerts', c.alerts],
+          ['whitelist entries', c.whitelist], ['archived images', d.images_on_disk],
+        ];
+        document.getElementById('purge-summary').innerHTML = rows.map(([k, v]) =>
+          `<div style="display:flex;justify-content:space-between;max-width:320px;">
+             <span style="color:var(--text-dim)">${k}</span>
+             <b style="color:${v ? 'var(--red)' : 'var(--text-dim)'}">${v}</b>
+           </div>`).join('');
+
+        const fmt = t => t ? new Date(t.endsWith('Z') ? t : t + 'Z').toLocaleString() : '—';
+        document.getElementById('purge-range').textContent = d.total_rows === 0
+          ? `${badge} — nothing recorded`
+          : `${badge} · ${fmt(d.first_seen)} → ${fmt(d.last_seen)}`;
+
+        document.getElementById('purge-result-row').style.display = '';
+        if (d.total_rows > 0 || d.images_on_disk > 0) {
+          document.getElementById('purge-badge-echo').textContent = badge;
+          document.getElementById('purge-confirm-block').style.display = '';
+        }
+      } catch (e) {
+        alert('Preview failed: ' + e.message);
+      }
+    }
+
+    async function doBadgePurge() {
+      const btn = document.getElementById('purge-btn');
+      btn.textContent = 'Erasing…';
+      setPurgeBtn(false);
+      try {
+        const r = await fetch(`/api/admin/badges/${encodeURIComponent(_purgeBadge)}`,
+                              { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          throw new Error(b.detail || `HTTP ${r.status}`);
+        }
+        const d = await r.json();
+        resetPurgeUI();
+        await loadDatabase();
+        await loadPurgeBadges();
+        const msg = document.getElementById('save-msg');
+        msg.className = 'save-msg ok';
+        msg.textContent = `✓ Erased ${d.badge} — ${d.total_rows} row(s) and ${d.deleted_images} image(s) removed`;
+        msg.style.display = 'block';
+        setTimeout(() => { msg.style.display = 'none'; }, 8000);
+      } catch (e) {
+        alert('Erase failed: ' + e.message);
+      } finally {
+        btn.textContent = '🗑️ Erase Everything';
       }
     }
 

@@ -1831,25 +1831,43 @@ def _apply_config(updates: dict):
     for env_key, (attr, fn) in mapping.items():
         if env_key in updates:
             setattr(config, attr, fn(updates[env_key]))
+# Tables exposed by the admin database browser, each with the column it sorts
+# newest-first by. Single source of truth for the three endpoints below.
+ADMIN_TABLES = {
+    "detections": "timestamp",
+    "sessions":   "first_seen",
+    "movements":  "timestamp",
+    "alerts":     "triggered_at",
+    "whitelist":  "added_at",
+}
+
+
+def _delete_archive_image(filename: Optional[str]):
+    if not filename:
+        return
+    p = Path(config.ARCHIVE_DIR) / Path(filename).name
+    try:
+        if p.exists():
+            p.unlink()
+    except OSError as e:
+        print(f"[admin] could not delete image {filename}: {e}")
+
+
 @app.get("/api/admin/database/{table}")
 def admin_get_database_table(request: Request, table: str, limit: int = 50, offset: int = 0):
     if not _check_admin(request):
         raise HTTPException(401, "Not authenticated")
-    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+    if table not in ADMIN_TABLES:
         raise HTTPException(400, "Invalid table")
-    
+
+    order_col = ADMIN_TABLES[table]
     conn = db()
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        if table == "detections":
-            rows = conn.execute(f"SELECT * FROM {table} ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-        elif table == "sessions":
-            rows = conn.execute(f"SELECT * FROM {table} ORDER BY first_seen DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-        elif table == "alerts":
-            rows = conn.execute(f"SELECT * FROM {table} ORDER BY triggered_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-        elif table == "whitelist":
-            rows = conn.execute(f"SELECT * FROM {table} ORDER BY added_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-            
+        rows = conn.execute(
+            f"SELECT * FROM {table} ORDER BY {order_col} DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        ).fetchall()
         return {
             "total": total,
             "records": [dict(r) for r in rows]
@@ -1860,58 +1878,161 @@ def admin_get_database_table(request: Request, table: str, limit: int = 50, offs
 
 @app.delete("/api/admin/database/{table}/{record_id}")
 def admin_delete_database_record(request: Request, table: str, record_id: str):
+    """Delete one row, clearing anything that references it first.
+
+    foreign_keys=ON, so a plain DELETE fails with "FOREIGN KEY constraint
+    failed" whenever another table points at the row — e.g. movements.detection_id
+    pins every detection that produced a movement. Dependants are removed
+    explicitly here, in order.
+    """
     if not _check_admin(request):
         raise HTTPException(401, "Not authenticated")
-    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+    if table not in ADMIN_TABLES:
         raise HTTPException(400, "Invalid table")
-        
+
     conn = db()
     try:
         with conn:
             if table == "detections":
-                row = conn.execute("SELECT filename FROM detections WHERE id=?", (record_id,)).fetchone()
+                # A movement is derived from its detection — remove it too.
+                conn.execute("DELETE FROM movements WHERE detection_id=?", (record_id,))
+                row = conn.execute(
+                    "SELECT filename FROM detections WHERE id=?", (record_id,)
+                ).fetchone()
                 if row:
-                    filename = row["filename"]
-                    image_path = Path(config.ARCHIVE_DIR) / filename
-                    if image_path.exists():
-                        try:
-                            image_path.unlink()
-                        except Exception as e:
-                            print(f"Error deleting image file {filename}: {e}")
-                conn.execute("DELETE FROM detections WHERE id=?", (record_id,))
+                    _delete_archive_image(row["filename"])
+                cur = conn.execute("DELETE FROM detections WHERE id=?", (record_id,))
+
+            elif table == "sessions":
+                # Alerts and movements belong to the visit; detections are the
+                # raw log, so they are detached rather than destroyed.
+                conn.execute("DELETE FROM alerts    WHERE session_id=?", (record_id,))
+                conn.execute("DELETE FROM movements WHERE session_id=?", (record_id,))
+                conn.execute("UPDATE detections SET session_id=NULL WHERE session_id=?", (record_id,))
+                cur = conn.execute("DELETE FROM sessions WHERE id=?", (record_id,))
+
             elif table == "whitelist":
-                conn.execute("DELETE FROM whitelist WHERE badge=?", (record_id,))
-            else:
-                conn.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
-        return {"ok": True}
+                cur = conn.execute("DELETE FROM whitelist WHERE badge=?", (record_id,))
+
+            else:   # movements, alerts — nothing references these
+                cur = conn.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
+
+        if cur.rowcount == 0:
+            raise HTTPException(404, f"no {table} record with id {record_id}")
+        return {"ok": True, "deleted": cur.rowcount}
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(409, f"cannot delete: {e}")
     finally:
         conn.close()
 
 @app.delete("/api/admin/database/{table}")
 def admin_clear_database_table(request: Request, table: str):
+    """Empty a table, clearing referencing rows first (see the note above)."""
     if not _check_admin(request):
         raise HTTPException(401, "Not authenticated")
-    if table not in ["detections", "sessions", "alerts", "whitelist"]:
+    if table not in ADMIN_TABLES:
         raise HTTPException(400, "Invalid table")
-        
+
     conn = db()
     try:
         with conn:
             if table == "detections":
-                rows = conn.execute("SELECT filename FROM detections").fetchall()
-                for row in rows:
-                    filename = row["filename"]
-                    image_path = Path(config.ARCHIVE_DIR) / filename
-                    if image_path.exists():
-                        try:
-                            image_path.unlink()
-                        except Exception:
-                            pass
-            conn.execute(f"DELETE FROM {table}")
-            
-        return {"ok": True}
+                conn.execute("DELETE FROM movements")   # every row points at a detection
+                for row in conn.execute("SELECT filename FROM detections").fetchall():
+                    _delete_archive_image(row["filename"])
+            elif table == "sessions":
+                conn.execute("DELETE FROM alerts")
+                conn.execute("DELETE FROM movements")
+                conn.execute("UPDATE detections SET session_id=NULL")
+            cur = conn.execute(f"DELETE FROM {table}")
+        return {"ok": True, "deleted": cur.rowcount}
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(409, f"cannot clear {table}: {e}")
     finally:
         conn.close()
+
+
+# ─── Badge purge — erase everything recorded for one badge ────────────────
+# Tables are cleared in FK-safe order: movements and alerts point at sessions
+# (and movements also at detections), so sessions must go last.
+_BADGE_TABLES = ("movements", "alerts", "detections", "sessions", "whitelist")
+
+
+def _badge_row_counts(conn, badge: str) -> dict:
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE badge=?", (badge,)).fetchone()[0]
+            for t in _BADGE_TABLES}
+
+
+@app.get("/api/admin/badges/{badge}/summary")
+def admin_badge_summary(request: Request, badge: str):
+    """What a purge would remove — shown to the operator before they confirm."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    conn = db()
+    try:
+        counts = _badge_row_counts(conn, badge)
+        files = [r["filename"] for r in
+                 conn.execute("SELECT filename FROM detections WHERE badge=?", (badge,)).fetchall()]
+        first_last = conn.execute(
+            "SELECT MIN(timestamp) AS first, MAX(timestamp) AS last "
+            "FROM detections WHERE badge=?", (badge,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    archive = Path(config.ARCHIVE_DIR)
+    return {
+        "badge": badge,
+        "counts": counts,
+        "images_on_disk": sum(1 for f in files if (archive / f).exists()),
+        "total_rows": sum(counts.values()),
+        "first_seen": first_last["first"],
+        "last_seen": first_last["last"],
+    }
+
+
+@app.delete("/api/admin/badges/{badge}")
+def admin_purge_badge(request: Request, badge: str):
+    """Erase a badge's entire history: rows in every table plus archived images.
+
+    Irreversible. Scoped strictly to this badge — sessions, alerts and
+    movements all carry their own badge column, so nothing belonging to
+    another badge is reachable from here.
+    """
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+
+    deleted = {}
+    with _db_lock:
+        conn = db()
+        try:
+            with conn:
+                files = [r["filename"] for r in
+                         conn.execute("SELECT filename FROM detections WHERE badge=?",
+                                      (badge,)).fetchall()]
+                for t in _BADGE_TABLES:
+                    deleted[t] = conn.execute(
+                        f"DELETE FROM {t} WHERE badge=?", (badge,)
+                    ).rowcount
+        except sqlite3.IntegrityError as e:
+            raise HTTPException(409, f"cannot purge {badge}: {e}")
+        finally:
+            conn.close()
+
+    images = 0
+    for f in files:
+        p = Path(config.ARCHIVE_DIR) / Path(f).name
+        try:
+            if p.exists():
+                p.unlink()
+                images += 1
+        except OSError as e:
+            print(f"[admin] could not delete image {f}: {e}")
+
+    total = sum(deleted.values())
+    print(f"[admin] PURGED badge {badge} — {total} row(s), {images} image(s): {deleted}")
+    return {"ok": True, "badge": badge, "deleted": deleted,
+            "deleted_images": images, "total_rows": total}
 
 
 @app.get("/api/admin/test_images")
