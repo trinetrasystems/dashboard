@@ -95,18 +95,20 @@ function renderVisitsTable() {
       videoCell = `<span class="video-none" title="no recording named ${escapeHtml(v.badge)}_&lt;date&gt; in the video directory">—</span>`;
     }
 
+    // data-label drives the mobile card layout — below 780px the table
+    // collapses to one card per visit and each cell shows its own label.
     return `
       <tr class="clickable" onclick="showVisitTimeline(${v.id})">
-        <td class="mono"><span style="color:var(--text-dim)">#${v.id}</span></td>
-        <td class="mono"><b>${escapeHtml(v.badge)}</b></td>
-        <td class="mono">${pad(first.getDate())}/${pad(first.getMonth() + 1)}/${first.getFullYear().toString().slice(-2)}</td>
-        <td class="mono">${enteredStr}</td>
-        <td class="mono">${exitedStr}</td>
-        <td><span class="duration-pill ${dCls}">${fmtDuration(duration)}</span></td>
-        <td class="mono">${v.total_sightings}</td>
-        <td>${camsBadges}</td>
-        <td>${statusTag}</td>
-        <td class="video-cell">${videoCell}</td>
+        <td class="mono" data-label="Visit"><span style="color:var(--text-dim)">#${v.id}</span></td>
+        <td class="mono" data-label="Badge"><b>${escapeHtml(v.badge)}</b></td>
+        <td class="mono" data-label="Date">${pad(first.getDate())}/${pad(first.getMonth() + 1)}/${first.getFullYear().toString().slice(-2)}</td>
+        <td class="mono" data-label="Entered">${enteredStr}</td>
+        <td class="mono" data-label="Exited">${exitedStr}</td>
+        <td data-label="Duration"><span class="duration-pill ${dCls}">${fmtDuration(duration)}</span></td>
+        <td class="mono" data-label="Sightings">${v.total_sightings}</td>
+        <td data-label="Cameras">${camsBadges}</td>
+        <td data-label="Status">${statusTag}</td>
+        <td class="video-cell" data-label="Video">${videoCell}</td>
       </tr>`;
   }).join('');
 }

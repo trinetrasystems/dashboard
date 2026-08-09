@@ -1333,7 +1333,7 @@ table td.mono b,
 /* ─── RESPONSIVE ─── */
 @media (max-width: 1100px) {
   .kpi-row {
-    grid-template-columns: repeat(1, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 
   .chart-grid {
@@ -1352,4 +1352,258 @@ table td.mono b,
   .status-cluster {
     flex-basis: 100%;
   }
+}
+
+/* Wide tables never fit a phone. Scroll them inside their own container so the
+   card, its header and the page itself stay put. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MOBILE (≤ 780px)
+   The desktop type scale is deliberately large; phones get it stepped back
+   down, the chrome compacted, and anything multi-column collapsed to one.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 780px) {
+
+  /* — type back down — */
+  body { font-size: 14px; }
+  .card-title { font-size: 15px; }
+  .card-sub { font-size: 11px; }
+  .kpi-label { font-size: 10px; letter-spacing: 0.06em; }
+  .kpi-value { font-size: 26px; }
+  .kpi-delta { font-size: 10px; }
+  .loc-badge { font-size: 12px; }
+  .loc-where, .loc-meta, .notif-item .meta, .notif-time { font-size: 10.5px; }
+  .notif-item .title { font-size: 12px; }
+  .status-tag, .cam-chip, .ack-btn, .video-btn { font-size: 10px; }
+
+  /* — topbar: was ~190px tall, three stacked rows of oversized chrome — */
+  .topbar {
+    gap: 8px;
+    padding: 10px 12px;
+    row-gap: 8px;
+  }
+  .brand { flex: 1 1 auto; }
+  .logo { height: 28px; }
+  .brand-tag { display: none; }
+  .topbar-right { margin-left: auto; gap: 6px; }
+  .icon-btn { width: 34px; height: 34px; font-size: 14px; }
+  .time-stamp { display: none; }
+
+  /* Tabs and pills each become one swipeable row instead of wrapping. */
+  .tabs,
+  .status-cluster {
+    order: 3;
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    margin-left: 0;
+  }
+  .tabs::-webkit-scrollbar,
+  .status-cluster::-webkit-scrollbar { display: none; }
+  .status-cluster { order: 4; }
+  .tab { font-size: 11px; padding: 7px 11px; flex-shrink: 0; }
+  .status-pill { font-size: 10.5px; padding: 5px 10px; flex-shrink: 0; }
+
+  /* — layout — */
+  .container { padding: 12px; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .kpi-card { padding: 12px 14px; }
+  .hero-grid { gap: 10px; }
+  .hero-grid .notif-card { height: 340px; max-height: 340px; }
+
+  /* — cards / lists — */
+  .card { border-radius: 10px; }
+  .card-header { padding: 12px 14px; flex-wrap: wrap; gap: 6px; }
+  .notif-header { padding: 12px 14px; }
+  .notif-item, .loc-item { padding: 10px 12px; gap: 9px; }
+  .notif-item .thumb { width: 44px; height: 30px; }
+
+  /* The location thumbnail is decorative — dropping it buys ~50px, which is
+     what lets badge + location chip + status stay on one line. */
+  .loc-thumb { display: none; }
+  .loc-info { min-width: 0; }
+  .loc-right { flex-shrink: 0; }
+
+  /* — tables: horizontal scroll, sensible minimum so columns stay legible.
+       Visits carries 10 columns and needs more room than the 5-column log. — */
+  .table-scroll table { min-width: 560px; }
+  .table-scroll.wide table { min-width: 900px; }
+  table th, table td { padding: 9px 10px; font-size: 11.5px; }
+
+  /* — filter bars stack — */
+  .filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 12px;
+  }
+  .filter-bar .filter-input,
+  .filter-bar .filter-select,
+  .filter-bar .export-btn { width: 100%; }
+  .filter-label {
+    margin-top: 4px;
+    font-size: 10px;
+  }
+
+  /* — loitering banner — */
+  .loiter-banner { padding: 10px 12px; }
+  .loiter-banner-content { gap: 10px; }
+  .loiter-item { flex-wrap: wrap; }
+
+  /* — modals fill the screen — */
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92vh;
+    border-radius: 12px;
+  }
+  .modal-overlay { padding: 8px; }
+  .modal-header { padding: 14px; }
+  .modal-body { padding: 12px; }
+  .modal-img, .modal-video { max-height: 44vh; }
+
+  /* — whitelist page — */
+  .admin-wrap { padding: 0 12px; margin: 16px auto; }
+  .admin-input { flex-direction: column; align-items: stretch; }
+  .admin-input > * { width: 100%; }
+  .wl-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+
+  /* — comfortable tap targets (Apple/Google both recommend ~44px) — */
+  .ack-btn, .video-btn, .notif-tab { min-height: 32px; padding: 7px 11px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   VISITS TABLE → CARDS (≤ 780px)
+   Ten columns cannot be read on a phone: horizontally scrolling the table
+   showed only 4 of them and buried Duration, Status and Video entirely.
+   Each row becomes a self-contained card instead, with every cell labelled
+   from its data-label. Flex `order` regroups the cells so the badge and
+   status form a header even though they sit far apart in the DOM.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 780px) {
+  .table-scroll.wide { overflow-x: visible; }
+  .table-scroll.wide table { min-width: 0; }
+
+  #visits-table thead { display: none; }
+  #visits-table,
+  #visits-table tbody { display: block; width: 100%; }
+
+  #visits-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+  }
+
+  #visits-table tr:last-child { margin-bottom: 0; }
+  #visits-table tr:hover { background: var(--surface-3); }
+
+  #visits-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 1 1 100%;
+    padding: 5px 0;
+    border: none;
+    font-size: 12px;
+  }
+
+  #visits-table td::before {
+    content: attr(data-label);
+    color: var(--text-dim);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+
+  /* Card header — badge and status, unlabelled */
+  #visits-table td[data-label="Badge"] {
+    order: 1;
+    flex: 1 1 auto;
+    padding: 0 0 2px;
+    font-size: 14.5px;
+  }
+
+  #visits-table td[data-label="Status"] {
+    order: 2;
+    flex: 0 0 auto;
+    padding: 0 0 2px;
+  }
+
+  #visits-table td[data-label="Badge"]::before,
+  #visits-table td[data-label="Status"]::before { content: none; }
+
+  /* Visit number rides in the header, dim and unobtrusive */
+  #visits-table td[data-label="Visit"] {
+    order: 3;
+    flex: 0 0 auto;
+    padding: 0 0 2px;
+    font-size: 11px;
+  }
+
+  /* Detail rows — Date opens the labelled block */
+  #visits-table td[data-label="Date"] {
+    order: 4;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+    padding-top: 9px;
+  }
+
+  #visits-table td[data-label="Entered"]   { order: 5; }
+  #visits-table td[data-label="Exited"]    { order: 6; }
+  #visits-table td[data-label="Duration"]  { order: 7; }
+  #visits-table td[data-label="Sightings"] { order: 8; }
+
+  #visits-table td[data-label="Cameras"] {
+    order: 9;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  /* Video holds two controls — keep them together on the right instead of
+     letting space-between fling them to opposite edges. */
+  #visits-table td[data-label="Video"] {
+    order: 10;
+    justify-content: flex-start;
+    gap: 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+    padding-top: 10px;
+  }
+
+  #visits-table td[data-label="Video"]::before { margin-right: auto; }
+
+  /* "loading…" / "no visits match filters" spans the whole card */
+  #visits-table td[colspan] {
+    flex: 1 1 100%;
+    justify-content: center;
+    border: none;
+    margin: 0;
+  }
+
+  #visits-table td[colspan]::before { content: none; }
+}
+
+/* Very small phones (≤ 380px) — one KPI per row, tighter still. */
+@media (max-width: 380px) {
+  .kpi-row { grid-template-columns: 1fr; }
+  .kpi-value { font-size: 24px; }
+  .container { padding: 10px; }
+  .loc-top { gap: 6px; }
 }

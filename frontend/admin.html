@@ -647,6 +647,111 @@
       cursor: not-allowed;
       transform: none;
     }
+    /* ══════════════════════════════════════════════════════════════════
+       MOBILE (≤ 780px)
+       .setting-row is a fixed 260px label column + 1fr — on a phone that
+       leaves ~55px for the input, so every field collapses to a sliver.
+       Stack the rows instead and let controls use the full width.
+       ══════════════════════════════════════════════════════════════════ */
+    @media (max-width: 780px) {
+      .admin-topbar {
+        padding: 0 14px;
+        height: auto;
+        min-height: 56px;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .admin-brand {
+        font-size: 12px;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .admin-brand a {
+        margin-left: 8px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .btn-logout {
+        padding: 6px 11px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .admin-body {
+        padding: 22px 14px 90px;
+      }
+
+      .setting-row {
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 14px;
+      }
+
+      .setting-label {
+        font-size: 13px;
+      }
+
+      .setting-hint {
+        font-size: 11px;
+        word-break: break-word;
+      }
+
+      .section-title {
+        font-size: 10px;
+      }
+
+      /* Inline two-control rows (date+time, select+button) go vertical */
+      .setting-row > div[style*="display: flex"],
+      .setting-row > div[style*="display:flex"] {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      /* The database browser is far wider than a phone — scroll it */
+      .settings-card > div[style*="overflow"] {
+        max-width: 100%;
+      }
+
+      .save-bar {
+        padding: 12px 14px;
+        flex-wrap: wrap;
+      }
+
+      .btn-save {
+        width: 100%;
+      }
+
+      .save-msg {
+        width: 100%;
+        text-align: center;
+      }
+
+      .danger-zone {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: left;
+        padding: 18px;
+      }
+
+      .btn-danger {
+        width: 100%;
+      }
+
+      .login-card {
+        width: 100%;
+        max-width: 400px;
+        padding: 32px 22px;
+        margin: 0 14px;
+        border-radius: 16px;
+      }
+
+      .modal-box {
+        padding: 24px 18px;
+      }
+    }
   </style>
 </head>
 
