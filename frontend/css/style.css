@@ -69,8 +69,9 @@ body {
   background-image: var(--bg-pattern);
   color: var(--text);
   min-height: 100vh;
-  font-size: 14px;
-  line-height: 1.5;
+  /* Bumped for legibility on the control-room screen */
+  font-size: 17px;
+  line-height: 1.55;
 }
 
 .mono {
@@ -114,7 +115,7 @@ select {
 .brand-tag {
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 400;
   padding-left: 12px;
   border-left: 1px solid var(--border);
@@ -130,7 +131,7 @@ select {
 .tab {
   padding: 8px 14px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text-muted);
   background: transparent;
@@ -168,7 +169,7 @@ select {
   border: 1px solid var(--border);
   border-radius: 20px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .status-pill.alert {
@@ -227,7 +228,7 @@ select {
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
   text-decoration: none;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .icon-btn:hover {
@@ -237,7 +238,7 @@ select {
 
 .time-stamp {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
   padding: 6px 12px;
   background: var(--surface-2);
@@ -282,7 +283,7 @@ select {
   gap: 10px;
   color: var(--red);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
   flex-shrink: 0;
 }
 
@@ -324,20 +325,20 @@ select {
 
 .loiter-item .label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
 
 .loiter-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
 .loiter-item .duration {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--red);
   padding: 0 4px;
@@ -350,7 +351,7 @@ select {
   color: var(--text);
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -423,7 +424,7 @@ select {
 
 .kpi-label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -444,7 +445,7 @@ select {
 }
 
 .kpi-delta {
-  font-size: 12px;
+  font-size: 14px;
   font-family: 'JetBrains Mono', monospace;
   color: var(--text-muted);
 }
@@ -472,14 +473,14 @@ select {
 }
 
 .card-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .card-sub {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
 }
 
@@ -493,7 +494,7 @@ thead th {
   text-align: left;
   padding: 9px 18px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -504,7 +505,7 @@ thead th {
 
 tbody td {
   padding: 10px 18px;
-  font-size: 13px;
+  font-size: 15px;
   vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
@@ -531,7 +532,7 @@ tbody tr.clickable:hover td {
 
 tbody td.mono {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* ─── PILLS & TAGS ─── */
@@ -542,7 +543,7 @@ tbody td.mono {
   padding: 4px 10px;
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -568,7 +569,7 @@ tbody td.mono {
   padding: 3px 8px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -603,7 +604,7 @@ tbody td.mono {
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -664,7 +665,7 @@ tbody td.mono {
   border-radius: 6px;
   color: var(--text);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .filter-input:focus,
@@ -674,13 +675,15 @@ tbody td.mono {
 }
 
 .filter-input.search {
-  flex: 1;
-  min-width: 220px;
+  /* The perimeter filter bar carries an extra Zone dropdown, so the search
+     box needs room to show its full placeholder before the row wraps. */
+  flex: 1 1 280px;
+  min-width: 280px;
 }
 
 .filter-label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -694,7 +697,7 @@ tbody td.mono {
   border: none;
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -758,7 +761,7 @@ tbody td.mono {
 
 .modal-header .sub {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -770,7 +773,7 @@ tbody td.mono {
   border: 1px solid var(--border);
   border-radius: 8px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .modal-body {
@@ -790,7 +793,7 @@ tbody td.mono {
   padding: 60px 20px;
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 /* ─── WHITELIST PAGE ─── */
@@ -822,7 +825,7 @@ tbody td.mono {
   border-radius: 6px;
   color: var(--text);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .admin-input input:focus {
@@ -838,7 +841,7 @@ tbody td.mono {
   border-radius: 6px;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -856,20 +859,20 @@ tbody td.mono {
 
 .wl-row .label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .wl-row .reason {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-left: 16px;
 }
 
 .wl-row .added {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   margin-right: 12px;
 }
@@ -881,7 +884,7 @@ tbody td.mono {
   border: 1px solid var(--red-border);
   border-radius: 6px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -893,14 +896,14 @@ tbody td.mono {
   background: var(--amber-bg);
   border: 1px solid var(--amber-border);
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
 }
 
 .notice b {
   color: var(--amber);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -964,21 +967,21 @@ tbody td.mono {
 
 .notif-item .title {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
 
 .notif-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
 }
 
 .notif-time {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   flex-shrink: 0;
 }
@@ -988,7 +991,7 @@ tbody td.mono {
   text-align: center;
   color: var(--text-dim);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* ─── BADGE DETAIL MODAL (image + log history) ────────────────────────── */
@@ -999,7 +1002,7 @@ tbody td.mono {
 .modal-log-list-header {
   padding: 10px 24px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1049,14 +1052,14 @@ tbody td.mono {
 
 .modal-log-item .time {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   font-weight: 600;
 }
 
 .modal-log-item .meta {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-top: 2px;
 }
@@ -1069,7 +1072,7 @@ tbody td.mono {
   border-radius: 4px;
   background: var(--surface-3);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
@@ -1108,4 +1111,582 @@ tbody td.mono {
   .status-cluster {
     flex-basis: 100%;
   }
+}
+/* ════════════════════════════════════════════════════════════════════════════
+   PERIMETER SECURITY — zone strip, zone tags, alert log
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ─── KPI: amber variant for early warnings ─── */
+.kpi-card.amber::before {
+  background: var(--amber);
+}
+
+.kpi-card.amber {
+  background: linear-gradient(135deg, var(--surface) 0%, var(--amber-bg) 100%);
+  border-color: var(--amber-border);
+}
+
+.kpi-card.amber .kpi-value {
+  color: var(--amber);
+}
+
+/* ─── ZONE STRIP — one camera, three zones ─── */
+.zone-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.zone-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.zone-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--border-bright);
+}
+
+.zone-card.zone-breach::before { background: var(--red); }
+.zone-card.zone-outside::before { background: var(--amber); }
+.zone-card.zone-inside::before { background: var(--green); }
+
+.zone-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.zone-num {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zone-breach .zone-num { background: var(--red); color: #fff; }
+.zone-outside .zone-num { background: var(--amber); color: #1a1200; }
+.zone-inside .zone-num { background: var(--green); color: #04251a; }
+
+.zone-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.zone-rule {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  flex: 1;
+}
+
+.zone-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.zone-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.zone-breach .zone-count { color: var(--red); }
+.zone-outside .zone-count { color: var(--amber); }
+.zone-inside .zone-count { color: var(--green); }
+
+.zone-unit {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+
+/* ─── ZONE TAG — inline pill used in tables and the live feed ─── */
+.zone-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.zone-tag.breach {
+  background: var(--red);
+  color: #fff;
+}
+
+.zone-tag.warn {
+  background: var(--amber-bg);
+  color: var(--amber);
+  border: 1px solid var(--amber-border);
+}
+
+.zone-tag.ok {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid var(--green-border);
+}
+
+.zone-tag.muted {
+  background: var(--surface-3);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+/* ─── BREACH BANNER — sharper than the generic alert banner ─── */
+.breach-banner .loiter-title {
+  letter-spacing: 0.06em;
+}
+
+/* ─── LIVE FEED — breach rows stand out ─── */
+.notif-item.notif-breach {
+  background: var(--red-bg);
+  border-left: 2px solid var(--red);
+}
+
+/* ─── ALERT LOG — snapshot thumbnails ─── */
+.alert-thumb {
+  width: 64px;
+  height: 40px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.alert-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.alert-thumb-none {
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 900px) {
+  .zone-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   FLASHING ALERT BANNER · COUNT CHIPS · 2-ZONE STRIP
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ─── The banner pulses so it is impossible to miss across a room ─── */
+.alert-banner {
+  position: relative;
+  padding: 16px 24px;
+  border-top: 2px solid var(--amber);
+  border-bottom: 2px solid var(--amber);
+  background: linear-gradient(90deg, var(--amber-bg) 0%, transparent 55%, var(--amber-bg) 100%);
+  animation: banner-pulse-amber 1.4s ease-in-out infinite;
+}
+
+.alert-banner.has-breach {
+  border-top-color: var(--red);
+  border-bottom-color: var(--red);
+  background: linear-gradient(90deg, var(--red-bg-strong) 0%, var(--red-bg) 55%, var(--red-bg-strong) 100%);
+  animation: banner-pulse-red 1s ease-in-out infinite;
+}
+
+@keyframes banner-pulse-amber {
+  0%, 100% { box-shadow: inset 0 0 0 rgba(255, 169, 64, 0); }
+  50%      { box-shadow: inset 0 0 60px rgba(255, 169, 64, 0.30); }
+}
+
+@keyframes banner-pulse-red {
+  0%, 100% { box-shadow: inset 0 0 0 rgba(255, 84, 112, 0); }
+  50%      { box-shadow: inset 0 0 70px rgba(255, 84, 112, 0.45); }
+}
+
+.alert-banner-inner {
+  /* Title on its own row so the chips get the full page width */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.alert-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.alert-banner .alert-icon {
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+  background: var(--amber);
+  color: #1a1200;
+}
+
+.alert-banner.has-breach .alert-icon {
+  background: var(--red);
+  color: #fff;
+}
+
+.alert-banner-head {
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+
+.alert-banner.has-breach .alert-banner-head {
+  color: var(--red);
+}
+
+.alert-banner-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+}
+
+/* ─── One chip per unacknowledged BADGE (grouped, capped) ─── */
+.alert-banner-list {
+  /* A grid keeps several alerts per row instead of one tall stack, and the
+     bounded height means hundreds of alerts can never push the page down. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(385px, 1fr));
+  gap: 10px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* Keep the scrollbar unobtrusive but visible when there is more to see */
+.alert-banner-list::-webkit-scrollbar { width: 8px; }
+.alert-banner-list::-webkit-scrollbar-track { background: transparent; }
+.alert-banner-list::-webkit-scrollbar-thumb {
+  background: var(--border-bright);
+  border-radius: 4px;
+}
+
+/* Push ACK ALL to the far right of the title row */
+.ack-all-btn { margin-left: auto; }
+
+.alert-chip {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px 8px 8px;
+  border-radius: 9px;
+  background: var(--surface);
+  border: 2px solid var(--amber-border);
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.15s ease;
+}
+
+.alert-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.alert-chip.breach {
+  border-color: var(--red);
+}
+
+.alert-chip.more-chip {
+  cursor: default;
+  border-style: dashed;
+  border-color: var(--border-bright);
+  background: var(--surface-2);
+}
+
+.alert-chip.more-chip:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Snapshot thumbnail on the left of every alert */
+.alert-chip-thumb {
+  width: 52px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+
+.alert-chip-thumb.none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+.alert-chip-body {
+  min-width: 0;
+}
+
+.alert-chip-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.alert-chip.breach .alert-chip-kind {
+  color: var(--red);
+}
+
+/* "x7" repeat counter for a class that keeps alerting */
+.alert-chip-count {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.alert-chip.warning .alert-chip-count {
+  background: var(--amber);
+  color: #1a1200;
+}
+
+.alert-chip-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.alert-chip-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ─── Per-chip ACK button ─── */
+.ack-btn-lg {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: var(--green-bg);
+  border: 1px solid var(--green-border);
+  color: var(--green);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.08s ease;
+}
+
+.ack-btn-lg:hover {
+  background: var(--green);
+  color: var(--bg);
+}
+
+.ack-btn-lg:active { transform: scale(0.94); }
+
+/* ─── ACK ALL — the escape hatch during an alert storm ─── */
+.ack-all-btn {
+  padding: 9px 16px;
+  border-radius: 8px;
+  background: var(--red);
+  color: #fff;
+  border: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  transition: transform 0.08s ease, filter 0.15s ease;
+}
+
+.ack-all-btn:hover { filter: brightness(1.15); }
+.ack-all-btn:active { transform: scale(0.95); }
+
+/* ─── Person/object tally chip in the detections table ─── */
+.count-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-bright);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* ─── Count panel inside the detection modal ─── */
+.count-panel {
+  margin: 18px 24px 0;
+  padding: 16px 18px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--amber-border);
+}
+
+.count-panel-head {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.count-panel-grid {
+  display: flex;
+  gap: 14px;
+}
+
+.count-box {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.count-box-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--amber);
+}
+
+.count-box-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.count-panel-foot {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ─── Zone strip with the Inside card removed ─── */
+.zone-strip.zone-strip-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+@media (max-width: 900px) {
+  .zone-strip.zone-strip-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Respect users who ask for reduced motion — keep the colour, drop the pulse */
+@media (prefers-reduced-motion: reduce) {
+  .alert-banner,
+  .alert-banner.has-breach {
+    animation: none;
+  }
+}
+
+/* ─── PAGER — Detection Log, 20 rows per page ─── */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.pager-btn {
+  padding: 8px 14px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.pager-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.pager-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pager-status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 0 8px;
+  min-width: 220px;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .pager-status { min-width: 0; width: 100%; order: -1; }
 }

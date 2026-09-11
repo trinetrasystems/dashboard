@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trinetra Systems · Live Monitoring</title>
+<title>Trinetra Systems · Perimeter Security</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -11,83 +11,126 @@
 </head>
 <body>
 
-<!-- Topbar injected by common.js -->
+<!-- Topbar (with Trinetra logo) injected by common.js -->
 
-<!-- Loitering banner — shown only when there are active loitering alerts -->
-<div id="loiter-banner" class="loiter-banner" style="display: none;">
-  <div class="loiter-banner-content">
-    <div class="loiter-title">
+<!-- Breach banner — only while an unacknowledged perimeter breach is live -->
+<div id="breach-banner" class="alert-banner" style="display: none;">
+  <div class="alert-banner-inner">
+    <div class="alert-banner-title">
       <div class="alert-icon">!</div>
-      <span>LOITERING DETECTED</span>
+      <div>
+        <div class="alert-banner-head" id="banner-head">ACTIVE ALERTS</div>
+        <div class="alert-banner-sub" id="banner-sub">unacknowledged</div>
+      </div>
+      <button class="ack-all-btn" id="ack-all-btn" onclick="ackAllAlerts()" title="Acknowledge every alert shown">✓ ACK ALL</button>
     </div>
-    <div class="loiter-list" id="loiter-list"></div>
+    <div class="alert-banner-list" id="breach-list"></div>
   </div>
 </div>
 
 <div class="container">
 
+  <!-- ═══ KPIs — the two numbers that matter on a perimeter ═══ -->
   <div class="kpi-row">
-    <div class="kpi-card">
-      <div class="kpi-label">Detections Today</div>
-      <div class="kpi-value" id="kpi-total">—</div>
-      <div class="kpi-delta">last 24 hours</div>
-    </div>
-    <div class="kpi-card green">
-      <div class="kpi-label">Currently in Premises</div>
-      <div class="kpi-value" id="kpi-active">—</div>
-      <div class="kpi-delta">active sessions</div>
-    </div>
     <div class="kpi-card red">
-      <div class="kpi-label">Active Loitering Alerts</div>
-      <div class="kpi-value" id="kpi-loiter">—</div>
-      <div class="kpi-delta red">⚠ &gt; 15 min threshold</div>
+      <div class="kpi-label">Perimeter Breaches</div>
+      <div class="kpi-value" id="kpi-breach">—</div>
+      <div class="kpi-delta red">⚡ instant · alert region</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">Early Warnings</div>
+      <div class="kpi-value" id="kpi-warning">—</div>
+      <div class="kpi-delta" id="kpi-warning-sub">dwell · outside perimeter</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Number of Alerts Today</div>
+      <div class="kpi-value" id="kpi-total">—</div>
+      <div class="kpi-delta">breach + early warning</div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <div class="card-title">Today's Detections</div>
-        <div class="card-sub">hourly · auto-refreshing</div>
+  <!-- ═══ Zone strip — one camera, three zones, three rules ═══ -->
+  <div class="zone-strip zone-strip-2" id="zone-strip">
+    <div class="zone-card zone-breach">
+      <div class="zone-head">
+        <span class="zone-num">1</span>
+        <span class="zone-name">Perimeter Alert Region</span>
       </div>
-      <div class="card-sub" id="chart-meta">—</div>
+      <div class="zone-rule">Wall top &amp; concertina wire — any detection alerts instantly</div>
+      <div class="zone-foot">
+        <span class="zone-count" id="zone-breach-count">—</span>
+        <span class="zone-unit">detections today</span>
+        <span class="zone-tag breach">INSTANT</span>
+      </div>
     </div>
-    <div class="chart-container" id="today-chart">—</div>
+    <div class="zone-card zone-outside">
+      <div class="zone-head">
+        <span class="zone-num">2</span>
+        <span class="zone-name">Outside Perimeter</span>
+      </div>
+      <div class="zone-rule" id="zone-outside-rule">Strip beyond the wall — alerts after the dwell threshold</div>
+      <div class="zone-foot">
+        <span class="zone-count" id="zone-outside-count">—</span>
+        <span class="zone-unit">detections today</span>
+        <span class="zone-tag warn">DWELL</span>
+      </div>
+    </div>
   </div>
 
-  <div class="main-grid">
-    <div class="card">
+  <!-- ═══ Dwell watch + live feed ═══ -->
+  <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">Currently in Premises</div>
-          <div class="card-sub">click row for last-seen image + history · threshold 15 min</div>
+          <div class="card-title">Today's Detections</div>
+          <div class="card-sub" id="watch-sub">one row per detection · dwell timed against each class's rule</div>
         </div>
-        <div class="card-sub">▼ longest first</div>
+        <div class="card-sub">▼ newest first · today only</div>
       </div>
       <table>
         <thead>
           <tr>
-            <th>Badge</th><th>Entered</th><th>Last Seen</th>
-            <th>Duration</th><th>Status</th><th>Sightings</th>
+            <th>Detection</th><th>Camera</th><th>Time</th>
+            <th>Dwell</th><th>Status</th>
           </tr>
         </thead>
-        <tbody id="premises-body">
-          <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
+        <tbody id="watch-body">
+          <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
         </tbody>
       </table>
-    </div>
+  </div>
 
-    <div class="card notif-card">
-      <div class="notif-header">
-        <div>
-          <div class="card-title">Live Notifications</div>
-          <div class="card-sub" id="notif-meta">latest detections</div>
-        </div>
+  <!-- ═══ Alert log — every alert, with evidence ═══ -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Perimeter Alert Log</div>
+        <div class="card-sub">breach and early-warning alerts sent to Telegram · click a row for the snapshot</div>
       </div>
-      <div class="notif-list" id="notif-list">
-        <div class="notif-empty">waiting for events…</div>
-      </div>
+      <div class="card-sub" id="alertlog-meta">—</div>
     </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Snapshot</th><th>Time</th><th>Event</th>
+          <th>Zone</th><th>Detection</th><th>Type</th>
+        </tr>
+      </thead>
+      <tbody id="alertlog-body">
+        <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══ Activity chart ═══ -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Perimeter Activity Today</div>
+        <div class="card-sub">hourly detections · auto-refreshing</div>
+      </div>
+      <div class="card-sub" id="chart-meta">—</div>
+    </div>
+    <div class="chart-container" id="today-chart">—</div>
   </div>
 
 </div>

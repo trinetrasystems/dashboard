@@ -52,25 +52,21 @@ function savedTheme() {
 
 /* ─── Topbar HTML — injected by each page ─── */
 function renderTopbar(activeTab) {
-  const stats = dummyStats();
   const tab = (id, label, href) => `
     <a href="${href}" class="tab ${id === activeTab ? 'active' : ''}">${label}</a>`;
   return `
 <div class="topbar">
   <div class="brand">
     <img id="brand-logo" class="logo" src="${LOGO_SRC[savedTheme()]}" alt="Trinetra Systems">
-    <div class="brand-tag">monitor</div>
+    <div class="brand-tag">perimeter</div>
   </div>
   <div class="tabs">
     ${tab('live', 'Live', 'index.html')}
     ${tab('logs', 'Logs & Charts', 'logs.html')}
-    ${tab('visits', 'Visits', 'visits.html')}
-    ${tab('wl', 'Whitelist', 'whitelist.html')}
   </div>
   <div class="status-cluster">
-    <div class="status-pill"><span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span></div>
-    <div class="status-pill ${stats.loitering_count ? 'alert' : ''}"><span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span></div>
-    <div class="status-pill"><span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span></div>
+    <div class="status-pill"><span class="dot"></span><span>0 BREACHES TODAY</span></div>
+    <div class="status-pill"><span class="dot"></span><span>0 OUTSIDE PERIMETER</span></div>
   </div>
   <div class="topbar-right">
     <div class="time-stamp"><b id="clock">${fmtDate(NOW)} · ${fmtTime(NOW)}</b></div>
@@ -390,10 +386,32 @@ function statusForSession(session) {
   return { cls: 'ok', label: 'OK' };
 }
 
+/* ─── Topbar status pills — real perimeter numbers, shared by all pages ─── */
+function updateTopbarPills(stats) {
+  const pills = document.querySelectorAll('.status-pill');
+  if (pills.length < 2 || !stats) return;
+
+  const breaches = stats.breaches_today || 0;
+  pills[0].className = `status-pill ${breaches ? 'alert' : ''}`;
+  pills[0].innerHTML =
+    `<span class="dot ${breaches ? 'red' : ''}"></span><span>${breaches} BREACH${breaches === 1 ? '' : 'ES'} TODAY</span>`;
+
+  const watching = stats.watching_outside || 0;
+  pills[1].innerHTML =
+    `<span class="dot"></span><span>${watching} OUTSIDE PERIMETER</span>`;
+}
+window.updateTopbarPills = updateTopbarPills;
+
 /* ─── Bootstrap (call from each page) ─── */
 function bootstrap(activeTab) {
   document.body.insertAdjacentHTML('afterbegin', renderTopbar(activeTab));
   ensureModal();
   startClock();
   initTheme();
+
+  // Every page gets live pill numbers, not placeholders. The Live page
+  // refreshes them again on its own 5s cycle.
+  if (typeof getStats === 'function') {
+    getStats().then(updateTopbarPills).catch(() => { /* offline — keep placeholders */ });
+  }
 }

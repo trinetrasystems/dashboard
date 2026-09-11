@@ -2,21 +2,120 @@
  * LOGS & CHARTS PAGE — calls real API via api.js
  * ──────────────────────────────────────────────────────────────────────────── */
 
-const filters = { search: '', date: '', month: '', badge: '', camera: '' };
+/* allTime: the Logs page browses the complete history (today AND earlier).
+   Picking a date or month narrows it; clearing them returns to all time. */
+const filters = { search: '', date: '', month: '', badge: '', camera: '', zone: '',
+                  allTime: true };
+
+/* The table is served one page at a time; charts use /api/detections/summary
+   so they still describe the WHOLE filter set, not just the visible page. */
+const PAGE_SIZE = 20;
+let currentPage = 0;
+let lastPage = 0;
+let cachedSummary = null;
 let cachedDetections = [];
 let cachedStats = null;
+let perimeterRules = null;
 
-async function refreshAll() {
+/* Zone presentation — mirrors the Live page */
+const ZONE_TAG = {
+  breach:  { cls: 'breach', label: 'ALERT REGION' },
+  outside: { cls: 'warn',   label: 'OUTSIDE' },
+  inside:  { cls: 'ok',     label: 'INSIDE' },
+  unknown: { cls: 'muted',  label: 'UNZONED' },
+};
+
+/* Counted outside classes, e.g. "Outside-person-3-object-2" */
+const COUNTED_RE = /^outside-person-(\d+)-object-(\d+)$/;
+
+function normBadge(b) {
+  return String(b || '').trim().toLowerCase().replace(/_/g, '-').replace('boundary', 'boundry');
+}
+function countsOf(badge) {
+  const m = COUNTED_RE.exec(normBadge(badge));
+  return m ? { persons: +m[1], objects: +m[2] } : null;
+}
+
+/* What rule applies to this class, in words */
+function ruleTextFor(zone, badge) {
+  if (zone === 'breach') return 'instant';
+  if (!perimeterRules) return '—';
+  const k = normBadge(badge);
+  const rules = perimeterRules.dwell_rules || {};
+  if (Object.prototype.hasOwnProperty.call(rules, k)) return `${rules[k]} min dwell`;
+  // A counted class inherits the outside-person rule, matching the backend.
+  if (COUNTED_RE.test(k)) return `${rules['outside-person'] || 10} min dwell`;
+  if ((perimeterRules.inside_badges || []).includes(k)) return 'no alarm';
+  return `${perimeterRules.default_dwell_minutes} min dwell`;
+}
+
+async function refreshAll(resetPage = false) {
   try {
-    [cachedDetections, cachedStats] = await Promise.all([
-      getDetections(filters),
+    if (resetPage) currentPage = 0;
+    if (!perimeterRules) perimeterRules = await getPerimeterRules();
+
+    const [summary, stats] = await Promise.all([
+      getDetectionsSummary(filters),
       getStats(),
     ]);
+    cachedSummary = summary;
+    cachedStats = stats;
+
+    const total = summary.total || 0;
+    lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+    if (currentPage > lastPage) currentPage = lastPage;
+
+    cachedDetections = await getDetections({
+      ...filters, limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE,
+    });
+
     renderLogTable();
+    renderPager(total);
     renderCharts();
   } catch (e) {
     console.error('refresh failed:', e);
   }
+}
+
+/* Jump to a page — clamped, and only refetches the table slice */
+async function gotoPage(n) {
+  const target = Math.max(0, Math.min(n, lastPage));
+  if (target === currentPage) return;
+  currentPage = target;
+  try {
+    cachedDetections = await getDetections({
+      ...filters, limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE,
+    });
+    renderLogTable();
+    renderPager(cachedSummary ? cachedSummary.total : 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) {
+    console.error('page load failed:', e);
+  }
+}
+window.gotoPage = gotoPage;
+
+function renderPager(total) {
+  const status = document.getElementById('pager-status');
+  const pager = document.getElementById('log-pager');
+  if (!status || !pager) return;
+
+  if (total === 0) {
+    pager.style.display = 'none';
+    return;
+  }
+  pager.style.display = 'flex';
+
+  const from = currentPage * PAGE_SIZE + 1;
+  const to = Math.min(total, (currentPage + 1) * PAGE_SIZE);
+  status.textContent = `${from}–${to} of ${total} · page ${currentPage + 1} of ${lastPage + 1}`;
+
+  const atStart = currentPage === 0;
+  const atEnd = currentPage >= lastPage;
+  document.getElementById('pager-first').disabled = atStart;
+  document.getElementById('pager-prev').disabled = atStart;
+  document.getElementById('pager-next').disabled = atEnd;
+  document.getElementById('pager-last').disabled = atEnd;
 }
 
 function initFilters() {
@@ -25,25 +124,28 @@ function initFilters() {
   populateDropdowns();
 
   document.getElementById('filter-search').addEventListener('input', e => {
-    filters.search = e.target.value; refreshAll();
+    filters.search = e.target.value; refreshAll(true);
   });
   document.getElementById('filter-date').addEventListener('change', e => {
     filters.date = e.target.value;
     if (e.target.value) document.getElementById('filter-month').value = '';
     filters.month = document.getElementById('filter-month').value;
-    refreshAll();
+    refreshAll(true);
   });
   document.getElementById('filter-month').addEventListener('change', e => {
     filters.month = e.target.value;
     if (e.target.value) document.getElementById('filter-date').value = '';
     filters.date = document.getElementById('filter-date').value;
-    refreshAll();
+    refreshAll(true);
   });
   document.getElementById('filter-badge').addEventListener('change', e => {
-    filters.badge = e.target.value; refreshAll();
+    filters.badge = e.target.value; refreshAll(true);
   });
   document.getElementById('filter-camera').addEventListener('change', e => {
-    filters.camera = e.target.value; refreshAll();
+    filters.camera = e.target.value; refreshAll(true);
+  });
+  document.getElementById('filter-zone').addEventListener('change', e => {
+    filters.zone = e.target.value; refreshAll(true);
   });
   document.getElementById('export-btn').addEventListener('click', () => {
     exportDetectionsCSV(filters);
@@ -70,7 +172,7 @@ async function populateDropdowns() {
   if (badgeSel.options.length <= 1) {
     try {
       const b = await getBadges();
-      badgeSel.innerHTML = `<option value="">All badges</option>` +
+      badgeSel.innerHTML = `<option value="">All classes</option>` +
         (b.badges || []).map(x => `<option value="${escapeHtml(x.badge)}">${escapeHtml(x.badge)}</option>`).join('');
     } catch (e) { console.error('badges fetch failed:', e); }
   }
@@ -85,20 +187,26 @@ async function populateDropdowns() {
 
 function renderLogTable() {
   const tbody = document.getElementById('log-body');
-  document.getElementById('log-meta').textContent = `showing ${cachedDetections.length}`;
+  const total = cachedSummary ? cachedSummary.total : cachedDetections.length;
+  document.getElementById('log-meta').textContent =
+    `${total} detection${total === 1 ? '' : 's'} · ${PAGE_SIZE} per page`;
   if (cachedDetections.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-dim);">no detections match filters</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-dim);">no detections match filters</td></tr>`;
     return;
   }
   tbody.innerHTML = cachedDetections.map(d => {
     const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
+    const zone = d.zone || 'unknown';
+    const zt = ZONE_TAG[zone] || ZONE_TAG.unknown;
     return `
-      <tr class="clickable" onclick='showLog(${JSON.stringify(d).replace(/'/g, "&#39;")})'>
+      <tr class="clickable ${zone === 'breach' ? 'alert-row' : ''}" onclick='showLog(${JSON.stringify(d).replace(/'/g, "&#39;")})'>
         <td><div class="thumb">${thumbSVG(d.badge)}</div></td>
         <td class="mono">${fmtTime(ts)} ${ts.toDateString() !== new Date().toDateString() ? '<span style="color:var(--text-dim)">· ' + fmtDate(ts) + '</span>' : ''}</td>
-        <td class="mono"><b>${escapeHtml(d.badge)}</b></td>
-        <td class="mono">${escapeHtml(d.camera)}</td>
-        <td><span class="tag-${d.type}">${d.type.toUpperCase()}</span></td>
+        <td class="mono"><b>${escapeHtml(d.badge)}</b>${(() => {
+          const c = d.counts || countsOf(d.badge);
+          return c ? `<span class="count-chip">👤 ${c.persons} · 📦 ${c.objects}</span>` : '';
+        })()}</td>
+        <td><span class="zone-tag ${zt.cls}">${zt.label}</span></td>
       </tr>
     `;
   }).join('');
@@ -116,9 +224,11 @@ function thumbSVG(badge) {
 }
 
 function showLog(d) {
+  const zone = d.zone || 'unknown';
   openModal({
     title: d.badge,
-    sub: `${d.camera} · ${fmtTime(new Date(d.timestamp))} · ${d.type.toUpperCase()}`,
+    sub: `${d.zone_label || zone} · ${d.camera} · ${fmtTime(new Date(d.timestamp))} · ${ruleTextFor(zone, d.badge)}` +
+         (() => { const c = d.counts || countsOf(d.badge); return c ? ` · ${c.persons} person${c.persons === 1 ? '' : 's'} · ${c.objects} object${c.objects === 1 ? '' : 's'}` : ''; })(),
     filename: d.filename,
     hasImage: d.has_image,
   });
@@ -133,26 +243,33 @@ function renderCharts() {
   document.getElementById('chart-timeline-sub').textContent =
     `last 30 days · ${(cachedStats.daily_30d || []).reduce((a, b) => a + b, 0)} total`;
 
-  // 2. Detections by badge — from filtered detections
-  const byBadge = {};
-  for (const d of cachedDetections) byBadge[d.badge] = (byBadge[d.badge] || 0) + 1;
-  const badgeData = Object.entries(byBadge).sort((a, b) => b[1] - a[1]).slice(0, 7);
-  document.getElementById('chart-by-badge').innerHTML = hbarChartSVG(badgeData, 'var(--cyan)');
+  const sum = cachedSummary || { total: 0, by_badge: [], by_camera: [], badge_zones: {} };
+
+  // 2. Detections by class — whole filter set, bars coloured by zone
+  const badgeData = (sum.by_badge || []).slice(0, 7);
+  const zoneOfBadge = sum.badge_zones || {};
+  const ZONE_COLOR = {
+    breach: 'var(--red)', outside: 'var(--amber)',
+    inside: 'var(--green)', unknown: 'var(--cyan)',
+  };
+  document.getElementById('chart-by-badge').innerHTML =
+    hbarChartSVG(badgeData, d => ZONE_COLOR[zoneOfBadge[d] || 'unknown']);
   document.getElementById('chart-by-badge-sub').textContent =
-    `${cachedDetections.length} events · top ${badgeData.length}`;
+    `${sum.total} events · coloured by zone`;
 
-  // 3. Detections by camera — from filtered
-  const byCam = {};
-  for (const d of cachedDetections) byCam[d.camera] = (byCam[d.camera] || 0) + 1;
-  const camData = Object.entries(byCam).sort((a, b) => b[1] - a[1]);
+  // 3. Detections by camera — whole filter set
+  const camData = (sum.by_camera || []).slice(0, 8);
   document.getElementById('chart-by-camera').innerHTML = vbarChartSVG(camData, 'var(--violet)');
-  document.getElementById('chart-by-camera-sub').textContent = `${cachedDetections.length} events`;
+  document.getElementById('chart-by-camera-sub').textContent = `${sum.total} events`;
 
-  // 4. Loitering incidents — from stats
-  const loiter = cachedStats.loitering_30d || [];
-  document.getElementById('chart-loitering').innerHTML = loiterBarSVG(loiter);
+  // 4. Alerts — breach vs early warning, stacked per day
+  const breach = cachedStats.breach_30d || [];
+  const warn = cachedStats.warning_30d || [];
+  document.getElementById('chart-loitering').innerHTML = alertStackSVG(breach, warn);
+  const bTotal = breach.reduce((a, b) => a + b, 0);
+  const wTotal = warn.reduce((a, b) => a + b, 0);
   document.getElementById('chart-loitering-sub').textContent =
-    `last 30 days · ${loiter.reduce((a, b) => a + b, 0)} total`;
+    `last 30 days · ${bTotal} breach · ${wTotal} early warning`;
 }
 
 function lineChartSVG(data) {
@@ -172,24 +289,25 @@ function lineChartSVG(data) {
     <line x1="50" y1="30"  x2="${lastX + 5}" y2="30"  stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
     <polygon points="${area}" fill="var(--cyan)" opacity="0.15"/>
     <polyline points="${line}" fill="none" stroke="var(--cyan)" stroke-width="2"/>
-    <text x="40" y="34" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${max}</text>
-    <text x="40" y="99" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
-    <text x="40" y="164" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">0</text>
-    <text x="50" y="178" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">30d ago</text>
-    <text x="${lastX}" y="178" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">today</text>
+    <text x="40" y="34" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${max}</text>
+    <text x="40" y="99" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
+    <text x="40" y="164" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">0</text>
+    <text x="50" y="178" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">30d ago</text>
+    <text x="${lastX}" y="178" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">today</text>
   </svg>`;
 }
 
 function hbarChartSVG(data, color) {
   if (data.length === 0) return `<div style="text-align:center;color:var(--text-dim);padding:30px;font-family:JetBrains Mono;font-size:12px;">no data</div>`;
   const max = Math.max(...data.map(d => d[1]), 1);
+  const colorFor = typeof color === 'function' ? color : () => color;
   let out = '';
   data.forEach(([name, v], i) => {
     const y = 20 + i * 28;
     const w = (v / max) * 320;
-    out += `<text x="0" y="${y + 10}" font-family="JetBrains Mono" font-size="10" fill="var(--text-muted)">${escapeHtml(name)}</text>`;
-    out += `<rect x="150" y="${y}" width="${w}" height="18" rx="3" fill="${color}" opacity="0.85"/>`;
-    out += `<text x="${150 + w + 6}" y="${y + 13}" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
+    out += `<text x="0" y="${y + 10}" font-family="JetBrains Mono" font-size="12" fill="var(--text-muted)">${escapeHtml(name)}</text>`;
+    out += `<rect x="150" y="${y}" width="${w}" height="18" rx="3" fill="${colorFor(name)}" opacity="0.85"/>`;
+    out += `<text x="${150 + w + 6}" y="${y + 13}" font-family="JetBrains Mono" font-size="12" font-weight="600" fill="var(--text)">${v}</text>`;
   });
   return `<svg viewBox="0 0 500 ${30 + data.length * 28}" width="100%" style="display: block;">${out}</svg>`;
 }
@@ -204,28 +322,39 @@ function vbarChartSVG(data, color) {
     const x = x0 + i * (barW + gap);
     const y = 160 - h;
     out += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}" opacity="0.85"/>`;
-    out += `<text x="${x + barW / 2}" y="${y - 6}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="600" fill="var(--text)">${v}</text>`;
-    out += `<text x="${x + barW / 2}" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${escapeHtml(name)}</text>`;
+    out += `<text x="${x + barW / 2}" y="${y - 6}" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="600" fill="var(--text)">${v}</text>`;
+    out += `<text x="${x + barW / 2}" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${escapeHtml(name)}</text>`;
   });
   return `<svg viewBox="0 0 500 200" width="100%" style="display: block;">${out}</svg>`;
 }
 
-function loiterBarSVG(data) {
-  if (data.length === 0) return `<div style="text-align:center;color:var(--text-dim);padding:30px;font-family:JetBrains Mono;font-size:12px;">no data</div>`;
-  const max = Math.max(...data, 1);
+function alertStackSVG(breach, warn) {
+  const n = Math.max(breach.length, warn.length);
+  if (n === 0) return `<div style="text-align:center;color:var(--text-dim);padding:30px;font-family:JetBrains Mono;font-size:12px;">no data</div>`;
+  const totals = [];
+  for (let i = 0; i < n; i++) totals.push((breach[i] || 0) + (warn[i] || 0));
+  const max = Math.max(...totals, 1);
+
   let bars = '';
-  data.forEach((v, i) => {
-    if (v === 0) return;
-    const h = (v / max) * 130;
+  for (let i = 0; i < n; i++) {
     const x = 50 + i * 15;
-    const y = 160 - h;
-    bars += `<rect x="${x}" y="${y}" width="11" height="${h}" rx="2" fill="var(--red)" opacity="0.85"/>`;
-  });
+    const wH = ((warn[i] || 0) / max) * 130;
+    const bH = ((breach[i] || 0) / max) * 130;
+    // early warnings sit at the base, breaches stack on top
+    if (wH > 0) bars += `<rect x="${x}" y="${160 - wH}" width="11" height="${wH}" rx="2" fill="var(--amber)" opacity="0.9"/>`;
+    if (bH > 0) bars += `<rect x="${x}" y="${160 - wH - bH}" width="11" height="${bH}" rx="2" fill="var(--red)" opacity="0.95"/>`;
+  }
+
   return `<svg viewBox="0 0 500 200" width="100%" style="display: block;">
     <line x1="50" y1="160" x2="485" y2="160" stroke="var(--border)"/>
     ${bars}
-    <text x="40" y="34" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">${max}</text>
-    <text x="40" y="164" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="var(--text-dim)">0</text>
+    <text x="40" y="34" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${max}</text>
+    <text x="40" y="164" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">0</text>
+    <rect x="50" y="182" width="9" height="9" rx="2" fill="var(--red)"/>
+    <text x="64" y="190" font-family="JetBrains Mono" font-size="11" fill="var(--text-muted)">breach</text>
+    <rect x="120" y="182" width="9" height="9" rx="2" fill="var(--amber)"/>
+    <text x="134" y="190" font-family="JetBrains Mono" font-size="11" fill="var(--text-muted)">early warning</text>
+    <text x="485" y="190" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">today</text>
   </svg>`;
 }
 

@@ -68,6 +68,10 @@ async function getDetections(filters = {}) {
   if (filters.badge)  params.set('badge',  filters.badge);
   if (filters.camera) params.set('camera', filters.camera);
   if (filters.search) params.set('search', filters.search);
+  if (filters.zone)   params.set('zone',   filters.zone);
+  if (filters.allTime && !filters.date && !filters.month) params.set('all_time', 'true');
+  if (filters.limit)  params.set('limit',  filters.limit);
+  if (filters.offset) params.set('offset', filters.offset);
   const q = params.toString();
   return await apiGet(`/api/detections${q ? '?' + q : ''}`);
 }
@@ -83,6 +87,8 @@ function exportDetectionsCSV(filters = {}) {
   if (filters.badge)  params.set('badge',  filters.badge);
   if (filters.camera) params.set('camera', filters.camera);
   if (filters.search) params.set('search', filters.search);
+  if (filters.zone)   params.set('zone',   filters.zone);
+  if (filters.allTime && !filters.date && !filters.month) params.set('all_time', 'true');
   window.location.href = `/api/detections/export?${params.toString()}`;
 }
 
@@ -223,6 +229,48 @@ async function removeWhitelist(badge) {
     return { ok: true };
   }
   return await apiDelete(`/api/whitelist/${encodeURIComponent(badge)}`);
+}
+
+/* ─── Perimeter: zone rules + alert log ─── */
+/* Aggregates over the WHOLE filter set — the Logs table is paged, so its
+   charts must not be computed from the visible 20 rows. */
+async function getDetectionsSummary(filters = {}) {
+  if (USE_DUMMY_DATA) return { total: 0, by_badge: [], by_camera: [], by_zone: {}, badge_zones: {} };
+  const params = new URLSearchParams();
+  if (filters.date)   params.set('date',   filters.date);
+  if (filters.month)  params.set('month',  filters.month);
+  if (filters.badge)  params.set('badge',  filters.badge);
+  if (filters.camera) params.set('camera', filters.camera);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.zone)   params.set('zone',   filters.zone);
+  if (filters.allTime && !filters.date && !filters.month) params.set('all_time', 'true');
+  const q = params.toString();
+  return await apiGet(`/api/detections/summary${q ? '?' + q : ''}`);
+}
+
+async function getPerimeterRules() {
+  if (USE_DUMMY_DATA) {
+    return {
+      breach_badges: ['boundry-object'],
+      dwell_rules: { 'outside-person': 10, 'outside-object': 10 },
+      inside_badges: [],
+      default_dwell_minutes: 15,
+      breach_cooldown_seconds: 0,
+      zone_labels: {
+        breach: 'Perimeter Alert Region', outside: 'Outside perimeter',
+        inside: 'Inside factory', unknown: 'Unzoned',
+      },
+    };
+  }
+  return await apiGet('/api/perimeter/rules');
+}
+
+async function getRecentAlerts(limit = 50, kind = null, todayOnly = false) {
+  if (USE_DUMMY_DATA) return [];
+  const q = new URLSearchParams({ limit });
+  if (kind) q.set('kind', kind);
+  if (todayOnly) q.set('today', 'true');
+  return await apiGet(`/api/alerts/recent?${q.toString()}`);
 }
 
 async function ackAlertAPI(alertId, ackedBy = 'operator') {

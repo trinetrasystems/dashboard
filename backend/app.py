@@ -92,6 +92,15 @@ def init_db():
             print("[migrate] adding session_id column to detections")
             conn.execute("ALTER TABLE detections ADD COLUMN session_id INTEGER REFERENCES sessions(id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_det_session ON detections(session_id)")
+        # MIGRATION: classify alerts by perimeter zone (breach vs early warning)
+        acols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        if "kind" not in acols:
+            print("[migrate] adding kind/camera/zone columns to alerts")
+            conn.execute("ALTER TABLE alerts ADD COLUMN kind TEXT DEFAULT 'dwell'")
+            conn.execute("ALTER TABLE alerts ADD COLUMN camera TEXT")
+            conn.execute("ALTER TABLE alerts ADD COLUMN zone TEXT")
+            conn.execute("ALTER TABLE alerts ADD COLUMN image TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_kind ON alerts(kind, triggered_at DESC)")
         conn.commit()
     finally:
         conn.close()
@@ -214,6 +223,26 @@ def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
     return cur.lastrowid, "entry", False
 
 
+def _breach_cooldown_passed(conn, badge: str, camera: str, ts: datetime) -> bool:
+    """True if enough time has passed since the last breach alert for this
+    badge+camera. With TRINETRA_BREACH_COOLDOWN=0 (the default) every single
+    detection in the Perimeter Alert Region fires its own alert."""
+    if config.BREACH_COOLDOWN_SECONDS <= 0:
+        return True
+    row = conn.execute(
+        "SELECT triggered_at FROM alerts WHERE badge=? AND camera=? AND kind='breach' "
+        "ORDER BY id DESC LIMIT 1",
+        (badge, camera)
+    ).fetchone()
+    if not row or not row["triggered_at"]:
+        return True
+    try:
+        last = datetime.fromisoformat(row["triggered_at"])
+    except ValueError:
+        return True
+    return (datetime.utcnow() - last).total_seconds() >= config.BREACH_COOLDOWN_SECONDS
+
+
 def handle_new_file(path: Path):
     """Process one image file: parse → insert → update session → archive."""
     parsed = parse_filename(path.name)
@@ -229,6 +258,7 @@ def handle_new_file(path: Path):
 
     camera, badge, ts = parsed
     session_id, det_type, is_loitering = None, None, False
+    breach = None
 
     with _db_lock:
         conn = db()
@@ -242,7 +272,10 @@ def handle_new_file(path: Path):
                 if cur.rowcount == 0:
                     return  # duplicate filename
                 detection_id = cur.lastrowid
-                is_exit = camera in config.EXIT_CAMERAS
+                # A Perimeter Alert Region class is never an "exit" — it must
+                # always open/extend a session so the breach alert has context.
+                is_breach = config.is_breach_badge(badge)
+                is_exit = (camera in config.EXIT_CAMERAS) and not is_breach
                 session_id, det_type, is_loitering = update_session(conn, badge, camera, ts, is_exit)
                 # Stamp the detection with its session (visit) ID and final type
                 conn.execute(
@@ -275,6 +308,32 @@ def handle_new_file(path: Path):
                     loiter_resight = None
                     if is_loitering and is_whitelisted:
                         print(f"[loiter] re-alert suppressed: {badge} is now whitelisted")
+
+                # ── INSTANT BREACH: Perimeter Alert Region needs no dwell ──
+                breach = None
+                if is_breach and session_id and not is_whitelisted:
+                    if _breach_cooldown_passed(conn, badge, camera, ts):
+                        bcur = conn.execute(
+                            "INSERT INTO alerts(session_id, badge, triggered_at, "
+                            "duration_seconds, kind, camera, zone, image) "
+                            "VALUES (?,?,?,?, 'breach', ?, ?, ?)",
+                            (session_id, badge, datetime.utcnow().isoformat(), 0,
+                             camera, config.ZONE_BREACH, path.name)
+                        )
+                        breach = {
+                            "alert_id": bcur.lastrowid,
+                            "session_id": session_id,
+                            "badge": badge,
+                            "camera": camera,
+                            "zone": config.ZONE_BREACH,
+                            "zone_label": config.ZONE_LABELS[config.ZONE_BREACH],
+                            "timestamp": ts.isoformat(),
+                            "last_image": path.name,
+                        }
+                    else:
+                        print(f"[breach] cooldown active — {badge} @ {camera} not re-alerted")
+                elif is_breach and is_whitelisted:
+                    print(f"[breach] suppressed: {badge} is whitelisted")
         finally:
             conn.close()
 
@@ -294,6 +353,11 @@ def handle_new_file(path: Path):
         "session_id": session_id,
         "detection_type": det_type,
     })
+
+    # Fire BREACH alert AFTER archiving so the image file exists for Telegram
+    if breach and _main_loop:
+        print(f"[breach] INSTANT alert: {badge} in Perimeter Alert Region @ {camera}")
+        asyncio.run_coroutine_threadsafe(fire_breach_alert(breach), _main_loop)
 
     # Fire re-alert AFTER archiving so the image file exists when Telegram reads it
     if loiter_resight and _main_loop:
@@ -394,7 +458,70 @@ async def fire_loiter_resight(resight: dict):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# LOITERING CHECKER (runs every 30s)
+# PERIMETER BREACH — instant alert, no dwell wait
+#
+# Reuses the same Telegram/email delivery helpers as the loitering alerts
+# (_send_telegram_photo / _send_telegram / _mark_alert) — that path is known
+# good and is deliberately left untouched.
+# ════════════════════════════════════════════════════════════════════════════
+
+async def fire_breach_alert(breach: dict):
+    """Any detection inside the Perimeter Alert Region alerts immediately."""
+    badge  = breach["badge"]
+    camera = breach.get("camera") or "unknown"
+
+    local_offset = datetime.now() - datetime.utcnow()
+    seen_local = datetime.fromisoformat(breach["timestamp"]) + local_offset
+
+    text = (
+        f"🚨 PERIMETER BREACH\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧱 Zone        : {breach.get('zone_label', 'Perimeter Alert Region')}\n"
+        f"🎯 Detection   : {badge}\n"
+        f"📷 Camera      : {camera}\n"
+        f"🕐 Time        : {seen_local.strftime('%d %b %Y  %H:%M:%S')}\n"
+        f"⚡ Rule        : instant — no dwell wait"
+    )
+
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
+        try:
+            photo_path = None
+            if breach.get("last_image"):
+                photo_path = Path(config.ARCHIVE_DIR) / breach["last_image"]
+            has_photo = photo_path and photo_path.exists() and photo_path.stat().st_size > 0
+
+            for chat_id in config.TELEGRAM_CHAT_IDS:
+                try:
+                    if has_photo:
+                        await _send_telegram_photo(chat_id, text, photo_path)
+                    else:
+                        await _send_telegram(chat_id, text)
+                    print(f"[breach] sent to chat_id={chat_id} for badge={badge}")
+                except Exception as e:
+                    print(f"[breach] photo send failed for chat_id={chat_id}: {e} — falling back to text")
+                    try:
+                        await _send_telegram(chat_id, text)
+                        print(f"[breach] text fallback sent to chat_id={chat_id}")
+                    except Exception as e2:
+                        print(f"[breach] text fallback also failed for chat_id={chat_id}: {e2}")
+            _mark_alert(breach["alert_id"], "telegram_sent")
+        except Exception as e:
+            print(f"[breach] telegram setup failed: {e}")
+
+    if config.SMTP_USER and config.SMTP_TO and config.SMTP_PASS:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, _send_email, "Trinetra Perimeter Breach", text
+            )
+            _mark_alert(breach["alert_id"], "email_sent")
+        except Exception as e:
+            print(f"[breach] email failed: {e}")
+
+    await wsm.broadcast({"type": "perimeter_breach", **breach})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# DWELL CHECKER (runs every 30s)
 # ════════════════════════════════════════════════════════════════════════════
 
 async def loitering_loop():
@@ -412,7 +539,6 @@ async def check_loitering():
     with _db_lock:
         conn = db()
         try:
-            threshold = timedelta(minutes=config.LOITER_MINUTES)
             now = datetime.utcnow()
 
             # ── STEP 1: Loitering alert check (runs BEFORE stale-close) ──────
@@ -427,21 +553,32 @@ async def check_loitering():
             """).fetchall()
 
             for r in rows:
+                # Per-badge dwell threshold:
+                #   outside-perimeter classes use their own rule (default 10 min)
+                #   breach classes already alerted instantly  → None, skip
+                #   inside-factory classes are tracked, no alarm → None, skip
+                #   anything else falls back to TRINETRA_LOITER_MINUTES
+                dwell_min = config.dwell_minutes_for(r["badge"])
+                if dwell_min is None:
+                    continue
                 first = datetime.fromisoformat(r["first_seen"])
-                if (now - first) >= threshold:
+                if (now - first) >= timedelta(minutes=dwell_min):
                     duration = int((now - first).total_seconds())
+                    zone = config.zone_for(r["badge"])
                     with conn:
-                        cur = conn.execute(
-                            "INSERT INTO alerts(session_id, badge, triggered_at, duration_seconds) "
-                            "VALUES (?,?,?,?)",
-                            (r["id"], r["badge"], now.isoformat(), duration)
-                        )
-                        conn.execute("UPDATE sessions SET alert_sent=1 WHERE id=?", (r["id"],))
                         last_image_row = conn.execute(
                             "SELECT filename FROM detections WHERE session_id=? ORDER BY timestamp DESC LIMIT 1",
                             (r["id"],)
                         ).fetchone()
                         last_image = last_image_row["filename"] if last_image_row else None
+                        cur = conn.execute(
+                            "INSERT INTO alerts(session_id, badge, triggered_at, "
+                            "duration_seconds, kind, camera, zone, image) "
+                            "VALUES (?,?,?,?, 'dwell', ?, ?, ?)",
+                            (r["id"], r["badge"], now.isoformat(), duration,
+                             r["last_camera"], zone, last_image)
+                        )
+                        conn.execute("UPDATE sessions SET alert_sent=1 WHERE id=?", (r["id"],))
                     alerts_to_send.append({
                         "alert_id": cur.lastrowid,
                         "session_id": r["id"],
@@ -450,6 +587,8 @@ async def check_loitering():
                         "last_seen": r["last_seen"],
                         "last_camera": r["last_camera"],
                         "duration_seconds": duration,
+                        "dwell_minutes": dwell_min,
+                        "zone": zone,
                         "last_image": last_image,
                     })
 
@@ -800,12 +939,71 @@ def api_stats():
             if 0 <= idx < 30:
                 loiter_daily[idx] = r["c"]
 
+        # -- Perimeter breakdown (zone rules live in config.py) -----------
+        breaches_today = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE kind='breach' "
+            "AND date(triggered_at,'localtime')=date('now','localtime')"
+        ).fetchone()[0]
+        warnings_today = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE kind!='breach' "
+            "AND date(triggered_at,'localtime')=date('now','localtime')"
+        ).fetchone()[0]
+
+        # Zone mapping is Python-side, so classify open sessions in Python.
+        open_rows = conn.execute(
+            "SELECT badge, first_seen FROM sessions WHERE closed=0"
+        ).fetchall()
+        zone_counts = {config.ZONE_BREACH: 0, config.ZONE_OUTSIDE: 0,
+                       config.ZONE_INSIDE: 0, config.ZONE_UNKNOWN: 0}
+        watching = 0
+        for r in open_rows:
+            z = config.zone_for(r["badge"])
+            zone_counts[z] = zone_counts.get(z, 0) + 1
+            if z == config.ZONE_OUTSIDE:
+                watching += 1
+
+        # Today's detections per zone - drives the dashboard zone strip
+        det_rows = conn.execute(
+            "SELECT badge, COUNT(*) AS c FROM detections "
+            "WHERE date(timestamp)=date('now','localtime') GROUP BY badge"
+        ).fetchall()
+        det_by_zone = {config.ZONE_BREACH: 0, config.ZONE_OUTSIDE: 0,
+                       config.ZONE_INSIDE: 0, config.ZONE_UNKNOWN: 0}
+        for r in det_rows:
+            z = config.zone_for(r["badge"])
+            det_by_zone[z] = det_by_zone.get(z, 0) + r["c"]
+
+        # Breach vs early warning over the last 30 days
+        breach_30d = [0] * 30
+        warn_30d = [0] * 30
+        rows = conn.execute(
+            "SELECT date(triggered_at,'localtime') AS d, "
+            "SUM(CASE WHEN kind='breach' THEN 1 ELSE 0 END) AS b, "
+            "SUM(CASE WHEN kind!='breach' THEN 1 ELSE 0 END) AS w "
+            "FROM alerts WHERE triggered_at > datetime('now', '-30 days') "
+            "GROUP BY d"
+        ).fetchall()
+        for r in rows:
+            day = datetime.strptime(r["d"], "%Y-%m-%d").date()
+            idx = 29 - (today - day).days
+            if 0 <= idx < 30:
+                breach_30d[idx] = r["b"] or 0
+                warn_30d[idx] = r["w"] or 0
+
         js = jetson_status()
 
         return {
             "total_today": total_today,
             "active_sessions": active,
             "loitering_count": loitering,
+            "breaches_today": breaches_today,
+            "warnings_today": warnings_today,
+            "alerts_today": breaches_today + warnings_today,
+            "watching_outside": watching,
+            "zone_sessions": zone_counts,
+            "zone_detections_today": det_by_zone,
+            "breach_30d": breach_30d,
+            "warning_30d": warn_30d,
             "jetsons_online": js["online"],
             "jetsons_total": js["total"],
             "by_badge": [[r["badge"], r["c"]] for r in by_badge],
@@ -1091,32 +1289,75 @@ def api_sessions_active():
 
 
 # ─── /api/detections — filtered detection log ─────────────────────────────
+# SQL expression that mirrors config.normalize_badge() so zone filtering in
+# the database matches the Python zone mapping exactly.
+_NORM_SQL = "REPLACE(LOWER(REPLACE(badge,'_','-')),'boundary','boundry')"
+
+
+def _zone_predicate(zone: str):
+    """Return (sql_fragment, params) restricting rows to one perimeter zone."""
+    named = (sorted(config.BREACH_BADGES) + sorted(config.DWELL_RULES)
+             + sorted(config.INSIDE_BADGES))
+    if zone == config.ZONE_BREACH:
+        members = sorted(config.BREACH_BADGES)
+    elif zone == config.ZONE_OUTSIDE:
+        # Named outside classes OR a counted one like "outside-person-3-object-2"
+        members = sorted(config.DWELL_RULES)
+        holes = ",".join("?" * len(members)) if members else "NULL"
+        return (f"({_NORM_SQL} IN ({holes}) OR {_NORM_SQL} LIKE ?)",
+                members + [config.OUTSIDE_COUNT_LIKE])
+    elif zone == config.ZONE_INSIDE:
+        members = sorted(config.INSIDE_BADGES)
+    elif zone == config.ZONE_UNKNOWN:
+        if not named:
+            return f"{_NORM_SQL} NOT LIKE ?", [config.OUTSIDE_COUNT_LIKE]
+        holes = ",".join("?" * len(named))
+        return (f"({_NORM_SQL} NOT IN ({holes}) AND {_NORM_SQL} NOT LIKE ?)",
+                named + [config.OUTSIDE_COUNT_LIKE])
+    else:
+        return None, []
+
+    if not members:
+        return "1=0", []          # zone configured with no classes -> no rows
+    holes = ",".join("?" * len(members))
+    return f"{_NORM_SQL} IN ({holes})", members
+
+
 def _detections_query(date: Optional[str], month: Optional[str],
                       badge: Optional[str], camera: Optional[str],
-                      search: Optional[str]):
+                      search: Optional[str], zone: Optional[str] = None,
+                      all_time: bool = False):
+    """Build the WHERE clause. Defaults to today unless a date/month is given
+    or all_time is set (the Logs page browses the full history)."""
     where, params = [], []
     if date:
         where.append("date(timestamp,'localtime')=?"); params.append(date)
     elif month:
         where.append("strftime('%Y-%m', timestamp, 'localtime')=?"); params.append(month)
-    else:
+    elif not all_time:
         where.append("date(timestamp,'localtime')=date('now','localtime')")
     if badge:
         where.append("badge=?"); params.append(badge)
     if camera:
         where.append("camera=?"); params.append(camera)
+    if zone:
+        zsql, zparams = _zone_predicate(zone)
+        if zsql:
+            where.append(zsql); params += zparams
     if search:
         where.append("(badge LIKE ? OR camera LIKE ? OR strftime('%H:%M:%S', timestamp,'localtime') LIKE ?)")
         s = f"%{search}%"; params += [s, s, s]
-    return " AND ".join(where), params
+    # all_time with no other filter leaves no clauses at all — keep the SQL valid
+    return (" AND ".join(where) if where else "1=1"), params
 
 
 @app.get("/api/detections")
 def api_detections(date: Optional[str] = None, month: Optional[str] = None,
                    badge: Optional[str] = None, camera: Optional[str] = None,
-                   search: Optional[str] = None,
+                   search: Optional[str] = None, zone: Optional[str] = None,
+                   all_time: bool = False,
                    limit: int = 200, offset: int = 0):
-    where, params = _detections_query(date, month, badge, camera, search)
+    where, params = _detections_query(date, month, badge, camera, search, zone, all_time)
     sql = (
         "SELECT id, filename, camera, badge, timestamp, type, session_id "
         f"FROM detections WHERE {where} "
@@ -1134,8 +1375,52 @@ def api_detections(date: Optional[str] = None, month: Optional[str] = None,
             "timestamp": r["timestamp"],
             "type": r["type"],
             "session_id": r["session_id"],
+            "zone": config.zone_for(r["badge"]),
+            "zone_label": config.zone_label(r["badge"]),
+            "counts": config.parse_counts(r["badge"]),
             "has_image": (archive / r["filename"]).exists(),
         } for r in rows]
+    finally:
+        conn.close()
+
+
+# ─── /api/detections/summary — totals for the CURRENT filter set ─────────
+# The Logs table is paged (20 rows), so its charts must not be derived from
+# the visible page. This returns aggregates over every matching row.
+@app.get("/api/detections/summary")
+def api_detections_summary(date: Optional[str] = None, month: Optional[str] = None,
+                           badge: Optional[str] = None, camera: Optional[str] = None,
+                           search: Optional[str] = None, zone: Optional[str] = None,
+                           all_time: bool = False):
+    where, params = _detections_query(date, month, badge, camera, search, zone, all_time)
+    conn = db()
+    try:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM detections WHERE {where}", params
+        ).fetchone()[0]
+        by_badge = conn.execute(
+            f"SELECT badge, COUNT(*) c FROM detections WHERE {where} "
+            "GROUP BY badge ORDER BY c DESC LIMIT 12", params
+        ).fetchall()
+        by_camera = conn.execute(
+            f"SELECT camera, COUNT(*) c FROM detections WHERE {where} "
+            "GROUP BY camera ORDER BY c DESC LIMIT 12", params
+        ).fetchall()
+
+        zone_counts = {}
+        for r in conn.execute(
+            f"SELECT badge, COUNT(*) c FROM detections WHERE {where} GROUP BY badge", params
+        ).fetchall():
+            z = config.zone_for(r["badge"])
+            zone_counts[z] = zone_counts.get(z, 0) + r["c"]
+
+        return {
+            "total": total,
+            "by_badge": [[r["badge"], r["c"]] for r in by_badge],
+            "by_camera": [[r["camera"], r["c"]] for r in by_camera],
+            "by_zone": zone_counts,
+            "badge_zones": {r["badge"]: config.zone_for(r["badge"]) for r in by_badge},
+        }
     finally:
         conn.close()
 
@@ -1143,8 +1428,9 @@ def api_detections(date: Optional[str] = None, month: Optional[str] = None,
 @app.get("/api/detections/export")
 def api_detections_export(date: Optional[str] = None, month: Optional[str] = None,
                           badge: Optional[str] = None, camera: Optional[str] = None,
-                          search: Optional[str] = None):
-    where, params = _detections_query(date, month, badge, camera, search)
+                          search: Optional[str] = None, zone: Optional[str] = None,
+                          all_time: bool = False):
+    where, params = _detections_query(date, month, badge, camera, search, zone, all_time)
     sql = (
         "SELECT id, timestamp, badge, camera, type, filename "
         f"FROM detections WHERE {where} ORDER BY timestamp DESC"
@@ -1157,9 +1443,11 @@ def api_detections_export(date: Optional[str] = None, month: Optional[str] = Non
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["id", "timestamp", "badge", "camera", "type", "filename"])
+    writer.writerow(["id", "timestamp", "detection", "zone", "camera", "type", "filename"])
     for r in rows:
-        writer.writerow([r["id"], r["timestamp"], r["badge"], r["camera"], r["type"], r["filename"]])
+        writer.writerow([r["id"], r["timestamp"], r["badge"],
+                         config.zone_label(r["badge"]),
+                         r["camera"], r["type"], r["filename"]])
     buf.seek(0)
     fname = f"trinetra-detections-{datetime.now():%Y%m%d-%H%M%S}.csv"
     return StreamingResponse(
@@ -1218,6 +1506,77 @@ def api_whitelist_remove(badge: str):
         conn.close()
 
 
+# ─── /api/perimeter/rules — zone config, so the UI never hardcodes it ─────
+@app.get("/api/perimeter/rules")
+def api_perimeter_rules():
+    return {
+        "breach_badges": sorted(config.BREACH_BADGES),
+        "dwell_rules": {b: m for b, m in sorted(config.DWELL_RULES.items())},
+        "inside_badges": sorted(config.INSIDE_BADGES),
+        "default_dwell_minutes": config.LOITER_MINUTES,
+        "breach_cooldown_seconds": config.BREACH_COOLDOWN_SECONDS,
+        "zone_labels": config.ZONE_LABELS,
+    }
+
+
+# ─── /api/alerts/recent — perimeter alert log (breach + early warning) ────
+@app.get("/api/alerts/recent")
+def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
+                      today: bool = False):
+    conn = db()
+    try:
+        sql = ("SELECT a.id, a.badge, a.triggered_at, a.duration_seconds, "
+               "a.kind, a.camera, a.zone, a.image, a.acknowledged, "
+               "a.acknowledged_at, a.acknowledged_by, a.session_id, "
+               "s.last_camera AS session_camera "
+               "FROM alerts a LEFT JOIN sessions s ON s.id = a.session_id ")
+        params = []
+        clauses = []
+        if kind in ("breach", "dwell"):
+            clauses.append("COALESCE(a.kind,'dwell')=?")
+            params.append(kind)
+        if today:
+            clauses.append("date(a.triggered_at,'localtime')=date('now','localtime')")
+        if clauses:
+            sql += "WHERE " + " AND ".join(clauses) + " "
+        sql += "ORDER BY a.triggered_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+
+        rows = conn.execute(sql, params).fetchall()
+        archive = Path(config.ARCHIVE_DIR)
+        out = []
+        for r in rows:
+            image = r["image"]
+            if not image and r["session_id"]:
+                img_row = conn.execute(
+                    "SELECT filename FROM detections WHERE session_id=? "
+                    "ORDER BY timestamp DESC LIMIT 1", (r["session_id"],)
+                ).fetchone()
+                image = img_row["filename"] if img_row else None
+            kind_val = r["kind"] or "dwell"
+            zone_val = r["zone"] or config.zone_for(r["badge"])
+            out.append({
+                "id": r["id"],
+                "badge": r["badge"],
+                "triggered_at": r["triggered_at"],
+                "duration_seconds": r["duration_seconds"] or 0,
+                "kind": kind_val,
+                "zone": zone_val,
+                "zone_label": config.ZONE_LABELS.get(zone_val, zone_val),
+                "counts": config.parse_counts(r["badge"]),
+                "camera": r["camera"] or r["session_camera"] or "—",
+                "session_id": r["session_id"],
+                "acked": bool(r["acknowledged"]),
+                "acked_at": r["acknowledged_at"],
+                "acked_by": r["acknowledged_by"],
+                "image": image,
+                "has_image": bool(image and (archive / image).exists()),
+            })
+        return out
+    finally:
+        conn.close()
+
+
 # ─── /api/alerts/{id}/ack ─────────────────────────────────────────────────
 @app.post("/api/alerts/{alert_id}/ack")
 async def api_alert_ack(alert_id: int, request: Request):
@@ -1235,20 +1594,10 @@ async def api_alert_ack(alert_id: int, request: Request):
                 "UPDATE alerts SET acknowledged=1, acknowledged_at=?, acknowledged_by=? WHERE id=?",
                 (now.isoformat(), acked_by, alert_id)
             )
-            # 2. Auto-whitelist the badge so it is recorded and no longer
-            #    flagged as loitering. The badge stays visible in the premises
-            #    table with WHITELIST status and is filtered out of the
-            #    loitering banner automatically by the frontend.
-            row = conn.execute(
-                "SELECT badge FROM alerts WHERE id=?", (alert_id,)
-            ).fetchone()
-            if row:
-                badge = row["badge"]
-                reason = f"Auto-whitelisted: acked alert #{alert_id} by {acked_by}"
-                conn.execute(
-                    "INSERT OR REPLACE INTO whitelist(badge, reason) VALUES (?,?)",
-                    (badge, reason)
-                )
+            # 2. Acknowledging DISMISSES this one alert. It deliberately does
+            #    NOT whitelist the class: perimeter classes are detection
+            #    classes, not people, so muting "Boundry-object" after one ack
+            #    would silence every future breach on that camera.
         return {"ok": True}
     finally:
         conn.close()

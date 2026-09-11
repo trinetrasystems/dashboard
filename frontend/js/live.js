@@ -1,99 +1,479 @@
 /* ────────────────────────────────────────────────────────────────────────────
- * LIVE MONITORING PAGE — calls real API via api.js
- * Adds: Live Notifications panel + enhanced premises modal (image + history)
+ * LIVE PERIMETER PAGE — today only.
+ *
+ * Two zones drive everything (see the Pharma Perimeter deck, slide 4):
+ *   1 Perimeter Alert Region — any detection alerts INSTANTLY
+ *   2 Outside perimeter      — alerts as an EARLY WARNING after a dwell rule
+ *
+ * The table lists ONE ROW PER DETECTION. Sessions keep running underneath so
+ * the dwell rule still accumulates across frames and fires its early warning.
+ *
+ * Zone rules come from the backend (/api/perimeter/rules), never hardcoded.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-const NOTIF_MAX = 50;
 let activeSessions = [];
+let sessionById = {};
 let cachedStats = null;
-let cachedNotifications = [];
-let _premisesMap = {};   // badge → session object, for row-click lookup
+let cachedDetections = [];
+let cachedAlerts = [];
+let perimeterRules = null;
+let _detMap = {};      // detection id → detection, for row-click lookup
+let _alertMap = {};    // alert id → alert, for row-click lookup
+let _ackedLocally = new Set();   // instant banner dismissal, before refetch
+
+/* ─── Zone helpers ─── */
+function normBadge(b) {
+  return String(b || '').trim().toLowerCase().replace(/_/g, '-').replace('boundary', 'boundry');
+}
+const COUNTED_RE = /^outside-person-(\d+)-object-(\d+)$/;
+
+function zoneOf(badge) {
+  if (!perimeterRules) return 'unknown';
+  const k = normBadge(badge);
+  if ((perimeterRules.breach_badges || []).includes(k)) return 'breach';
+  if (Object.prototype.hasOwnProperty.call(perimeterRules.dwell_rules || {}, k)) return 'outside';
+  if (COUNTED_RE.test(k)) return 'outside';
+  if ((perimeterRules.inside_badges || []).includes(k)) return 'inside';
+  return 'unknown';
+}
+function zoneLabel(zone) {
+  const labels = (perimeterRules && perimeterRules.zone_labels) || {};
+  return labels[zone] || zone;
+}
+function dwellMinutesFor(badge) {
+  if (!perimeterRules) return null;
+  const k = normBadge(badge);
+  if ((perimeterRules.breach_badges || []).includes(k)) return null;
+  const rules = perimeterRules.dwell_rules || {};
+  if (Object.prototype.hasOwnProperty.call(rules, k)) return rules[k];
+  if (COUNTED_RE.test(k)) return rules['outside-person'] || 10;
+  if ((perimeterRules.inside_badges || []).includes(k)) return null;
+  return perimeterRules.default_dwell_minutes;
+}
+/* "Outside-person-3-object-2" → {persons: 3, objects: 2} */
+function countsOf(badge) {
+  const m = COUNTED_RE.exec(normBadge(badge));
+  return m ? { persons: +m[1], objects: +m[2] } : null;
+}
+function countsText(c) {
+  if (!c) return '';
+  const p = `${c.persons} person${c.persons === 1 ? '' : 's'}`;
+  const o = `${c.objects} object${c.objects === 1 ? '' : 's'}`;
+  return `${p} · ${o}`;
+}
+
+const ZONE_TAG = {
+  breach:  { cls: 'breach', label: 'ALERT REGION' },
+  outside: { cls: 'warn',   label: 'OUTSIDE' },
+  inside:  { cls: 'ok',     label: 'INSIDE' },
+  unknown: { cls: 'muted',  label: 'UNZONED' },
+};
 
 async function refreshAll() {
   try {
-    const [sessions, stats, recentDetections] = await Promise.all([
+    if (!perimeterRules) perimeterRules = await getPerimeterRules();
+
+    const [sessions, stats, detections, alerts] = await Promise.all([
       getSessions(),
       getStats(),
-      getDetections({}),   // today's detections, newest first
+      getDetections({}),            // defaults to today on the backend
+      getRecentAlerts(60, null, true),   // today only
     ]);
-    activeSessions = sessions.map(s => ({
-      ...s,
-      first_seen_dt: new Date(s.first_seen.endsWith('Z') ? s.first_seen : s.first_seen + 'Z'),
-      last_seen_dt: new Date(s.last_seen.endsWith('Z') ? s.last_seen : s.last_seen + 'Z'),
-    }));
-    cachedStats = stats;
-    cachedNotifications = (recentDetections || []).slice(0, NOTIF_MAX);
 
-    // Topbar status pills
-    const pills = document.querySelectorAll('.status-pill');
-    if (pills.length >= 3 && stats) {
-      pills[0].innerHTML = `<span class="dot"></span><span>${stats.jetsons_online} / ${stats.jetsons_total} JETSONS ONLINE</span>`;
-      const loiterCls = stats.loitering_count ? 'alert' : '';
-      pills[1].className = `status-pill ${loiterCls}`;
-      pills[1].innerHTML = `<span class="dot ${stats.loitering_count ? 'red' : ''}"></span><span>${stats.loitering_count} LOITERING</span>`;
-      pills[2].innerHTML = `<span class="dot"></span><span>${stats.active_sessions} IN PREMISES</span>`;
+    activeSessions = sessions || [];
+    sessionById = {};
+    for (const s of activeSessions) {
+      sessionById[s.id] = {
+        ...s,
+        first_seen_dt: new Date(s.first_seen.endsWith('Z') ? s.first_seen : s.first_seen + 'Z'),
+      };
     }
+    cachedStats = stats;
+    cachedDetections = detections || [];
+    cachedAlerts = alerts || [];
 
-    renderLoiterBanner();
+    updateTopbarPills(cachedStats);
+    renderBanner();
     renderKPIs();
+    renderZoneStrip();
+    renderDetectionsTable();
+    renderAlertLog();
     renderTodayChart();
-    renderPremisesTable();
-    renderNotifications();
   } catch (e) {
     console.error('refresh failed:', e);
   }
 }
 
-function renderLoiterBanner() {
-  const banner = document.getElementById('loiter-banner');
-  const list = document.getElementById('loiter-list');
-  // Show ALL sessions loitering by time — both whitelisted and non-whitelisted.
-  // Whitelisted ones get a Remove WL button; others get an Ack button.
-  const loitering = activeSessions.filter(s => {
-    const mins = (Date.now() - s.first_seen_dt.getTime()) / 60000;
-    return mins >= LOITER_MIN;
+/* ═══ Flashing alert banner ═══
+ * Grouped by badge so a class alerting repeatedly takes ONE slot, capped so
+ * hundreds of alerts can never flood the top of the page.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const BANNER_MAX_CHIPS = 6;
+
+function groupAlerts(alerts) {
+  const groups = new Map();
+  for (const a of alerts) {
+    const key = a.badge;                 // one slot per badge
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, { badge: a.badge, latest: a, count: 1, ids: [a.id], breach: a.kind === 'breach' });
+    } else {
+      g.count++;
+      g.ids.push(a.id);
+      g.breach = g.breach || a.kind === 'breach';
+      // alerts arrive newest-first, so the first one seen is the latest
+    }
+  }
+  // Breaches first, then the most recent
+  return [...groups.values()].sort((x, y) => {
+    if (x.breach !== y.breach) return x.breach ? -1 : 1;
+    return new Date(y.latest.triggered_at) - new Date(x.latest.triggered_at);
   });
-  if (loitering.length === 0) { banner.style.display = 'none'; return; }
-  banner.style.display = 'block';
-  list.innerHTML = loitering.map(s => {
-    const secs = (Date.now() - s.first_seen_dt.getTime()) / 1000;
-    const metaText = s.whitelisted
-      ? `whitelisted · since ${fmtTime(s.first_seen_dt)} · ${escapeHtml(s.last_camera || '')}`
-      : `since ${fmtTime(s.first_seen_dt)} · ${escapeHtml(s.last_camera || '')}`;
-    const actionBtn = s.whitelisted
-      ? `<button class="ack-btn" style="background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
-             onclick="removeFromWhitelist('${escapeHtml(s.badge)}')"
-             title="Remove from whitelist — will be monitored for loitering again">
-             ✕ Remove WL</button>`
-      : (s.alert_id
-          ? `<button class="ack-btn" onclick="ackAlert(${s.alert_id})" title="Acknowledge — adds badge to whitelist">
-               ✓ Ack</button>`
-          : '');
-    return `
-      <div class="loiter-item ${s.whitelisted ? 'acked' : ''}">
-        <div class="info">
-          <div class="label">${escapeHtml(s.badge)}</div>
-          <div class="meta">${metaText}</div>
-        </div>
-        <div class="duration" data-since="${s.first_seen_dt.getTime()}">${fmtDuration(secs)}</div>
-        ${actionBtn}
-      </div>`;
-  }).join('');
 }
 
+function renderBanner() {
+  const banner = document.getElementById('breach-banner');
+  const list = document.getElementById('breach-list');
+  const head = document.getElementById('banner-head');
+  const sub = document.getElementById('banner-sub');
+  const ackAll = document.getElementById('ack-all-btn');
+  if (!banner || !list) return;
+
+  const open = cachedAlerts.filter(a => !a.acked && !_ackedLocally.has(a.id));
+  if (open.length === 0) {
+    banner.style.display = 'none';
+    banner.classList.remove('has-breach');
+    return;
+  }
+
+  const breaches = open.filter(a => a.kind === 'breach').length;
+  const warnings = open.length - breaches;
+  const groups = groupAlerts(open);
+
+  banner.style.display = 'block';
+  banner.classList.toggle('has-breach', breaches > 0);
+
+  if (head) head.textContent = breaches > 0 ? 'PERIMETER BREACH' : 'EARLY WARNING';
+  if (sub) {
+    const parts = [];
+    if (breaches) parts.push(`${breaches} breach`);
+    if (warnings) parts.push(`${warnings} early warning`);
+    const extra = groups.length > BANNER_MAX_CHIPS
+      ? ` · ${groups.length} classes` : '';
+    sub.textContent = `${parts.join(' · ')}${extra} · unacknowledged`;
+  }
+  if (ackAll) ackAll.textContent = `✓ ACK ALL (${open.length})`;
+
+  const shown = groups.slice(0, BANNER_MAX_CHIPS);
+  const hiddenGroups = groups.length - shown.length;
+  const hiddenAlerts = groups.slice(BANNER_MAX_CHIPS).reduce((n, g) => n + g.count, 0);
+
+  let html = shown.map(g => {
+    const a = g.latest;
+    const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
+    const counts = a.counts || countsOf(a.badge);
+    const detail = counts ? countsText(counts) : escapeHtml(a.zone_label);
+    const mins = Math.floor((a.duration_seconds || 0) / 60);
+
+    const thumb = a.has_image
+      ? `<img class="alert-chip-thumb" src="/images/${encodeURIComponent(a.image)}" alt=""
+             onerror="this.outerHTML='<span class=&quot;alert-chip-thumb none&quot;>⊘</span>'">`
+      : `<span class="alert-chip-thumb none">⊘</span>`;
+
+    const repeat = g.count > 1
+      ? `<span class="alert-chip-count" title="${g.count} alerts for this class">×${g.count}</span>` : '';
+
+    return `
+      <div class="alert-chip ${g.breach ? 'breach' : 'warning'}"
+           onclick="showAlertSnapshot(${a.id})" title="Click to see the snapshot">
+        ${thumb}
+        <div class="alert-chip-body">
+          <div class="alert-chip-kind">${g.breach ? '⚡ BREACH' : '⏱ EARLY WARNING'}${repeat}</div>
+          <div class="alert-chip-badge">${escapeHtml(a.badge)}</div>
+          <div class="alert-chip-meta">${escapeHtml(a.camera)} · ${detail}${g.breach ? '' : ` · ${mins} min`} · ${fmtTime(ts)}</div>
+        </div>
+        <button class="ack-btn-lg" onclick="event.stopPropagation();ackGroup('${encodeURIComponent(JSON.stringify(g.ids))}')"
+                title="Acknowledge ${g.count} alert${g.count === 1 ? '' : 's'} for this class">✓ ACK</button>
+      </div>`;
+  }).join('');
+
+  if (hiddenGroups > 0) {
+    html += `
+      <div class="alert-chip more-chip" title="Acknowledge the visible ones to reveal these">
+        <div class="alert-chip-body">
+          <div class="alert-chip-badge">+${hiddenGroups} more class${hiddenGroups === 1 ? '' : 'es'}</div>
+          <div class="alert-chip-meta">${hiddenAlerts} further alert${hiddenAlerts === 1 ? '' : 's'} · see the log below</div>
+        </div>
+      </div>`;
+  }
+
+  list.innerHTML = html;
+}
+
+/* Ack every alert in one badge group */
+async function ackGroup(idsJson) {
+  let ids;
+  try { ids = JSON.parse(decodeURIComponent(idsJson)); }
+  catch (e) { return; }
+  ids.forEach(id => _ackedLocally.add(id));
+  renderBanner();
+  try {
+    await Promise.all(ids.map(id => ackAlertAPI(id)));
+    await refreshAll();
+  } catch (e) {
+    console.error('ack group failed:', e);
+    ids.forEach(id => _ackedLocally.delete(id));
+    renderBanner();
+  }
+}
+window.ackGroup = ackGroup;
+
+/* Ack everything currently unacknowledged — the escape hatch for alert storms */
+async function ackAllAlerts() {
+  const open = cachedAlerts.filter(a => !a.acked && !_ackedLocally.has(a.id));
+  const ids = open.map(a => a.id);
+  if (ids.length === 0) return;
+  ids.forEach(id => _ackedLocally.add(id));
+  renderBanner();
+  try {
+    // Send in small batches so a storm does not open hundreds of sockets at once
+    for (let i = 0; i < ids.length; i += 10) {
+      await Promise.all(ids.slice(i, i + 10).map(id => ackAlertAPI(id)));
+    }
+    await refreshAll();
+  } catch (e) {
+    console.error('ack all failed:', e);
+    await refreshAll();
+  }
+}
+window.ackAllAlerts = ackAllAlerts;
+
+/* Ack a single alert (used by the alert log) */
 async function ackAlert(alertId) {
-  try { await ackAlertAPI(alertId); await refreshAll(); }
-  catch (e) { console.error('ack failed:', e); }
+  _ackedLocally.add(alertId);
+  renderBanner();
+  try {
+    await ackAlertAPI(alertId);
+    await refreshAll();
+  } catch (e) {
+    console.error('ack failed:', e);
+    _ackedLocally.delete(alertId);
+    renderBanner();
+  }
 }
 window.ackAlert = ackAlert;
 
+/* ═══ KPIs ═══ */
 function renderKPIs() {
   if (!cachedStats) return;
-  document.getElementById('kpi-total').textContent = cachedStats.total_today;
-  document.getElementById('kpi-active').textContent = cachedStats.active_sessions;
-  document.getElementById('kpi-loiter').textContent = cachedStats.loitering_count;
+  document.getElementById('kpi-breach').textContent = cachedStats.breaches_today || 0;
+  document.getElementById('kpi-warning').textContent = cachedStats.warnings_today || 0;
+  document.getElementById('kpi-total').textContent =
+    cachedStats.alerts_today != null
+      ? cachedStats.alerts_today
+      : (cachedStats.breaches_today || 0) + (cachedStats.warnings_today || 0);
+
+  const sub = document.getElementById('kpi-warning-sub');
+  if (sub && perimeterRules) {
+    const mins = [...new Set(Object.values(perimeterRules.dwell_rules || {}))];
+    sub.textContent = mins.length
+      ? `dwell · outside perimeter · ${mins.sort((a, b) => a - b).join('/')} min`
+      : 'dwell · outside perimeter';
+  }
 }
 
+/* ═══ Zone strip ═══ */
+function renderZoneStrip() {
+  if (!cachedStats) return;
+  const z = cachedStats.zone_detections_today || {};
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v || 0;
+  };
+  set('zone-breach-count', z.breach);
+  set('zone-outside-count', z.outside);
+
+  const rule = document.getElementById('zone-outside-rule');
+  if (rule && perimeterRules) {
+    const rules = perimeterRules.dwell_rules || {};
+    const parts = Object.entries(rules).map(([b, m]) => `${b} ${m} min`);
+    rule.textContent = parts.length
+      ? `Strip beyond the wall — early warning after ${parts.join(' · ')}`
+      : 'Strip beyond the wall — dwell-based early warning';
+  }
+}
+
+/* ═══ Today's detections — ONE ROW PER DETECTION ═══ */
+function renderDetectionsTable() {
+  _detMap = {};
+  const tbody = document.getElementById('watch-body');
+  const sub = document.getElementById('watch-sub');
+  if (!tbody) return;
+
+  if (cachedDetections.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">no detections today</td></tr>`;
+    if (sub) sub.textContent = 'one row per detection · today only';
+    return;
+  }
+  if (sub) {
+    sub.textContent = `${cachedDetections.length} detection${cachedDetections.length === 1 ? '' : 's'} today · one row each`;
+  }
+
+  tbody.innerHTML = cachedDetections.map(d => {
+    _detMap[d.id] = d;
+    const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
+    const zone = d.zone || zoneOf(d.badge);
+    const zt = ZONE_TAG[zone] || ZONE_TAG.unknown;
+    const counts = d.counts || countsOf(d.badge);
+
+    // Dwell comes from the still-open session behind this detection, so the
+    // timer keeps accumulating across frames even though rows are per-detection.
+    const sess = d.session_id ? sessionById[d.session_id] : null;
+    const limit = dwellMinutesFor(d.badge);
+    let dwellCell = `<span style="color:var(--text-dim);">—</span>`;
+    let status = { cls: 'ok', label: 'LOGGED' };
+
+    if (zone === 'breach') {
+      status = { cls: 'alert', label: 'BREACH' };
+      dwellCell = `<span class="duration-pill alert">⚡ instant</span>`;
+    } else if (sess && limit) {
+      const secs = (Date.now() - sess.first_seen_dt.getTime()) / 1000;
+      const mins = secs / 60;
+      const cls = mins >= limit ? 'alert' : (mins >= limit * 0.6 ? 'warn' : 'ok');
+      dwellCell = `<span class="duration-pill ${cls}" data-since="${sess.first_seen_dt.getTime()}" data-limit="${limit}">
+          ${cls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}</span>`;
+      status = mins >= limit
+        ? { cls: 'alert', label: 'EARLY WARNING' }
+        : (mins >= limit * 0.6 ? { cls: 'warn', label: 'APPROACHING' }
+                               : { cls: 'ok', label: 'WATCHING' });
+    }
+
+    const countBadge = counts
+      ? `<span class="count-chip" title="${escapeHtml(countsText(counts))}">👤 ${counts.persons} · 📦 ${counts.objects}</span>`
+      : '';
+
+    return `
+      <tr class="clickable ${zone === 'breach' ? 'alert-row' : ''}" onclick="showDetectionDetail(${d.id})">
+        <td class="mono"><b>${escapeHtml(d.badge)}</b>
+            <span class="zone-tag ${zt.cls}" style="margin-left:6px;">${zt.label}</span>${countBadge}</td>
+        <td class="mono">${escapeHtml(d.camera)}</td>
+        <td class="mono">${fmtTime(ts)}</td>
+        <td>${dwellCell}</td>
+        <td><span class="status-tag ${status.cls}">${status.label}</span></td>
+      </tr>`;
+  }).join('');
+}
+
+/* Row click — snapshot plus the person/object tally for counted classes */
+function showDetectionDetail(id) {
+  const d = _detMap[id];
+  if (!d) return;
+  const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
+  const zone = d.zone || zoneOf(d.badge);
+  const counts = d.counts || countsOf(d.badge);
+
+  ensureModal();
+  document.querySelector('.modal')?.classList.remove('modal-detail');
+  document.getElementById('modal-title').textContent = d.badge;
+  document.getElementById('modal-sub').textContent =
+    `${d.zone_label || zoneLabel(zone)} · ${d.camera} · ${fmtTime(ts)} · ${fmtDate(ts)}`;
+
+  const tally = counts ? `
+    <div class="count-panel">
+      <div class="count-panel-head">Currently detected in this frame</div>
+      <div class="count-panel-grid">
+        <div class="count-box">
+          <div class="count-box-value">${counts.persons}</div>
+          <div class="count-box-label">person${counts.persons === 1 ? '' : 's'}</div>
+        </div>
+        <div class="count-box">
+          <div class="count-box-value">${counts.objects}</div>
+          <div class="count-box-label">object${counts.objects === 1 ? '' : 's'}</div>
+        </div>
+      </div>
+      <div class="count-panel-foot">${escapeHtml(countsText(counts))} outside the perimeter wall</div>
+    </div>` : '';
+
+  const img = d.has_image
+    ? `<img class="modal-img" src="/images/${encodeURIComponent(d.filename)}" alt="${escapeHtml(d.badge)}"
+           onerror="this.outerHTML='<div class=&quot;modal-no-image&quot;>⊘ NO IMAGE AVAILABLE</div>'">`
+    : `<div class="modal-no-image">⊘ NO IMAGE AVAILABLE</div>`;
+
+  document.getElementById('modal-body').innerHTML = tally + img;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+window.showDetectionDetail = showDetectionDetail;
+
+/* ═══ Alert log — today ═══ */
+function renderAlertLog() {
+  const tbody = document.getElementById('alertlog-body');
+  const meta = document.getElementById('alertlog-meta');
+  if (!tbody) return;
+  _alertMap = {};
+
+  if (cachedAlerts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">no alerts today</td></tr>`;
+    if (meta) meta.textContent = 'no alerts today';
+    return;
+  }
+
+  const breaches = cachedAlerts.filter(a => a.kind === 'breach').length;
+  if (meta) {
+    meta.textContent = `${cachedAlerts.length} today · ${breaches} breach · ${cachedAlerts.length - breaches} early warning`;
+  }
+
+  tbody.innerHTML = cachedAlerts.map(a => {
+    _alertMap[a.id] = a;
+    const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
+    const isBreach = a.kind === 'breach';
+    const mins = Math.floor((a.duration_seconds || 0) / 60);
+    const counts = a.counts || countsOf(a.badge);
+
+    const event = isBreach
+      ? 'Object in alert region'
+      : (mins ? `Dwell exceeded · ${mins} min` : 'Dwell exceeded');
+
+    const typeTag = isBreach
+      ? `<span class="status-tag alert">BREACH</span>`
+      : `<span class="status-tag warn">EARLY WARNING</span>`;
+
+    const thumb = a.has_image
+      ? `<div class="alert-thumb"><img src="/images/${encodeURIComponent(a.image)}" alt="" loading="lazy"
+             onerror="this.parentNode.innerHTML='<span class=&quot;alert-thumb-none&quot;>⊘</span>'"></div>`
+      : `<div class="alert-thumb"><span class="alert-thumb-none">⊘</span></div>`;
+
+    return `
+      <tr class="clickable ${isBreach && !a.acked ? 'alert-row' : ''}" onclick="showAlertSnapshot(${a.id})">
+        <td>${thumb}</td>
+        <td class="mono">${fmtTime(ts)}</td>
+        <td>${escapeHtml(event)}${a.acked ? ' <span class="status-tag wl">ACKED</span>' : ''}</td>
+        <td class="mono" style="color:var(--text-muted);">${escapeHtml(a.zone_label)}<br>
+            <span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(a.camera)}</span></td>
+        <td class="mono"><b>${escapeHtml(a.badge)}</b>${counts ? `<br><span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(countsText(counts))}</span>` : ''}</td>
+        <td>${typeTag}</td>
+      </tr>`;
+  }).join('');
+}
+
+function showAlertSnapshot(alertId) {
+  const a = _alertMap[alertId];
+  if (!a) return;
+  const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
+  const mins = Math.floor((a.duration_seconds || 0) / 60);
+  const counts = a.counts || countsOf(a.badge);
+  const rule = a.kind === 'breach' ? 'instant — no dwell wait' : `dwell ${mins} min`;
+  openModal({
+    title: a.badge,
+    sub: `${a.zone_label} · ${a.camera} · ${fmtTime(ts)} · ${a.kind === 'breach' ? 'BREACH' : 'EARLY WARNING'} · ${rule}` +
+         (counts ? ` · ${countsText(counts)}` : ''),
+    filename: a.image,
+    hasImage: a.has_image,
+  });
+}
+window.showAlertSnapshot = showAlertSnapshot;
+
+/* ═══ Activity chart ═══ */
 function renderTodayChart() {
   if (!cachedStats) return;
   const data = cachedStats.hourly_today || new Array(24).fill(0);
@@ -104,10 +484,9 @@ function renderTodayChart() {
   for (let i = 0; i < 24; i++) {
     const h = (data[i] / max) * (chartH - 30);
     const x = x0 + i * (barW + gap);
-    const y = chartH - h;
-    bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="var(--cyan)" opacity="0.85"/>`;
+    bars += `<rect x="${x}" y="${chartH - h}" width="${barW}" height="${h}" rx="3" fill="var(--cyan)" opacity="0.85"/>`;
     if (i % 4 === 0) {
-      labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${pad(i)}:00</text>`;
+      labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${pad(i)}:00</text>`;
     }
   }
   const peakHr = data.indexOf(max);
@@ -118,127 +497,22 @@ function renderTodayChart() {
       <line x1="${x0}" y1="${chartH}" x2="${chartW - 20}" y2="${chartH}" stroke="var(--border)"/>
       <line x1="${x0}" y1="${chartH * 0.5}" x2="${chartW - 20}" y2="${chartH * 0.5}" stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
       ${bars}${labels}
-      <text x="40" y="${chartH + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">0</text>
-      <text x="40" y="${chartH * 0.5 + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
-      <text x="40" y="10" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="var(--text-dim)">${max}</text>
+      <text x="40" y="${chartH + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">0</text>
+      <text x="40" y="${chartH * 0.5 + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
+      <text x="40" y="10" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${max}</text>
     </svg>`;
 }
 
-function renderPremisesTable() {
-  _premisesMap = {};
-  const sorted = [...activeSessions].sort((a, b) => a.first_seen_dt - b.first_seen_dt);
-  const tbody = document.getElementById('premises-body');
-  if (sorted.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">no active sessions</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = sorted.map(s => {
-    _premisesMap[s.badge] = s;   // store for modal lookup
-    const secs = (Date.now() - s.first_seen_dt.getTime()) / 1000;
-    const dCls = durationClass(secs);
-    let status;
-    if (s.whitelisted) status = { cls: 'wl', label: 'WHITELIST' };
-    else if (secs / 60 >= LOITER_MIN) status = { cls: 'alert', label: 'LOITERING' };
-    else if (secs / 60 >= WARN_MIN) status = { cls: 'warn', label: 'APPROACHING' };
-    else status = { cls: 'ok', label: 'OK' };
-    const rowCls = (!s.whitelisted && status.cls === 'alert') ? 'alert-row'
-      : (!s.whitelisted && status.cls === 'warn') ? 'warn-row' : '';
-    let actionBtn = '';
-    if (s.whitelisted) {
-      actionBtn = `<button class="ack-btn"
-          style="margin-left:8px;background:rgba(255,80,80,0.15);border-color:var(--red);color:var(--red);"
-          onclick="event.stopPropagation();removeFromWhitelist('${escapeHtml(s.badge)}')"
-          title="Remove from whitelist — badge will be monitored for loitering again">
-          ✕ Remove WL</button>`;
-    } else if (status.cls === 'alert' && s.alert_id) {
-      actionBtn = `<button class="ack-btn"
-          onclick="event.stopPropagation();ackAlert(${s.alert_id})"
-          title="Acknowledge — adds badge to whitelist">
-          ✓ Ack</button>`;
-    }
-    return `
-      <tr class="${rowCls} clickable" onclick="showBadgeDetail('${escapeHtml(s.badge)}')">
-        <td class="mono"><b>${escapeHtml(s.badge)}</b></td>
-        <td class="mono">${fmtTime(s.first_seen_dt)}</td>
-        <td class="mono">${escapeHtml(s.last_camera || '—')} · ${fmtRelative(s.last_seen_dt)}</td>
-        <td><span class="duration-pill ${dCls}" data-since="${s.first_seen_dt.getTime()}">
-          ${dCls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}
-        </span></td>
-        <td><span class="status-tag ${status.cls}">${status.label}</span>${actionBtn}</td>
-        <td class="mono">${s.total_sightings}</td>
-      </tr>`;
-  }).join('');
-}
-
-/* ─── Click handler: open last-image modal directly ─── */
-function showBadgeDetail(badge) {
-  const session = _premisesMap[badge];
-  if (session) {
-    openBadgeLastImage(session);
-  }
-}
-window.showBadgeDetail = showBadgeDetail;
-
-/* ─── Remove badge from whitelist directly from premises table ─── */
-async function removeFromWhitelist(badge) {
-  try {
-    await removeWhitelist(badge);
-    await refreshAll();
-  } catch (e) {
-    console.error('remove whitelist failed:', e);
-  }
-}
-window.removeFromWhitelist = removeFromWhitelist;
-
-/* ─── Live Notifications panel ─── */
-function renderNotifications() {
-  const list = document.getElementById('notif-list');
-  const meta = document.getElementById('notif-meta');
-  if (!list) return;
-
-  if (cachedNotifications.length === 0) {
-    list.innerHTML = `<div class="notif-empty">waiting for events…</div>`;
-    if (meta) meta.textContent = 'no events yet';
-    return;
-  }
-  if (meta) meta.textContent = `${cachedNotifications.length} event${cachedNotifications.length > 1 ? 's' : ''} today`;
-
-  list.innerHTML = cachedNotifications.map(d => {
-    const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
-    return `
-      <div class="notif-item" onclick='showNotificationImage(${JSON.stringify(d).replace(/'/g, "&#39;")})'>
-        <div class="thumb">${thumbSVG(d.badge)}</div>
-        <div class="info">
-          <div class="title">${escapeHtml(d.badge)} <span class="tag-${d.type}" style="font-size:9px;padding:1px 5px;margin-left:4px;vertical-align:middle;">${d.type.toUpperCase()}</span></div>
-          <div class="meta">${escapeHtml(d.camera)} · ${fmtTime(ts)}</div>
-        </div>
-        <div class="notif-time">${fmtRelative(ts)}</div>
-      </div>`;
-  }).join('');
-}
-
-function showNotificationImage(d) {
-  openModal({
-    title: d.badge,
-    sub: `${d.camera} · ${fmtTime(new Date(d.timestamp))} · ${d.type.toUpperCase()}`,
-    filename: d.filename,
-    hasImage: d.has_image,
-  });
-}
-window.showNotificationImage = showNotificationImage;
-
+/* ═══ Live-ticking dwell timers ═══ */
 function tickDurations() {
-  document.querySelectorAll('[data-since]').forEach(el => {
+  document.querySelectorAll('.duration-pill[data-since]').forEach(el => {
     const since = parseInt(el.getAttribute('data-since'), 10);
+    const limit = parseFloat(el.getAttribute('data-limit')) || 15;
     const secs = (Date.now() - since) / 1000;
-    if (el.classList.contains('duration-pill')) {
-      const cls = durationClass(secs);
-      el.className = `duration-pill ${cls}`;
-      el.setAttribute('data-since', since);
-      el.innerHTML = `${cls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}`;
-    } else if (el.classList.contains('duration')) {
-      el.textContent = fmtDuration(secs);
-    }
+    const mins = secs / 60;
+    const cls = mins >= limit ? 'alert' : (mins >= limit * 0.6 ? 'warn' : 'ok');
+    el.className = `duration-pill ${cls}`;
+    el.innerHTML = `${cls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}`;
   });
 }
 
