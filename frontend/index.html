@@ -97,14 +97,15 @@
           <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
         </tbody>
       </table>
+      <div class="pager" id="watch-pager" style="display:none;"></div>
   </div>
 
   <!-- ═══ Alert log — every alert, with evidence ═══ -->
   <div class="card">
     <div class="card-header">
       <div>
-        <div class="card-title">Perimeter Alert Log</div>
-        <div class="card-sub">breach and early-warning alerts sent to Telegram · click a row for the snapshot</div>
+        <div class="card-title">Active Alerts</div>
+        <div class="card-sub">unacknowledged · sent to Telegram · click a row for the snapshot</div>
       </div>
       <div class="card-sub" id="alertlog-meta">—</div>
     </div>
@@ -119,6 +120,30 @@
         <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
       </tbody>
     </table>
+    <div class="pager" id="alertlog-pager" style="display:none;"></div>
+  </div>
+
+  <!-- ═══ Acknowledged — alerts an operator has already actioned ═══ -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Acknowledged Alerts</div>
+        <div class="card-sub">handled today · kept here for review · click a row for the snapshot</div>
+      </div>
+      <div class="card-sub" id="ackedlog-meta">—</div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Snapshot</th><th>Time</th><th>Event</th>
+          <th>Zone</th><th>Detection</th><th>Acknowledged</th>
+        </tr>
+      </thead>
+      <tbody id="ackedlog-body">
+        <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
+      </tbody>
+    </table>
+    <div class="pager" id="ackedlog-pager" style="display:none;"></div>
   </div>
 
   <!-- ═══ Activity chart ═══ -->

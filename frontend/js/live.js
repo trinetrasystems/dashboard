@@ -21,6 +21,53 @@ let _detMap = {};      // detection id → detection, for row-click lookup
 let _alertMap = {};    // alert id → alert, for row-click lookup
 let _ackedLocally = new Set();   // instant banner dismissal, before refetch
 
+/* Live tables page at 10 rows. The data is already in memory (today only),
+   so paging is client-side and instant. */
+const LIVE_PAGE_SIZE = 10;
+let detPage = 0;
+let activePage = 0;
+let ackedPage = 0;
+
+/* Clamp a page index to the rows actually available */
+function clampPage(page, total) {
+  const last = Math.max(0, Math.ceil(total / LIVE_PAGE_SIZE) - 1);
+  return Math.min(Math.max(0, page), last);
+}
+
+/* Slice the rows for the current page */
+function pageSlice(rows, page) {
+  const start = page * LIVE_PAGE_SIZE;
+  return rows.slice(start, start + LIVE_PAGE_SIZE);
+}
+
+/* Shared pager UI — hidden when everything fits on one page */
+function renderLivePager(elId, page, total, fnName) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (total <= LIVE_PAGE_SIZE) { el.style.display = 'none'; return; }
+
+  const last = Math.max(0, Math.ceil(total / LIVE_PAGE_SIZE) - 1);
+  const from = page * LIVE_PAGE_SIZE + 1;
+  const to = Math.min(total, (page + 1) * LIVE_PAGE_SIZE);
+  const atStart = page === 0;
+  const atEnd = page >= last;
+
+  el.style.display = 'flex';
+  el.innerHTML = `
+    <button class="pager-btn" ${atStart ? 'disabled' : ''} onclick="${fnName}(0)">« First</button>
+    <button class="pager-btn" ${atStart ? 'disabled' : ''} onclick="${fnName}(${page - 1})">‹ Prev</button>
+    <span class="pager-status">${from}–${to} of ${total} · page ${page + 1} of ${last + 1}</span>
+    <button class="pager-btn" ${atEnd ? 'disabled' : ''} onclick="${fnName}(${page + 1})">Next ›</button>
+    <button class="pager-btn" ${atEnd ? 'disabled' : ''} onclick="${fnName}(${last})">Last »</button>`;
+}
+
+function gotoDetPage(n) { detPage = n; renderDetectionsTable(); }
+function gotoActivePage(n) { activePage = n; renderAlertLog(); }
+function gotoAckedPage(n) { ackedPage = n; renderAckedLog(); }
+window.gotoDetPage = gotoDetPage;
+window.gotoActivePage = gotoActivePage;
+window.gotoAckedPage = gotoAckedPage;
+
 /* ─── Zone helpers ─── */
 function normBadge(b) {
   return String(b || '').trim().toLowerCase().replace(/_/g, '-').replace('boundary', 'boundry');
@@ -98,6 +145,7 @@ async function refreshAll() {
     renderZoneStrip();
     renderDetectionsTable();
     renderAlertLog();
+    renderAckedLog();
     renderTodayChart();
   } catch (e) {
     console.error('refresh failed:', e);
@@ -314,13 +362,17 @@ function renderDetectionsTable() {
   if (cachedDetections.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">no detections today</td></tr>`;
     if (sub) sub.textContent = 'one row per detection · today only';
+    renderLivePager('watch-pager', 0, 0, 'gotoDetPage');
     return;
   }
   if (sub) {
     sub.textContent = `${cachedDetections.length} detection${cachedDetections.length === 1 ? '' : 's'} today · one row each`;
   }
 
-  tbody.innerHTML = cachedDetections.map(d => {
+  detPage = clampPage(detPage, cachedDetections.length);
+  renderLivePager('watch-pager', detPage, cachedDetections.length, 'gotoDetPage');
+
+  tbody.innerHTML = pageSlice(cachedDetections, detPage).map(d => {
     _detMap[d.id] = d;
     const ts = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
     const zone = d.zone || zoneOf(d.badge);
@@ -412,18 +464,25 @@ function renderAlertLog() {
   if (!tbody) return;
   _alertMap = {};
 
-  if (cachedAlerts.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">no alerts today</td></tr>`;
-    if (meta) meta.textContent = 'no alerts today';
+  // Acknowledged alerts leave this table and appear under "Acknowledged Alerts".
+  const active = cachedAlerts.filter(a => !a.acked && !_ackedLocally.has(a.id));
+
+  if (active.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">no active alerts — everything today has been acknowledged</td></tr>`;
+    if (meta) meta.textContent = 'all clear';
+    renderLivePager('alertlog-pager', 0, 0, 'gotoActivePage');
     return;
   }
 
-  const breaches = cachedAlerts.filter(a => a.kind === 'breach').length;
+  const breaches = active.filter(a => a.kind === 'breach').length;
   if (meta) {
-    meta.textContent = `${cachedAlerts.length} today · ${breaches} breach · ${cachedAlerts.length - breaches} early warning`;
+    meta.textContent = `${active.length} active · ${breaches} breach · ${active.length - breaches} early warning`;
   }
 
-  tbody.innerHTML = cachedAlerts.map(a => {
+  activePage = clampPage(activePage, active.length);
+  renderLivePager('alertlog-pager', activePage, active.length, 'gotoActivePage');
+
+  tbody.innerHTML = pageSlice(active, activePage).map(a => {
     _alertMap[a.id] = a;
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
     const isBreach = a.kind === 'breach';
@@ -444,14 +503,89 @@ function renderAlertLog() {
       : `<div class="alert-thumb"><span class="alert-thumb-none">⊘</span></div>`;
 
     return `
-      <tr class="clickable ${isBreach && !a.acked ? 'alert-row' : ''}" onclick="showAlertSnapshot(${a.id})">
+      <tr class="clickable ${isBreach ? 'alert-row' : ''}" onclick="showAlertSnapshot(${a.id})">
         <td>${thumb}</td>
         <td class="mono">${fmtTime(ts)}</td>
-        <td>${escapeHtml(event)}${a.acked ? ' <span class="status-tag wl">ACKED</span>' : ''}</td>
+        <td>${escapeHtml(event)}
+            <button class="ack-btn-sm" onclick="event.stopPropagation();ackAlert(${a.id})"
+                    title="Acknowledge — moves this alert to the Acknowledged section">✓ ACK</button></td>
         <td class="mono" style="color:var(--text-muted);">${escapeHtml(a.zone_label)}<br>
             <span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(a.camera)}</span></td>
         <td class="mono"><b>${escapeHtml(a.badge)}</b>${counts ? `<br><span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(countsText(counts))}</span>` : ''}</td>
         <td>${typeTag}</td>
+      </tr>`;
+  }).join('');
+}
+
+/* ═══ Acknowledged alerts — what an operator has already actioned ═══
+ * Acking does not delete anything: the alert moves here so it can be
+ * reviewed later, with who acknowledged it and when.
+ * ═══════════════════════════════════════════════════════════════════ */
+function renderAckedLog() {
+  const tbody = document.getElementById('ackedlog-body');
+  const meta = document.getElementById('ackedlog-meta');
+  if (!tbody) return;
+
+  const acked = cachedAlerts.filter(a => a.acked || _ackedLocally.has(a.id));
+
+  if (acked.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">nothing acknowledged yet today</td></tr>`;
+    if (meta) meta.textContent = 'none yet';
+    renderLivePager('ackedlog-pager', 0, 0, 'gotoAckedPage');
+    return;
+  }
+
+  // Most recently acknowledged first
+  const sorted = [...acked].sort((x, y) =>
+    new Date(y.acked_at || y.triggered_at) - new Date(x.acked_at || x.triggered_at));
+
+  const breaches = sorted.filter(a => a.kind === 'breach').length;
+  if (meta) {
+    meta.textContent = `${sorted.length} acknowledged · ${breaches} breach · ${sorted.length - breaches} early warning`;
+  }
+
+  ackedPage = clampPage(ackedPage, sorted.length);
+  renderLivePager('ackedlog-pager', ackedPage, sorted.length, 'gotoAckedPage');
+
+  tbody.innerHTML = pageSlice(sorted, ackedPage).map(a => {
+    _alertMap[a.id] = a;
+    const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
+    const isBreach = a.kind === 'breach';
+    const mins = Math.floor((a.duration_seconds || 0) / 60);
+    const counts = a.counts || countsOf(a.badge);
+
+    const event = isBreach
+      ? 'Object in alert region'
+      : (mins ? `Dwell exceeded · ${mins} min` : 'Dwell exceeded');
+
+    const typeTag = isBreach
+      ? `<span class="status-tag alert">BREACH</span>`
+      : `<span class="status-tag warn">EARLY WARNING</span>`;
+
+    const thumb = a.has_image
+      ? `<div class="alert-thumb"><img src="/images/${encodeURIComponent(a.image)}" alt="" loading="lazy"
+             onerror="this.parentNode.innerHTML='<span class=&quot;alert-thumb-none&quot;>⊘</span>'"></div>`
+      : `<div class="alert-thumb"><span class="alert-thumb-none">⊘</span></div>`;
+
+    let ackCell;
+    if (a.acked_at) {
+      const at = new Date(a.acked_at.endsWith('Z') ? a.acked_at : a.acked_at + 'Z');
+      ackCell = `<span class="status-tag wl">✓ ACKED</span>
+                 <div class="acked-meta">${escapeHtml(a.acked_by || 'operator')} · ${fmtTime(at)}</div>`;
+    } else {
+      ackCell = `<span class="status-tag wl">✓ ACKED</span>
+                 <div class="acked-meta">just now</div>`;
+    }
+
+    return `
+      <tr class="clickable acked-row" onclick="showAlertSnapshot(${a.id})">
+        <td>${thumb}</td>
+        <td class="mono">${fmtTime(ts)}</td>
+        <td>${escapeHtml(event)} ${typeTag}</td>
+        <td class="mono" style="color:var(--text-muted);">${escapeHtml(a.zone_label)}<br>
+            <span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(a.camera)}</span></td>
+        <td class="mono"><b>${escapeHtml(a.badge)}</b>${counts ? `<br><span style="color:var(--text-dim);font-size:0.85em;">${escapeHtml(countsText(counts))}</span>` : ''}</td>
+        <td>${ackCell}</td>
       </tr>`;
   }).join('');
 }

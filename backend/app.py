@@ -868,6 +868,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan)
 
 
+# ─── Never serve a stale dashboard ───────────────────────────────────────────
+# The HTML/JS/CSS are edited in place on the Jetson, so a browser holding an
+# old copy silently shows an out-of-date dashboard. Archived snapshots keep
+# their long cache: those files never change once written.
+@app.middleware("http")
+async def no_cache_frontend(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/images/") or path.startswith("/video/"):
+        response.headers["Cache-Control"] = "public, max-age=604800"
+    elif path.endswith((".html", ".js", ".css")) or path == "/":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 # ─── /api/stats — KPIs + chart data ───────────────────────────────────────
 @app.get("/api/stats")
 def api_stats():

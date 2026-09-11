@@ -376,9 +376,11 @@ select {
 
 /* ─── CONTAINER ─── */
 .container {
+  /* Full-bleed: the dashboard fills the whole screen width, with the side
+     padding kept so nothing touches the edges. */
   padding: 20px 24px;
-  max-width: 1600px;
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
 }
 
 /* ─── KPI CARDS ─── */
@@ -627,8 +629,8 @@ tbody td.mono {
 
 /* ─── THUMBNAIL ─── */
 .thumb {
-  width: 56px;
-  height: 36px;
+  width: 76px;
+  height: 48px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--surface-2);
@@ -1689,4 +1691,55 @@ tbody td.mono {
 
 @media (max-width: 640px) {
   .pager-status { min-width: 0; width: 100%; order: -1; }
+}
+
+/* ─── Detection Log snapshot cell — the real archived frame ─── */
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb-none {
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+/* ─── ACKNOWLEDGED ALERTS — reviewed, kept for the record ─── */
+.acked-row {
+  opacity: 0.82;
+}
+
+.acked-row:hover {
+  opacity: 1;
+}
+
+.acked-meta {
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Small inline ACK button inside the Active Alerts table */
+.ack-btn-sm {
+  margin-left: 10px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: var(--green-bg);
+  border: 1px solid var(--green-border);
+  color: var(--green);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  vertical-align: middle;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ack-btn-sm:hover {
+  background: var(--green);
+  color: var(--bg);
 }

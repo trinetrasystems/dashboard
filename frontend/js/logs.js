@@ -9,7 +9,7 @@ const filters = { search: '', date: '', month: '', badge: '', camera: '', zone: 
 
 /* The table is served one page at a time; charts use /api/detections/summary
    so they still describe the WHOLE filter set, not just the visible page. */
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 10;
 let currentPage = 0;
 let lastPage = 0;
 let cachedSummary = null;
@@ -200,7 +200,7 @@ function renderLogTable() {
     const zt = ZONE_TAG[zone] || ZONE_TAG.unknown;
     return `
       <tr class="clickable ${zone === 'breach' ? 'alert-row' : ''}" onclick='showLog(${JSON.stringify(d).replace(/'/g, "&#39;")})'>
-        <td><div class="thumb">${thumbSVG(d.badge)}</div></td>
+        <td>${snapshotThumb(d)}</td>
         <td class="mono">${fmtTime(ts)} ${ts.toDateString() !== new Date().toDateString() ? '<span style="color:var(--text-dim)">· ' + fmtDate(ts) + '</span>' : ''}</td>
         <td class="mono"><b>${escapeHtml(d.badge)}</b>${(() => {
           const c = d.counts || countsOf(d.badge);
@@ -213,14 +213,15 @@ function renderLogTable() {
   populateDropdowns();
 }
 
-function thumbSVG(badge) {
-  const hash = [...badge].reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
-  const hue = Math.abs(hash) % 360;
-  return `<svg viewBox="0 0 56 36" preserveAspectRatio="none">
-    <rect width="56" height="36" fill="hsl(${hue},25%,28%)" opacity="0.4"/>
-    <circle cx="22" cy="18" r="6" fill="hsl(${hue},65%,55%)" opacity="0.9"/>
-    <rect x="32" y="10" width="14" height="20" rx="2" fill="hsl(${(hue + 60) % 360},55%,55%)" opacity="0.7"/>
-  </svg>`;
+/* The real archived frame — the same image the row's popup shows.
+   Falls back to a marker when the file was cleaned up or never archived. */
+function snapshotThumb(d) {
+  if (!d.has_image || !d.filename) {
+    return `<div class="thumb"><span class="thumb-none">⊘</span></div>`;
+  }
+  return `<div class="thumb"><img src="/images/${encodeURIComponent(d.filename)}"
+      alt="${escapeHtml(d.badge)}" loading="lazy"
+      onerror="this.parentNode.innerHTML='<span class=&quot;thumb-none&quot;>⊘</span>'"></div>`;
 }
 
 function showLog(d) {
