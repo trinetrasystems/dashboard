@@ -36,3 +36,7 @@ data/
 
 # Editor / linter config (local only)
 .jshintrc
+
+# Firebase service account private key — NEVER commit
+secrets/
+*firebase-adminsdk*.json

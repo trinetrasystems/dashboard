@@ -79,5 +79,70 @@ CREATE TABLE IF NOT EXISTS whitelist (
     added_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- PUSH NOTIFICATIONS (Firebase Cloud Messaging)
+--
+-- A "user" here is a notification recipient (TRN_1001), created by the admin —
+-- distinct from a badge, which is a vehicle seen by a camera. The dashboard
+-- itself stays open; a user signs in only to bind their device to their userId.
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS users (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id              TEXT NOT NULL UNIQUE,          -- TRN_1001 (human-readable)
+    name                 TEXT,
+    email                TEXT,
+    passcode_hash        TEXT,                          -- optional; only for non-Firebase sign-in
+    firebase_uid         TEXT UNIQUE,                   -- links this row to a Firebase Auth account
+    notification_enabled INTEGER DEFAULT 1,
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_users_uid ON users(user_id);
+CREATE INDEX IF NOT EXISTS idx_users_fb  ON users(firebase_uid);
+
+-- One row per browser/device. fcm_token is UNIQUE, which is what makes the
+-- logout → different-user-logs-in case safe: re-registering the same token
+-- REPLACES the row, moving it to the new owner instead of duplicating it.
+CREATE TABLE IF NOT EXISTS user_devices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    fcm_token    TEXT NOT NULL UNIQUE,
+    platform     TEXT DEFAULT 'WEB',                    -- WEB | ANDROID | IOS
+    browser      TEXT,
+    device_id    TEXT,
+    is_active    INTEGER DEFAULT 1,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dev_user   ON user_devices(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_dev_token  ON user_devices(fcm_token);
+
+-- Sessions live in the DB (not memory) so a server restart doesn't break a
+-- device's ability to refresh its FCM token.
+CREATE TABLE IF NOT EXISTS user_sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usess_exp ON user_sessions(expires_at);
+
+-- Delivery audit trail
+CREATE TABLE IF NOT EXISTS notification_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    title        TEXT,
+    body         TEXT,
+    data_json    TEXT,
+    sent_count   INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    status       TEXT,                                  -- sent | skipped | error
+    detail       TEXT,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_notiflog_ts ON notification_log(created_at DESC);
+
 -- NOTE: Loitering/gap/exit-camera settings now live in .env (TRINETRA_LOITER_MINUTES etc.)
 -- No `config` table needed. Restart the server after editing .env.

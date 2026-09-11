@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Push Notifications</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Topbar injected by common.js -->
+
+<div class="admin-wrap">
+  <div class="admin-card">
+    <div class="card-title" style="font-size:18px;">Push Notifications</div>
+    <div class="card-sub" style="margin-top:6px;">
+      Sign in with the user ID your administrator gave you, then turn on notifications
+      to receive vehicle movement alerts on this device.
+    </div>
+
+    <!-- STEP 1 — sign in -->
+    <div id="signin-block" style="margin-top:20px;">
+      <div class="admin-input">
+        <input id="np-userid" placeholder="User ID (e.g. TRN_1001)" autocomplete="username"
+               style="flex:1;min-width:170px;">
+        <input id="np-pass" type="password" placeholder="Passcode" autocomplete="current-password"
+               style="flex:1;min-width:150px;">
+        <button id="np-signin">Sign In</button>
+      </div>
+    </div>
+
+    <!-- STEP 2 — enable on this device -->
+    <div id="status-block" style="display:none;margin-top:20px;">
+      <div class="wl-row">
+        <div>
+          <span class="label" id="np-who">—</span>
+          <span class="reason" id="np-admin-state">—</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="status-tag" id="np-device-state">CHECKING</span>
+          <button class="remove" id="np-signout">sign out</button>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
+        <button id="np-enable" class="video-btn" style="padding:9px 16px;font-size:12px;">
+          🔔 Enable on this device
+        </button>
+        <button id="np-disable" class="ack-btn" style="display:none;">
+          ✕ Turn off on this device
+        </button>
+      </div>
+
+      <div id="np-devices" style="margin-top:18px;"></div>
+    </div>
+
+    <div id="np-msg" class="notice" style="display:none;margin-top:18px;"></div>
+
+    <div class="notice" style="margin-top:18px;">
+      <b>how this works</b><br>
+      Your browser generates a Firebase token and sends it to the server, which stores it
+      against your signed-in user ID. Notifications are only delivered to devices you have
+      registered. Your administrator controls whether your account receives notifications
+      at all — they never see or enter your token.
+    </div>
+  </div>
+</div>
+
+<script src="js/dummy-data.js"></script>
+<script src="js/common.js"></script>
+<script src="js/api.js"></script>
+<script src="js/notifications.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+function msg(text, kind = 'info') {
+  const el = $('np-msg');
+  el.style.display = 'block';
+  el.innerHTML = text;
+  el.style.borderColor = kind === 'err' ? 'var(--red)'
+    : kind === 'ok' ? 'var(--green)' : 'var(--border)';
+}
+
+function renderDevices(devices) {
+  const box = $('np-devices');
+  if (!devices || !devices.length) {
+    box.innerHTML = `<div class="card-sub">no devices registered yet</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="card-sub" style="margin-bottom:8px;">Your registered devices</div>` +
+    devices.map(d => `
+      <div class="wl-row">
+        <div>
+          <span class="label">${escapeHtml(d.browser || 'Browser')}</span>
+          <span class="reason">${escapeHtml(d.platform)} · ${escapeHtml(d.token_preview || '')}</span>
+        </div>
+        <span class="status-tag ${d.is_active ? 'ok' : ''}">${d.is_active ? 'ACTIVE' : 'INACTIVE'}</span>
+      </div>`).join('');
+}
+
+async function refreshState() {
+  const who = await NotificationService.me();
+  if (!who.signedIn) {
+    $('signin-block').style.display = '';
+    $('status-block').style.display = 'none';
+    return;
+  }
+  $('signin-block').style.display = 'none';
+  $('status-block').style.display = '';
+  $('np-who').textContent = who.userId;
+  $('np-admin-state').textContent = who.notificationEnabled
+    ? 'notifications enabled by admin'
+    : 'notifications DISABLED by admin — you will not receive alerts';
+
+  const myToken = localStorage.getItem('trinetra-fcm-token');
+  const active = (who.devices || []).some(d => d.is_active);
+  const tag = $('np-device-state');
+  if (myToken && active) {
+    tag.textContent = 'THIS DEVICE ON'; tag.className = 'status-tag ok';
+    $('np-enable').style.display = 'none';
+    $('np-disable').style.display = '';
+  } else {
+    tag.textContent = 'NOT ENABLED HERE'; tag.className = 'status-tag';
+    $('np-enable').style.display = '';
+    $('np-disable').style.display = 'none';
+  }
+  renderDevices(who.devices);
+}
+
+$('np-signin').addEventListener('click', async () => {
+  try {
+    await NotificationService.signIn($('np-userid').value.trim(), $('np-pass').value);
+    $('np-pass').value = '';
+    msg('Signed in. Now enable notifications on this device.', 'ok');
+    await refreshState();
+  } catch (e) { msg('✕ ' + e.message, 'err'); }
+});
+$('np-pass').addEventListener('keydown', e => { if (e.key === 'Enter') $('np-signin').click(); });
+
+$('np-enable').addEventListener('click', async () => {
+  const btn = $('np-enable');
+  btn.disabled = true; btn.textContent = 'Registering…';
+  try {
+    const r = await NotificationService.enable();
+    msg(`✓ This device is registered for <b>${escapeHtml(r.userId)}</b>.`, 'ok');
+    await refreshState();
+  } catch (e) {
+    msg('✕ ' + escapeHtml(e.message), 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '🔔 Enable on this device';
+  }
+});
+
+$('np-disable').addEventListener('click', async () => {
+  await NotificationService.signOut();
+  msg('This device will no longer receive notifications.', 'info');
+  await refreshState();
+});
+
+$('np-signout').addEventListener('click', async () => {
+  await NotificationService.signOut();
+  msg('Signed out.', 'info');
+  await refreshState();
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+  bootstrap('notif');
+  await NotificationService.init();
+  if (!NotificationService.supported()) {
+    msg('This browser does not support web push notifications.', 'err');
+  } else if (!NotificationService.config.ready) {
+    msg('Push is not fully configured on the server yet — the VAPID key is missing. ' +
+        'Sign-in works, but tokens cannot be generated until an administrator adds it.', 'err');
+  }
+  await refreshState();
+  // Foreground alerts land here while the tab is open
+  NotificationService.on((evt, detail) => {
+    if (evt === 'message') {
+      msg(`🔔 ${escapeHtml(detail.notification?.title || 'Notification')} — ` +
+          `${escapeHtml(detail.notification?.body || '')}`, 'ok');
+    }
+  });
+});
+</script>
+</body>
+</html>

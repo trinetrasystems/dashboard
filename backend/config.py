@@ -144,6 +144,77 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 SMTP_TO   = os.environ.get("SMTP_TO",   "")
 
+# ─── FIREBASE CLOUD MESSAGING ────────────────────────────────────────────────
+# The web config below is PUBLIC by design — it ships inside every Firebase web
+# app and identifies the project, it does not authorise anything. It is served
+# to the browser by /api/notifications/config.
+#
+# The two secrets are elsewhere and never reach the frontend:
+#   FIREBASE_VAPID_KEY        — Console ▸ Project Settings ▸ Cloud Messaging ▸
+#                               Web Push certificates ("Key pair")
+#   FIREBASE_CREDENTIALS_FILE — Console ▸ Project Settings ▸ Service Accounts ▸
+#                               "Generate new private key" (a .json file)
+FIREBASE_WEB_CONFIG = {
+    "apiKey":            os.environ.get("FIREBASE_API_KEY",             "AIzaSyCIxcZYt7JwY6DUJ50DGxOH7S5_0xT2SVI"),
+    "authDomain":        os.environ.get("FIREBASE_AUTH_DOMAIN",         "trinetra-demo.firebaseapp.com"),
+    "projectId":         os.environ.get("FIREBASE_PROJECT_ID",          "trinetra-demo"),
+    "storageBucket":     os.environ.get("FIREBASE_STORAGE_BUCKET",      "trinetra-demo.firebasestorage.app"),
+    "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID", "772686068265"),
+    "appId":             os.environ.get("FIREBASE_APP_ID",              "1:772686068265:web:fe5790b53f3e8a70a2ba38"),
+}
+
+FIREBASE_VAPID_KEY = os.environ.get("FIREBASE_VAPID_KEY", "").strip()
+
+# Resolved against PROJECT_ROOT, not the current working directory — otherwise
+# "./secrets/…" silently means different files depending on where the server is
+# launched from (systemd sets its own WorkingDirectory).
+_fb_cred_raw = os.environ.get("FIREBASE_CREDENTIALS_FILE", "").strip()
+FIREBASE_CREDENTIALS_FILE = (
+    str(_resolve_path(_fb_cred_raw, PROJECT_ROOT / "secrets" / "firebase-service-account.json"))
+    if _fb_cred_raw else ""
+)
+
+# Public HTTPS origin the dashboard is reachable at, e.g.
+# https://monitor.trinetrasystems.com — used to build absolute notification
+# click-through links. FCM REJECTS a webpush link that isn't absolute HTTPS,
+# so when this is unset (or plain http, as on localhost) the link is omitted
+# and the service worker falls back to routing from the data payload.
+PUBLIC_URL = os.environ.get("TRINETRA_PUBLIC_URL", "").strip().rstrip("/")
+
+# Android notification channel the mobile app creates. Without this on the
+# outgoing message, Android drops background notifications into the default
+# channel, where they can be silent. Must match the channel id the app
+# registers with notifee.
+ANDROID_CHANNEL_ID = os.environ.get("TRINETRA_ANDROID_CHANNEL", "trinetra-events").strip()
+
+
+def public_link(path: str) -> str:
+    """Absolute HTTPS link for a notification click, or "" if not possible."""
+    if not PUBLIC_URL.lower().startswith("https://"):
+        return ""
+    return PUBLIC_URL + (path if path.startswith("/") else "/" + path)
+
+
+# How long a device-claim session lasts before the user must sign in again.
+USER_SESSION_DAYS = int(os.environ.get("TRINETRA_USER_SESSION_DAYS", "30"))
+
+# When a Firebase account signs in with no matching Trinetra user, create one
+# automatically. Off = only users the admin pre-created (matched by email) can
+# register a device — tighter, but every new employee needs a manual step.
+FCM_AUTO_PROVISION = _as_bool(os.environ.get("TRINETRA_FCM_AUTO_PROVISION", ""), True)
+
+
+def firebase_status() -> dict:
+    """What is / isn't configured — surfaced in the admin panel and on startup."""
+    cred = Path(FIREBASE_CREDENTIALS_FILE) if FIREBASE_CREDENTIALS_FILE else None
+    return {
+        "web_config": bool(FIREBASE_WEB_CONFIG.get("apiKey")),
+        "vapid_key": bool(FIREBASE_VAPID_KEY),
+        "credentials_file": str(cred) if cred else "",
+        "credentials_present": bool(cred and cred.is_file()),
+    }
+
+
 # ─── FILENAME PATTERN ────────────────────────────────────────────────────────
 # Edge Jetsons MUST save detections as: <camera>_<badge>_<YYYYMMDD-HHMMSS>.jpg
 # Camera and badge names CANNOT contain underscores (use hyphens or camelCase).
@@ -171,6 +242,16 @@ def print_summary():
     print(f"[config] AUTO_CLOSE    = {SESSION_AUTO_CLOSE_MINUTES} min")
     print(f"[config] EXIT_CAMERAS  = {sorted(EXIT_CAMERAS)}")
     print(f"[config] MOVE_ALERTS   = {'on' if MOVEMENT_ALERTS else 'off'}")
+    fb = firebase_status()
+    if fb["credentials_present"] and fb["vapid_key"]:
+        print(f"[config] FCM PUSH     = ready (project {FIREBASE_WEB_CONFIG['projectId']})")
+    else:
+        missing = []
+        if not fb["vapid_key"]:
+            missing.append("FIREBASE_VAPID_KEY")
+        if not fb["credentials_present"]:
+            missing.append("FIREBASE_CREDENTIALS_FILE")
+        print(f"[config] FCM PUSH     = log-only mode · missing {', '.join(missing)}")
     print(f"[config] LOITER_ALERTS = {'on' if LOITER_ALERTS else 'off'}"
           f"{'' if LOITER_ALERTS else '  (banner + KPI hidden, no alerts raised)'}")
     print(f"[config] IMAGE_CLEANUP = {'disabled' if IMAGE_RETENTION_DAYS == 0 else f'{IMAGE_RETENTION_DAYS} days'}")

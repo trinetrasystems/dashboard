@@ -999,6 +999,52 @@
         </div>
       </div>
 
+      <!-- Push Notification Configuration -->
+      <div class="admin-section">
+        <div class="section-title">🔔 Push Notification Configuration</div>
+        <div class="settings-card">
+
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Firebase Status</div>
+              <div class="setting-hint">web push delivery readiness</div>
+            </div>
+            <div id="fcm-status" style="font-family: var(--mono); font-size: 12px;">checking…</div>
+          </div>
+
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Search User</div>
+              <div class="setting-hint">by user ID, name or email</div>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <input class="setting-input" id="nu-search" placeholder="TRN_1001" style="flex: 1;"
+                     oninput="renderNotifUsers()">
+              <button class="btn-simulate" style="padding: 9px 16px; font-size: 13px; white-space: nowrap;"
+                      onclick="openNewUser()">+ Add User</button>
+            </div>
+          </div>
+
+          <div class="setting-row" id="nu-new-row" style="display: none;">
+            <div>
+              <div class="setting-label">New User</div>
+              <div class="setting-hint">the passcode is what the user signs in with</div>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <input class="setting-input" id="nu-new-id" placeholder="TRN_1001" style="flex: 1; min-width: 130px;">
+              <input class="setting-input" id="nu-new-name" placeholder="Name (optional)" style="flex: 1; min-width: 130px;">
+              <input class="setting-input" id="nu-new-pass" placeholder="Passcode" style="flex: 1; min-width: 120px;">
+              <button class="btn-simulate" style="padding: 9px 16px; font-size: 13px;"
+                      onclick="createNotifUser()">Create</button>
+            </div>
+          </div>
+
+          <div style="padding: 0 20px 18px;">
+            <div id="nu-list"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Erase Badge History -->
       <div class="admin-section">
         <div class="section-title">🧹 Erase Badge History</div>
@@ -1236,9 +1282,10 @@
           if (el && cfg[k] !== undefined) el.value = cfg[k];
         });
 
-        // Also load the database records + the badge list for the purge tool
+        // Also load the database records, badge list and notification users
         await loadDatabase();
         await loadPurgeBadges();
+        await loadNotifUsers();
       } catch (e) {
         console.error('loadConfig failed:', e);
       }
@@ -1339,6 +1386,215 @@
       } catch (e) {
         alert('Error clearing database: ' + e.message);
       }
+    }
+
+    /* ── Push Notification Configuration ── */
+    let _notifUsers = [];
+
+    async function loadNotifUsers() {
+      try {
+        const r = await fetch('/api/admin/notification-users', { credentials: 'same-origin' });
+        if (r.status === 401) { doLogout(); return; }
+        const d = await r.json();
+        _notifUsers = d.users || [];
+        renderFcmStatus(d.firebase || {});
+        renderNotifUsers();
+      } catch (e) { console.error('notification users failed:', e); }
+    }
+
+    function renderFcmStatus(fb) {
+      const el = document.getElementById('fcm-status');
+      const bits = [];
+      const dot = ok => ok ? '🟢' : '🔴';
+      bits.push(`${dot(fb.web_config)} web config`);
+      bits.push(`${dot(fb.vapid_key)} VAPID key`);
+      bits.push(`${dot(fb.credentials_present)} service account`);
+      const ready = fb.vapid_key && fb.credentials_present;
+      el.innerHTML = bits.join(' &nbsp;·&nbsp; ') +
+        (ready ? '' : `<div style="color:var(--amber);margin-top:6px;font-size:11px;">` +
+          `log-only mode — tokens/sending disabled until both are set in .env</div>`);
+    }
+
+    function renderNotifUsers() {
+      const box = document.getElementById('nu-list');
+      const q = (document.getElementById('nu-search').value || '').trim().toLowerCase();
+      const users = q
+        ? _notifUsers.filter(u => (u.user_id + ' ' + (u.name || '') + ' ' + (u.email || '')).toLowerCase().includes(q))
+        : _notifUsers;
+
+      if (!users.length) {
+        box.innerHTML = `<div style="padding:18px;text-align:center;color:var(--text-dim);font-size:13px;">
+          ${_notifUsers.length ? 'no users match that search' : 'no notification users yet — add one above'}</div>`;
+        return;
+      }
+
+      box.innerHTML = users.map(u => {
+        const on = u.notification_enabled;
+        const devices = (u.devices || []);
+        return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <b style="font-family:var(--mono);font-size:14px;">${esc(u.user_id)}</b>
+            ${u.name ? `<span style="color:var(--text-dim);font-size:12px;">${esc(u.name)}</span>` : ''}
+            <span style="font-size:12px;color:${on ? 'var(--green)' : 'var(--text-dim)'};">
+              ${on ? '🟢 Enabled' : '⚪ Disabled'}</span>
+            <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="btn-simulate" style="padding:6px 12px;font-size:12px;"
+                      onclick="toggleNotifUser('${esc(u.user_id)}', ${!on})">
+                ${on ? 'Disable' : 'Enable'} Notifications</button>
+              <button class="btn-simulate" style="padding:6px 12px;font-size:12px;"
+                      onclick="testNotifUser('${esc(u.user_id)}')">Send Test</button>
+              <button class="btn-simulate" style="padding:6px 12px;font-size:12px;"
+                      onclick="editNotifUser('${esc(u.user_id)}')">Edit</button>
+              <button class="btn-simulate" style="padding:6px 12px;font-size:12px;"
+                      onclick="resetNotifPass('${esc(u.user_id)}')">Set Passcode</button>
+              <button class="btn-danger" style="padding:6px 12px;font-size:12px;"
+                      onclick="deleteNotifUser('${esc(u.user_id)}')">Delete</button>
+            </span>
+          </div>
+
+          <div style="margin-top:10px;overflow-x:auto;">
+            ${devices.length ? `
+            <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono);min-width:460px;">
+              <thead><tr style="color:var(--text-dim);text-align:left;">
+                <th style="padding:6px 8px;">Device</th><th style="padding:6px 8px;">Platform</th>
+                <th style="padding:6px 8px;">Status</th><th style="padding:6px 8px;">Last Seen</th>
+                <th style="padding:6px 8px;"></th></tr></thead>
+              <tbody>${devices.map(d => `
+                <tr style="border-top:1px solid var(--border);">
+                  <td style="padding:6px 8px;">${esc(d.browser || 'Browser')}</td>
+                  <td style="padding:6px 8px;">${esc(d.platform)}</td>
+                  <td style="padding:6px 8px;color:${d.is_active ? 'var(--green)' : 'var(--text-dim)'};">
+                      ${d.is_active ? 'Active' : 'Inactive'}</td>
+                  <td style="padding:6px 8px;color:var(--text-dim);">${fmtLastSeen(d.last_seen_at)}</td>
+                  <td style="padding:6px 8px;text-align:right;">
+                    <button onclick="removeNotifDevice('${esc(u.user_id)}', ${d.id})"
+                            style="background:none;border:none;color:var(--text-dim);cursor:pointer;"
+                            title="Remove device">🗑️</button></td>
+                </tr>`).join('')}</tbody>
+            </table>` :
+            `<div style="color:var(--text-dim);font-size:12px;">no devices registered —
+               the user signs in at <b>/notifications.html</b> to register this browser</div>`}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function fmtLastSeen(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+      const today = new Date().toDateString() === d.toDateString();
+      return today ? 'Today ' + d.toLocaleTimeString() : d.toLocaleString();
+    }
+
+    function openNewUser() {
+      const row = document.getElementById('nu-new-row');
+      row.style.display = row.style.display === 'none' ? '' : 'none';
+    }
+
+    async function createNotifUser() {
+      const userId = document.getElementById('nu-new-id').value.trim();
+      const name = document.getElementById('nu-new-name').value.trim();
+      const passcode = document.getElementById('nu-new-pass').value;
+      if (!userId || !passcode) { alert('User ID and passcode are both required.'); return; }
+      try {
+        const r = await fetch('/api/admin/notification-users', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ userId, name, passcode, notificationEnabled: true }),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+        document.getElementById('nu-new-id').value = '';
+        document.getElementById('nu-new-name').value = '';
+        document.getElementById('nu-new-pass').value = '';
+        document.getElementById('nu-new-row').style.display = 'none';
+        await loadNotifUsers();
+      } catch (e) { alert('Create failed: ' + e.message); }
+    }
+
+    async function toggleNotifUser(userId, enable) {
+      try {
+        const r = await fetch(`/api/admin/notification-users/${encodeURIComponent(userId)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify({ notificationEnabled: enable }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        await loadNotifUsers();
+      } catch (e) { alert('Update failed: ' + e.message); }
+    }
+
+    /* Edit a user: rename and/or change name/email. A rename carries the
+       user's registered devices and history across, so tokens keep working. */
+    async function editNotifUser(userId) {
+      const u = _notifUsers.find(x => x.user_id === userId) || {};
+      const newUserId = prompt(
+        `User ID for this user:\n\n(changing it moves their ${(u.devices || []).length} ` +
+        `registered device(s) and history to the new ID)`, userId);
+      if (newUserId === null) return;
+      const name = prompt('Display name (optional):', u.name || '');
+      if (name === null) return;
+      const email = prompt('Email (optional):', u.email || '');
+      if (email === null) return;
+      try {
+        const r = await fetch(`/api/admin/notification-users/${encodeURIComponent(userId)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ newUserId: newUserId.trim(), name, email }),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+        await loadNotifUsers();
+      } catch (e) { alert('Edit failed: ' + e.message); }
+    }
+
+    async function resetNotifPass(userId) {
+      const passcode = prompt(`New passcode for ${userId}:`);
+      if (!passcode) return;
+      try {
+        const r = await fetch(`/api/admin/notification-users/${encodeURIComponent(userId)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify({ passcode }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        alert(`Passcode updated for ${userId}.`);
+      } catch (e) { alert('Update failed: ' + e.message); }
+    }
+
+    async function testNotifUser(userId) {
+      try {
+        const r = await fetch(`/api/admin/notification-users/${encodeURIComponent(userId)}/test`,
+                              { method: 'POST', credentials: 'same-origin' });
+        const d = await r.json();
+        if (d.ok && d.mode === 'log_only') {
+          alert(`Log-only mode: would have targeted ${d.targeted} device(s) for ${userId}.\n\n` +
+                `Add FIREBASE_VAPID_KEY and FIREBASE_CREDENTIALS_FILE to .env to send for real.`);
+        } else if (d.ok) {
+          alert(`Sent to ${d.sent} device(s) for ${userId}.` +
+                (d.failed ? `\n${d.failed} failed.` : ''));
+        } else {
+          alert(`Not sent — ${d.reason || 'unknown reason'}.`);
+        }
+      } catch (e) { alert('Test failed: ' + e.message); }
+    }
+
+    async function removeNotifDevice(userId, deviceRowId) {
+      if (!confirm('Remove this device? It will stop receiving notifications.')) return;
+      try {
+        const r = await fetch(
+          `/api/admin/notification-users/${encodeURIComponent(userId)}/devices/${deviceRowId}`,
+          { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        await loadNotifUsers();
+      } catch (e) { alert('Remove failed: ' + e.message); }
+    }
+
+    async function deleteNotifUser(userId) {
+      if (!confirm(`Delete ${userId} and all its registered devices?`)) return;
+      try {
+        const r = await fetch(`/api/admin/notification-users/${encodeURIComponent(userId)}`,
+                              { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        await loadNotifUsers();
+      } catch (e) { alert('Delete failed: ' + e.message); }
     }
 
     /* ── Erase Badge History ── */

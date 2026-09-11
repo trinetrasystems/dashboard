@@ -43,6 +43,8 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 import config
+import notifications as notif
+from notifications import NotificationService
 
 # ─── Minimal valid 1×1 white JPEG (used by the test data generator) ──────────
 # This is a real, parseable JPEG so Telegram and browsers accept it.
@@ -86,8 +88,22 @@ def init_db():
     schema = Path(__file__).parent / "schema.sql"
     conn = db()
     try:
+        # ── PRE-SCHEMA MIGRATIONS ────────────────────────────────────────────
+        # These MUST run before executescript(). CREATE TABLE IF NOT EXISTS is a
+        # no-op on a table that already exists, so a newly added column never
+        # appears — and schema.sql then tries to index it and the whole startup
+        # fails. Adding the column first makes the script safe on old and new
+        # databases alike. (On a fresh DB the table doesn't exist yet, so the
+        # guard below skips and executescript creates it complete.)
+        ucols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if ucols and "firebase_uid" not in ucols:
+            print("[migrate] adding firebase_uid column to users")
+            conn.execute("ALTER TABLE users ADD COLUMN firebase_uid TEXT")
+            conn.commit()
+
         conn.executescript(schema.read_text())
-        # MIGRATION: add session_id to detections if older DB doesn't have it
+
+        # ── POST-SCHEMA MIGRATIONS ───────────────────────────────────────────
         cols = [r[1] for r in conn.execute("PRAGMA table_info(detections)").fetchall()]
         if "session_id" not in cols:
             print("[migrate] adding session_id column to detections")
@@ -484,6 +500,26 @@ async def fire_movement_alert(movement: dict):
 
     if sent and movement.get("id"):
         _mark_movement_notified(movement["id"])
+
+    # FCM push — same event, delivered per-user to phones/browsers. Runs in a
+    # worker thread because the Admin SDK is blocking. Every user with
+    # notifications enabled is a recipient; per-user routing rules can replace
+    # broadcast() here without touching the sender.
+    await asyncio.get_event_loop().run_in_executor(
+        None, NotificationService.broadcast, {
+            "title": "Vehicle Movement Detected",
+            "body": movement["statement"],
+            "data": {
+                "eventId": f"MOV_{movement.get('id', 0)}",
+                "eventType": "BAY_MOVEMENT",
+                "vehicleNumber": movement["badge"],
+                "fromBay": (movement.get("from_camera") or ""),
+                "toBay": movement["to_camera"],
+                "sessionId": str(movement.get("session_id") or ""),
+            },
+            "link": f"/visits.html?visit={movement.get('session_id') or ''}",
+        }
+    )
 
     await wsm.broadcast({"type": "movement", **movement})
 
@@ -2157,6 +2193,280 @@ def admin_reset_all(request: Request):
         "deleted_dead_letter": deleted_dead,
         "deleted_heartbeats": deleted_hb,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PUSH NOTIFICATIONS — user-facing endpoints
+#
+# SECURITY: the caller's userId is ALWAYS resolved from the signed-in session
+# cookie (notif.user_for_session). A userId in a request body is ignored, so a
+# device can never be registered against somebody else's account.
+# ════════════════════════════════════════════════════════════════════════════
+
+USER_COOKIE = "trinetra_user"
+
+
+def _current_user(request: Request) -> Optional[str]:
+    """Resolve the caller from either transport.
+
+    Web uses an httpOnly cookie (safe from XSS). Native mobile uses a Bearer
+    token, because React Native's cookie handling is inconsistent across
+    platforms and doesn't survive app restarts reliably. Both resolve through
+    the same user_sessions table — a userId in a request body is still never
+    trusted either way.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        uid = notif.user_for_session(auth[7:].strip())
+        if uid:
+            return uid
+    return notif.user_for_session(request.cookies.get(USER_COOKIE, ""))
+
+
+def _require_user(request: Request) -> str:
+    uid = _current_user(request)
+    if not uid:
+        raise HTTPException(401, "Not signed in")
+    return uid
+
+
+@app.get("/api/notifications/config")
+def api_push_config():
+    """Public Firebase web config for the browser SDK. Contains no secrets —
+    the VAPID key is public by design and the service account never appears."""
+    st = config.firebase_status()
+    return {
+        "firebase": config.FIREBASE_WEB_CONFIG,
+        "vapidKey": config.FIREBASE_VAPID_KEY,
+        "ready": st["vapid_key"],
+        "senderReady": st["credentials_present"],
+    }
+
+
+@app.post("/api/notifications/login")
+async def api_push_login(request: Request):
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    user_id = (body.get("userId") or "").strip()
+    passcode = body.get("passcode") or ""
+    token = notif.login(user_id, passcode)
+    if not token:
+        raise HTTPException(401, "Invalid userId or passcode")
+
+    # Mobile clients ask for the raw token and send it as a Bearer header.
+    # Browsers never receive it — keeping the cookie httpOnly means XSS on the
+    # dashboard cannot read a session.
+    if (body.get("client") or "").lower() == "mobile":
+        return JSONResponse({"ok": True, "userId": user_id, "token": token,
+                             "expiresInDays": config.USER_SESSION_DAYS})
+
+    resp = JSONResponse({"ok": True, "userId": user_id})
+    resp.set_cookie(USER_COOKIE, token, httponly=True, samesite="lax",
+                    max_age=config.USER_SESSION_DAYS * 86400, path="/")
+    return resp
+
+
+@app.post("/api/notifications/firebase-login")
+async def api_push_firebase_login(request: Request):
+    """Sign in with a Firebase ID token — the SAME login the website and mobile
+    app already use. No second passcode exists on this path.
+
+    The token's signature is verified against the service account, so a client
+    cannot forge an identity; the userId comes from the verified claims.
+    """
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    id_token = (body.get("idToken") or "").strip()
+    if not id_token:
+        raise HTTPException(400, "idToken required")
+
+    if not config.firebase_status()["credentials_present"]:
+        raise HTTPException(503, "Firebase service account not configured on the server — "
+                                 "ID tokens cannot be verified yet")
+
+    result = notif.login_with_firebase(id_token)
+    if not result:
+        raise HTTPException(401, "Invalid Firebase token, or no Trinetra user for this account")
+    token, user_id = result
+
+    if (body.get("client") or "").lower() == "mobile":
+        return JSONResponse({"ok": True, "userId": user_id, "token": token,
+                             "expiresInDays": config.USER_SESSION_DAYS})
+    resp = JSONResponse({"ok": True, "userId": user_id})
+    resp.set_cookie(USER_COOKIE, token, httponly=True, samesite="lax",
+                    max_age=config.USER_SESSION_DAYS * 86400, path="/")
+    return resp
+
+
+@app.get("/api/notifications/me")
+def api_push_me(request: Request):
+    uid = _current_user(request)
+    if not uid:
+        return {"signedIn": False}
+    user = notif.get_user(uid)
+    return {"signedIn": True, "userId": uid,
+            "notificationEnabled": bool(user and user["notification_enabled"]),
+            "devices": (user or {}).get("devices", [])}
+
+
+@app.post("/api/notifications/register-device")
+async def api_register_device(request: Request):
+    """Bind this browser's FCM token to the signed-in user."""
+    user_id = _require_user(request)
+    body = await request.json()
+    token = (body.get("fcmToken") or "").strip()
+    if not token:
+        raise HTTPException(400, "fcmToken required")
+    device = notif.register_device(
+        user_id=user_id,                                  # from the session, never the body
+        fcm_token=token,
+        platform=(body.get("platform") or "WEB"),
+        browser=(body.get("browser") or "")[:80],
+        device_id=(body.get("deviceId") or "")[:120],
+    )
+    print(f"[push] device registered for {user_id} ({device['platform']}/{device['browser']})")
+    return {"ok": True, "userId": user_id, "device": device}
+
+
+@app.delete("/api/notifications/unregister-device")
+async def api_unregister_device(request: Request):
+    """Detach this browser's token. Used on logout so the next person to sign
+    in on this browser cannot receive the previous user's notifications."""
+    user_id = _require_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = (body.get("fcmToken") or "").strip()
+    removed = notif.deactivate_token(token, user_id) if token else 0
+    return {"ok": True, "deactivated": removed}
+
+
+@app.post("/api/notifications/logout")
+async def api_push_logout(request: Request):
+    from fastapi.responses import JSONResponse
+    user_id = _current_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = (body.get("fcmToken") or "").strip()
+    if user_id and token:
+        notif.deactivate_token(token, user_id)
+    # End the session on whichever transport carried it
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        notif.logout(auth[7:].strip())
+    notif.logout(request.cookies.get(USER_COOKIE, ""))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(USER_COOKIE, path="/")
+    return resp
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PUSH NOTIFICATIONS — admin endpoints (admin cookie required)
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/admin/notification-users")
+def api_admin_notif_users(request: Request, search: Optional[str] = None):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    users = notif.list_users()
+    if search:
+        q = search.strip().lower()
+        users = [u for u in users if q in u["user_id"].lower()
+                 or q in (u.get("name") or "").lower()
+                 or q in (u.get("email") or "").lower()]
+    return {"users": users, "firebase": config.firebase_status()}
+
+
+@app.get("/api/admin/notification-users/{user_id}")
+def api_admin_notif_user(request: Request, user_id: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    user = notif.get_user(user_id)
+    if not user:
+        raise HTTPException(404, f"no user {user_id}")
+    return user
+
+
+@app.post("/api/admin/notification-users")
+async def api_admin_notif_create(request: Request):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    body = await request.json()
+    user_id = (body.get("userId") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{3,40}", user_id):
+        raise HTTPException(400, "userId must be 3-40 chars: letters, digits, _ or -")
+    if notif.get_user(user_id):
+        raise HTTPException(409, f"{user_id} already exists")
+    return notif.upsert_user(
+        user_id,
+        name=(body.get("name") or "").strip(),
+        email=(body.get("email") or "").strip(),
+        passcode=body.get("passcode") or None,
+        notification_enabled=body.get("notificationEnabled", True),
+    )
+
+
+@app.put("/api/admin/notification-users/{user_id}")
+async def api_admin_notif_update(request: Request, user_id: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    if not notif.get_user(user_id):
+        raise HTTPException(404, f"no user {user_id}")
+    body = await request.json()
+    enabled = body.get("notificationEnabled")
+
+    # Optional rename — carries devices, sessions and history to the new id.
+    new_id = (body.get("newUserId") or "").strip()
+    if new_id and new_id != user_id:
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{3,40}", new_id):
+            raise HTTPException(400, "userId must be 3-40 chars: letters, digits, _ or -")
+        try:
+            notif.rename_user(user_id, new_id)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        user_id = new_id
+
+    return notif.upsert_user(
+        user_id,
+        name=(body.get("name") or "").strip(),
+        email=(body.get("email") or "").strip(),
+        passcode=body.get("passcode") or None,
+        notification_enabled=None if enabled is None else bool(enabled),
+    )
+
+
+@app.delete("/api/admin/notification-users/{user_id}")
+def api_admin_notif_delete(request: Request, user_id: str):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    return notif.delete_user(user_id)
+
+
+@app.delete("/api/admin/notification-users/{user_id}/devices/{device_row_id}")
+def api_admin_notif_del_device(request: Request, user_id: str, device_row_id: int):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    removed = notif.delete_device(device_row_id)
+    if not removed:
+        raise HTTPException(404, "no such device")
+    return {"ok": True, "deleted": removed}
+
+
+@app.post("/api/admin/notification-users/{user_id}/test")
+async def api_admin_notif_test(request: Request, user_id: str):
+    """Send a test notification to one user — the quickest end-to-end check."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, NotificationService.send_to_user, user_id,
+        {"title": "Trinetra test notification",
+         "body": f"Push is working for {user_id}.",
+         "data": {"eventType": "TEST"}, "link": "/index.html"}
+    )
+    return result
 
 
 # ─── /ws — WebSocket for live updates ─────────────────────────────────────

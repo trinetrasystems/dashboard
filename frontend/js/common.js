@@ -100,6 +100,7 @@ function renderTopbar(activeTab) {
   </div>
   <div class="topbar-right">
     <div class="time-stamp"><b id="clock">${fmtDate(now)} · ${fmtTime(now)}</b></div>
+    <a href="notifications.html" class="icon-btn" title="Push notifications for this device" style="text-decoration:none;font-size:15px;">🔔</a>
     <a href="admin.html" class="icon-btn" title="Admin Panel" style="text-decoration:none;font-size:15px;">⚙</a>
     <button class="icon-btn" id="theme-toggle" title="Toggle theme">☾</button>
     <button class="icon-btn" onclick="location.reload()" title="Refresh">↻</button>
