@@ -1,45 +1,62 @@
-# Quick Start Guide
+# Trinetra Perimeter Dashboard — Running the Server
 
-This document contains the commands required to run the Trinetra Systems Monitor.
-
-## 1. First Time Setup & Run
-If you are deploying this on a new server or running it for the very first time, you must install the Python dependencies into a virtual environment.
-
-Run these commands in your terminal:
+All commands run from the project root:
 
 ```bash
-# Go to the project directory
-cd /home/yash/dashboard
-
-# Create a virtual environment named "venv"
-python3 -m venv venv
-
-# Activate the virtual environment
-source venv/bin/activate
-
-# Install the necessary backend dependencies
-pip install -r backend/requirements.txt
-
-# Start the dashboard server
-python backend/app.py
+cd /home/yash/Trinetra/dashboard
 ```
 
----
-
-## 2. Subsequent Runs
-If you have already run the setup commands above previously, you do not need to install the requirements again. Simply activate the virtual environment and start the server.
-
-Run these commands in your terminal:
+## Start (detached — keeps running after you close the terminal)
 
 ```bash
-# Go to the project directory
-cd /home/yash/dashboard
-
-# Activate the virtual environment
-source venv/bin/activate
-
-# Start the dashboard server
-python backend/app.py
+setsid nohup ./backend/venv/bin/python3 -u backend/app.py >> trinetra.log 2>&1 < /dev/null &
 ```
 
-*The server will start at http://0.0.0.0:8000. You can stop it at any time by pressing `Ctrl + C`.*
+`setsid` is what detaches it. Plain `&` or `nohup` alone leaves the process tied
+to your terminal session, and it stops when that session ends.
+
+`-u` makes the log unbuffered. Without it, alert and ingest messages sit in
+Python's output buffer and `tail -f trinetra.log` shows nothing while alerts fire.
+
+## Start (foreground — logs to the screen, Ctrl+C to stop)
+
+```bash
+cd /home/yash/Trinetra/dashboard/backend
+./venv/bin/python3 -u app.py
+```
+
+## Check it is running
+
+```bash
+pgrep -af "app.py"
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/
+```
+
+`200` means the dashboard is up.
+
+## Stop
+
+```bash
+pkill -f "venv/bin/python3.*app.py"
+```
+
+## Restart
+
+```bash
+pkill -f "venv/bin/python3.*app.py"
+sleep 2
+setsid nohup ./backend/venv/bin/python3 -u backend/app.py >> trinetra.log 2>&1 < /dev/null &
+```
+
+Restart after editing `.env` or any file in `backend/`. Frontend files
+(`frontend/`) are picked up on a normal page reload — no restart needed.
+
+## Watch the log
+
+```bash
+tail -f /home/yash/Trinetra/dashboard/trinetra.log
+```
+
+## Open the dashboard
+
+http://localhost:8000

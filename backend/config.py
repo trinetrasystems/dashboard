@@ -178,6 +178,13 @@ DWELL_RULES = _parse_dwell_rules(
 # deployments keep alerting on their own badge classes.
 INSIDE_BADGES = _parse_badge_set(os.environ.get("TRINETRA_INSIDE_BADGES", ""))
 
+# Continuity window for perimeter classes, in minutes. Dwell means CONTINUOUS
+# presence: if a perimeter object is not seen for this long, it has left, and
+# its next sighting starts a fresh dwell timer (and can alert again).
+# Kept separate from TRINETRA_SESSION_GAP_MINUTES so legacy badge classes keep
+# their own behaviour. Must be longer than the edge's reporting interval.
+PERIMETER_GAP_MINUTES = int(os.environ.get("TRINETRA_PERIMETER_GAP_MINUTES", "5"))
+
 # Minimum seconds between two breach alerts for the same badge+camera.
 # 0 = alert on every single detection (literal "instant" behaviour).
 # Raise it if the edge writes many frames per second and Telegram floods.
@@ -203,6 +210,16 @@ def zone_label(badge: str) -> str:
 def is_breach_badge(badge: str) -> bool:
     """True for classes that must alert the moment they are seen."""
     return normalize_badge(badge) in BREACH_BADGES
+
+
+def is_perimeter_class(badge: str) -> bool:
+    """Breach or outside-perimeter class — governed by continuous presence."""
+    return zone_for(badge) in (ZONE_BREACH, ZONE_OUTSIDE)
+
+
+def session_gap_minutes_for(badge: str) -> int:
+    """How long a badge may go unseen before its presence is considered over."""
+    return PERIMETER_GAP_MINUTES if is_perimeter_class(badge) else SESSION_GAP_MINUTES
 
 
 def dwell_minutes_for(badge: str):
@@ -275,4 +292,5 @@ def print_summary():
           ", ".join(f"{b}:{m}min" for b, m in sorted(DWELL_RULES.items())))
     print(f"[config] INSIDE_BADGES = {sorted(INSIDE_BADGES) or '(none)'} (tracked, no alarm)")
     print(f"[config] BREACH_COOL   = {BREACH_COOLDOWN_SECONDS}s")
+    print(f"[config] PERIM_GAP     = {PERIMETER_GAP_MINUTES} min (continuous-presence window)")
     print(f"[config] IMAGE_CLEANUP = {'disabled' if IMAGE_RETENTION_DAYS == 0 else f'{IMAGE_RETENTION_DAYS} days'}")

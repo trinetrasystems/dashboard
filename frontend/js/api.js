@@ -265,11 +265,12 @@ async function getPerimeterRules() {
   return await apiGet('/api/perimeter/rules');
 }
 
-async function getRecentAlerts(limit = 50, kind = null, todayOnly = false) {
+async function getRecentAlerts(limit = 50, kind = null, todayOnly = false, status = null) {
   if (USE_DUMMY_DATA) return [];
   const q = new URLSearchParams({ limit });
   if (kind) q.set('kind', kind);
   if (todayOnly) q.set('today', 'true');
+  if (status) q.set('status', status);   // 'open' = every unacknowledged alert, any day
   return await apiGet(`/api/alerts/recent?${q.toString()}`);
 }
 

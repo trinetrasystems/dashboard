@@ -19,6 +19,8 @@ let cachedAlerts = [];
 let perimeterRules = null;
 let _detMap = {};      // detection id → detection, for row-click lookup
 let _alertMap = {};    // alert id → alert, for row-click lookup
+let _dwellAlertBySession = {};   // session id → its early-warning alert
+let _breachAlertByImage = {};    // frame filename → its breach alert
 let _ackedLocally = new Set();   // instant banner dismissal, before refetch
 
 /* Live tables page at 10 rows. The data is already in memory (today only),
@@ -67,6 +69,23 @@ function gotoAckedPage(n) { ackedPage = n; renderAckedLog(); }
 window.gotoDetPage = gotoDetPage;
 window.gotoActivePage = gotoActivePage;
 window.gotoAckedPage = gotoAckedPage;
+
+/* Timestamps are stored as naive UTC ISO strings */
+function utcDate(s) {
+  return new Date(String(s).endsWith('Z') ? s : s + 'Z');
+}
+
+/* How long the object behind an early warning has been present.
+   Counts up until the alert is acknowledged, then holds. */
+function presentMinutes(a) {
+  if (a.kind === 'breach' || !a.session_first_seen) {
+    return Math.floor((a.duration_seconds || 0) / 60);
+  }
+  const start = utcDate(a.session_first_seen).getTime();
+  const end = (a.session_closed && a.session_closed_at)
+    ? utcDate(a.session_closed_at).getTime() : Date.now();
+  return Math.max(0, Math.floor((end - start) / 60000));
+}
 
 /* ─── Zone helpers ─── */
 function normBadge(b) {
@@ -120,12 +139,21 @@ async function refreshAll() {
   try {
     if (!perimeterRules) perimeterRules = await getPerimeterRules();
 
-    const [sessions, stats, detections, alerts] = await Promise.all([
+    const [sessions, stats, detections, openAlerts, todayAlerts] = await Promise.all([
       getSessions(),
       getStats(),
-      getDetections({}),            // defaults to today on the backend
-      getRecentAlerts(60, null, true),   // today only
+      getDetections({}),                        // defaults to today on the backend
+      // EVERY unacknowledged alert, whatever day it fired — an alert must never
+      // leave the alert bar without an Ack, including across midnight.
+      getRecentAlerts(500, null, false, 'open'),
+      getRecentAlerts(200, null, true),         // today's, for the Acknowledged section
     ]);
+    const seen = new Set();
+    const alerts = [];
+    for (const a of [...(openAlerts || []), ...(todayAlerts || [])]) {
+      if (!seen.has(a.id)) { seen.add(a.id); alerts.push(a); }
+    }
+    alerts.sort((x, y) => new Date(y.triggered_at) - new Date(x.triggered_at));
 
     activeSessions = sessions || [];
     sessionById = {};
@@ -138,6 +166,20 @@ async function refreshAll() {
     cachedStats = stats;
     cachedDetections = detections || [];
     cachedAlerts = alerts || [];
+    // Every alert is clickable from anywhere (banner, any page of any table),
+    // so index them all — not just the rows on the currently visible page.
+    _alertMap = {};
+    _dwellAlertBySession = {};
+    _breachAlertByImage = {};
+    for (const a of cachedAlerts) {
+      _alertMap[a.id] = a;
+      // Breach alerts are one-per-frame; early warnings are one-per-presence.
+      if (a.kind === 'breach') {
+        if (a.image) _breachAlertByImage[a.image] = a;
+      } else if (a.session_id != null && !_dwellAlertBySession[a.session_id]) {
+        _dwellAlertBySession[a.session_id] = a;   // newest first → keep the latest
+      }
+    }
 
     updateTopbarPills(cachedStats);
     renderBanner();
@@ -158,17 +200,23 @@ async function refreshAll() {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 const BANNER_MAX_CHIPS = 6;
+const CHIP_MAX_THUMBS = 4;      // per-alert thumbnails shown inside one chip
+let _bannerGroups = {};         // group key → group, for the group list modal
 
 function groupAlerts(alerts) {
   const groups = new Map();
   for (const a of alerts) {
-    const key = a.badge;                 // one slot per badge
+    // One slot per class PER CAMERA: the same class on two cameras is two
+    // different objects, each with its own Ack.
+    const key = `${a.badge}|${a.camera}`;
     const g = groups.get(key);
     if (!g) {
-      groups.set(key, { badge: a.badge, latest: a, count: 1, ids: [a.id], breach: a.kind === 'breach' });
+      groups.set(key, { key, badge: a.badge, latest: a, count: 1, ids: [a.id],
+                        alerts: [a], breach: a.kind === 'breach' });
     } else {
       g.count++;
       g.ids.push(a.id);
+      g.alerts.push(a);
       g.breach = g.breach || a.kind === 'breach';
       // alerts arrive newest-first, so the first one seen is the latest
     }
@@ -213,6 +261,9 @@ function renderBanner() {
   }
   if (ackAll) ackAll.textContent = `✓ ACK ALL (${open.length})`;
 
+  _bannerGroups = {};
+  for (const g of groups) _bannerGroups[g.key] = g;
+
   const shown = groups.slice(0, BANNER_MAX_CHIPS);
   const hiddenGroups = groups.length - shown.length;
   const hiddenAlerts = groups.slice(BANNER_MAX_CHIPS).reduce((n, g) => n + g.count, 0);
@@ -222,27 +273,53 @@ function renderBanner() {
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
     const counts = a.counts || countsOf(a.badge);
     const detail = counts ? countsText(counts) : escapeHtml(a.zone_label);
-    const mins = Math.floor((a.duration_seconds || 0) / 60);
-
-    const thumb = a.has_image
-      ? `<img class="alert-chip-thumb" src="/images/${encodeURIComponent(a.image)}" alt=""
-             onerror="this.outerHTML='<span class=&quot;alert-chip-thumb none&quot;>⊘</span>'">`
-      : `<span class="alert-chip-thumb none">⊘</span>`;
+    const mins = presentMinutes(a);
+    const keyAttr = escapeHtml(encodeURIComponent(g.key));
 
     const repeat = g.count > 1
       ? `<span class="alert-chip-count" title="${g.count} alerts for this class">×${g.count}</span>` : '';
 
+    // One alert: the chip itself opens its snapshot.
+    // Several: every alert gets its own clickable thumbnail, and the chip
+    // opens the full list — so each one can be viewed, not only the latest.
+    let media;
+    let chipClick;
+    if (g.count === 1) {
+      media = a.has_image
+        ? `<img class="alert-chip-thumb" src="/images/${encodeURIComponent(a.image)}" alt=""
+               onerror="this.outerHTML='<span class=&quot;alert-chip-thumb none&quot;>⊘</span>'">`
+        : `<span class="alert-chip-thumb none">⊘</span>`;
+      chipClick = `showAlertSnapshot(${a.id})`;
+    } else {
+      const thumbs = g.alerts.slice(0, CHIP_MAX_THUMBS).map(x => {
+        const xt = new Date(x.triggered_at.endsWith('Z') ? x.triggered_at : x.triggered_at + 'Z');
+        const inner = x.has_image
+          ? `<img src="/images/${encodeURIComponent(x.image)}" alt=""
+                 onerror="this.outerHTML='<span>⊘</span>'">`
+          : `<span>⊘</span>`;
+        return `<button class="mini-thumb" title="${escapeHtml(x.badge)} · ${fmtTime(xt)} — open this alert"
+                  onclick="event.stopPropagation();showAlertSnapshot(${x.id})">${inner}</button>`;
+      }).join('');
+      const extra = g.count > CHIP_MAX_THUMBS
+        ? `<button class="mini-thumb more" title="See all ${g.count} alerts"
+                   onclick="event.stopPropagation();showAlertGroup('${keyAttr}')">+${g.count - CHIP_MAX_THUMBS}</button>`
+        : '';
+      media = `<div class="mini-thumbs">${thumbs}${extra}</div>`;
+      chipClick = `showAlertGroup('${keyAttr}')`;
+    }
+
     return `
-      <div class="alert-chip ${g.breach ? 'breach' : 'warning'}"
-           onclick="showAlertSnapshot(${a.id})" title="Click to see the snapshot">
-        ${thumb}
+      <div class="alert-chip ${g.breach ? 'breach' : 'warning'} ${g.count > 1 ? 'grouped' : ''}"
+           onclick="${chipClick}" title="${g.count > 1 ? `Click to see all ${g.count} alerts` : 'Click to see the snapshot'}">
         <div class="alert-chip-body">
           <div class="alert-chip-kind">${g.breach ? '⚡ BREACH' : '⏱ EARLY WARNING'}${repeat}</div>
           <div class="alert-chip-badge">${escapeHtml(a.badge)}</div>
           <div class="alert-chip-meta">${escapeHtml(a.camera)} · ${detail}${g.breach ? '' : ` · ${mins} min`} · ${fmtTime(ts)}</div>
+          ${g.count > 1 ? media : ''}
         </div>
+        ${g.count === 1 ? media : ''}
         <button class="ack-btn-lg" onclick="event.stopPropagation();ackGroup('${encodeURIComponent(JSON.stringify(g.ids))}')"
-                title="Acknowledge ${g.count} alert${g.count === 1 ? '' : 's'} for this class">✓ ACK</button>
+                title="Acknowledge ${g.count} alert${g.count === 1 ? '' : 's'} for this class">✓ ACK${g.count > 1 ? ` ${g.count}` : ''}</button>
       </div>`;
   }).join('');
 
@@ -258,6 +335,46 @@ function renderBanner() {
 
   list.innerHTML = html;
 }
+
+/* Every alert in one banner group, each individually openable */
+function showAlertGroup(encodedKey) {
+  const g = _bannerGroups[decodeURIComponent(encodedKey)];
+  if (!g) return;
+
+  ensureModal();
+  document.querySelector('.modal')?.classList.add('modal-detail');
+  document.getElementById('modal-title').textContent = g.badge;
+  document.getElementById('modal-sub').textContent =
+    `${g.count} unacknowledged alert${g.count === 1 ? '' : 's'} · click any one to open its snapshot`;
+
+  const rows = g.alerts.map(x => {
+    const xt = new Date(x.triggered_at.endsWith('Z') ? x.triggered_at : x.triggered_at + 'Z');
+    const isBreach = x.kind === 'breach';
+    const mins = presentMinutes(x);
+    const c = x.counts || countsOf(x.badge);
+    const thumb = x.has_image
+      ? `<img src="/images/${encodeURIComponent(x.image)}" alt=""
+             onerror="this.outerHTML='<span class=&quot;alert-thumb-none&quot;>⊘</span>'">`
+      : `<span class="alert-thumb-none">⊘</span>`;
+    return `
+      <div class="group-row" onclick="showAlertSnapshot(${x.id}, '${escapeHtml(encodedKey)}')">
+        <div class="alert-thumb">${thumb}</div>
+        <div class="group-row-body">
+          <div class="group-row-top">
+            <span class="status-tag ${isBreach ? 'alert' : 'warn'}">${isBreach ? 'BREACH' : 'EARLY WARNING'}</span>
+            <b class="mono">${fmtTime(xt)}</b>
+          </div>
+          <div class="group-row-meta">${escapeHtml(x.camera)} · ${escapeHtml(x.zone_label)}${isBreach ? '' : ` · ${mins} min`}${c ? ` · ${escapeHtml(countsText(c))}` : ''}</div>
+        </div>
+        <button class="ack-btn-sm" onclick="event.stopPropagation();ackAlert(${x.id});this.closest('.group-row').remove();"
+                title="Acknowledge just this alert">✓ ACK</button>
+      </div>`;
+  }).join('');
+
+  document.getElementById('modal-body').innerHTML = `<div class="group-list">${rows}</div>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+window.showAlertGroup = showAlertGroup;
 
 /* Ack every alert in one badge group */
 async function ackGroup(idsJson) {
@@ -379,26 +496,51 @@ function renderDetectionsTable() {
     const zt = ZONE_TAG[zone] || ZONE_TAG.unknown;
     const counts = d.counts || countsOf(d.badge);
 
-    // Dwell comes from the still-open session behind this detection, so the
-    // timer keeps accumulating across frames even though rows are per-detection.
-    const sess = d.session_id ? sessionById[d.session_id] : null;
+    // Dwell = CONTINUOUS presence of the session behind this detection.
+    // While the object is still being seen the timer ticks; once it has gone
+    // quiet for longer than the perimeter gap, dwell freezes at the observed
+    // span — it never counts up across days.
     const limit = dwellMinutesFor(d.badge);
     let dwellCell = `<span style="color:var(--text-dim);">—</span>`;
     let status = { cls: 'ok', label: 'LOGGED' };
+    let note = '';
+
+    // Once an alert has fired it stays EARLY WARNING / BREACH until someone
+    // clicks Ack — it never clears itself because the object walked away.
+    const ackedTag = { cls: 'wl', label: '✓ ACKED' };
 
     if (zone === 'breach') {
-      status = { cls: 'alert', label: 'BREACH' };
+      const ba = _breachAlertByImage[d.filename];
+      status = (ba && ba.acked) ? ackedTag : { cls: 'alert', label: 'BREACH' };
       dwellCell = `<span class="duration-pill alert">⚡ instant</span>`;
-    } else if (sess && limit) {
-      const secs = (Date.now() - sess.first_seen_dt.getTime()) / 1000;
+    } else if (limit && d.session_first_seen) {
+      const first = utcDate(d.session_first_seen).getTime();
+      // Present from first sighting until the alert is acknowledged.
+      const open = !d.session_closed;
+      const end = open ? Date.now()
+                       : (d.session_closed_at ? utcDate(d.session_closed_at).getTime() : Date.now());
+      const secs = Math.max(0, (end - first) / 1000);
       const mins = secs / 60;
       const cls = mins >= limit ? 'alert' : (mins >= limit * 0.6 ? 'warn' : 'ok');
-      dwellCell = `<span class="duration-pill ${cls}" data-since="${sess.first_seen_dt.getTime()}" data-limit="${limit}">
-          ${cls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}</span>`;
-      status = mins >= limit
-        ? { cls: 'alert', label: 'EARLY WARNING' }
-        : (mins >= limit * 0.6 ? { cls: 'warn', label: 'APPROACHING' }
-                               : { cls: 'ok', label: 'WATCHING' });
+
+      dwellCell = open
+        ? `<span class="duration-pill ${cls}" data-since="${first}" data-limit="${limit}">${cls === 'alert' ? '⚠ ' : ''}${fmtDuration(secs)}</span>`
+        : `<span class="duration-pill ${cls}">${fmtDuration(secs)}</span>`;
+
+      const wa = _dwellAlertBySession[d.session_id];
+      if (wa) {
+        status = wa.acked ? ackedTag : { cls: 'alert', label: 'EARLY WARNING' };
+      } else if (open && mins >= limit) {
+        // Over the limit; the checker raises the alert within 30 seconds.
+        status = { cls: 'alert', label: 'EARLY WARNING' };
+      } else if (open) {
+        status = mins >= limit * 0.6
+          ? { cls: 'warn', label: 'APPROACHING' }
+          : { cls: 'ok', label: 'WATCHING' };
+      } else {
+        status = { cls: 'muted', label: 'NO ALERT' };
+        note = `seen ${fmtDuration(secs)} · needs ${limit} min`;
+      }
     }
 
     const countBadge = counts
@@ -412,7 +554,8 @@ function renderDetectionsTable() {
         <td class="mono">${escapeHtml(d.camera)}</td>
         <td class="mono">${fmtTime(ts)}</td>
         <td>${dwellCell}</td>
-        <td><span class="status-tag ${status.cls}">${status.label}</span></td>
+        <td><span class="status-tag ${status.cls}">${status.label}</span>${note
+            ? `<div class="status-note">${escapeHtml(note)}</div>` : ''}</td>
       </tr>`;
   }).join('');
 }
@@ -462,7 +605,6 @@ function renderAlertLog() {
   const tbody = document.getElementById('alertlog-body');
   const meta = document.getElementById('alertlog-meta');
   if (!tbody) return;
-  _alertMap = {};
 
   // Acknowledged alerts leave this table and appear under "Acknowledged Alerts".
   const active = cachedAlerts.filter(a => !a.acked && !_ackedLocally.has(a.id));
@@ -483,15 +625,14 @@ function renderAlertLog() {
   renderLivePager('alertlog-pager', activePage, active.length, 'gotoActivePage');
 
   tbody.innerHTML = pageSlice(active, activePage).map(a => {
-    _alertMap[a.id] = a;
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
     const isBreach = a.kind === 'breach';
-    const mins = Math.floor((a.duration_seconds || 0) / 60);
+    const mins = presentMinutes(a);
     const counts = a.counts || countsOf(a.badge);
 
     const event = isBreach
       ? 'Object in alert region'
-      : (mins ? `Dwell exceeded · ${mins} min` : 'Dwell exceeded');
+      : `Present ${mins} min · over ${dwellMinutesFor(a.badge) || 10} min limit`;
 
     const typeTag = isBreach
       ? `<span class="status-tag alert">BREACH</span>`
@@ -548,15 +689,14 @@ function renderAckedLog() {
   renderLivePager('ackedlog-pager', ackedPage, sorted.length, 'gotoAckedPage');
 
   tbody.innerHTML = pageSlice(sorted, ackedPage).map(a => {
-    _alertMap[a.id] = a;
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
     const isBreach = a.kind === 'breach';
-    const mins = Math.floor((a.duration_seconds || 0) / 60);
+    const mins = presentMinutes(a);
     const counts = a.counts || countsOf(a.badge);
 
     const event = isBreach
       ? 'Object in alert region'
-      : (mins ? `Dwell exceeded · ${mins} min` : 'Dwell exceeded');
+      : `Present ${mins} min · over ${dwellMinutesFor(a.badge) || 10} min limit`;
 
     const typeTag = isBreach
       ? `<span class="status-tag alert">BREACH</span>`
@@ -590,11 +730,11 @@ function renderAckedLog() {
   }).join('');
 }
 
-function showAlertSnapshot(alertId) {
+function showAlertSnapshot(alertId, fromGroupKey) {
   const a = _alertMap[alertId];
   if (!a) return;
   const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
-  const mins = Math.floor((a.duration_seconds || 0) / 60);
+  const mins = presentMinutes(a);
   const counts = a.counts || countsOf(a.badge);
   const rule = a.kind === 'breach' ? 'instant — no dwell wait' : `dwell ${mins} min`;
   openModal({
@@ -604,6 +744,14 @@ function showAlertSnapshot(alertId) {
     filename: a.image,
     hasImage: a.has_image,
   });
+  // Opened from a group list: offer a way back to the rest of the group
+  if (fromGroupKey && _bannerGroups[decodeURIComponent(fromGroupKey)]) {
+    const g = _bannerGroups[decodeURIComponent(fromGroupKey)];
+    document.getElementById('modal-body').insertAdjacentHTML('afterbegin',
+      `<div style="padding: 14px 24px 0;">
+         <button class="pager-btn" onclick="showAlertGroup('${escapeHtml(fromGroupKey)}')">← all ${g.count} alerts</button>
+       </div>`);
+  }
 }
 window.showAlertSnapshot = showAlertSnapshot;
 
@@ -642,7 +790,7 @@ function tickDurations() {
   document.querySelectorAll('.duration-pill[data-since]').forEach(el => {
     const since = parseInt(el.getAttribute('data-since'), 10);
     const limit = parseFloat(el.getAttribute('data-limit')) || 15;
-    const secs = (Date.now() - since) / 1000;
+    const secs = Math.max(0, (Date.now() - since) / 1000);
     const mins = secs / 60;
     const cls = mins >= limit ? 'alert' : (mins >= limit * 0.6 ? 'warn' : 'ok');
     el.className = `duration-pill ${cls}`;

@@ -167,13 +167,223 @@ def parse_filename(name: str):
     return m["camera"], m["badge"], dt
 
 
-def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool):
+def _alert_if_dwell_met(conn, sess, pending_alerts):
+    """Raise the early warning for a presence that is being closed, if it met
+    its dwell rule and has not alerted yet. Exactly-once via alert_sent."""
+    if pending_alerts is None or sess["alert_sent"]:
+        return
+    dwell_min = config.dwell_minutes_for(sess["badge"])
+    if dwell_min is None:
+        return
+    if conn.execute("SELECT 1 FROM whitelist WHERE badge=?", (sess["badge"],)).fetchone():
+        return
+    first = datetime.fromisoformat(sess["first_seen"])
+    last = datetime.fromisoformat(sess["last_seen"])
+    span = int((last - first).total_seconds())
+    if span < dwell_min * 60:
+        return
+
+    img = conn.execute(
+        "SELECT filename FROM detections WHERE session_id=? ORDER BY timestamp DESC LIMIT 1",
+        (sess["id"],)
+    ).fetchone()
+    last_image = img["filename"] if img else None
+    zone = config.zone_for(sess["badge"])
+    cur = conn.execute(
+        "INSERT INTO alerts(session_id, badge, triggered_at, duration_seconds, kind, camera, zone, image) "
+        "VALUES (?,?,?,?, 'dwell', ?, ?, ?)",
+        (sess["id"], sess["badge"], datetime.utcnow().isoformat(), span,
+         sess["last_camera"], zone, last_image)
+    )
+    conn.execute("UPDATE sessions SET alert_sent=1 WHERE id=?", (sess["id"],))
+    pending_alerts.append({
+        "alert_id": cur.lastrowid,
+        "session_id": sess["id"],
+        "badge": sess["badge"],
+        "first_seen": sess["first_seen"],
+        "last_seen": sess["last_seen"],
+        "last_camera": sess["last_camera"],
+        "duration_seconds": span,
+        "dwell_minutes": dwell_min,
+        "zone": zone,
+        "last_image": last_image,
+    })
+
+
+def _update_perimeter_session(conn, badge: str, camera: str, ts: datetime,
+                              pending_alerts=None):
+    """Continuous-presence sessions for breach / outside-perimeter classes.
+
+    A detection joins the open session only if it falls within
+    PERIMETER_GAP_MINUTES of that session's observed span. Otherwise the object
+    had left: the old session is closed and a fresh one starts, so the dwell
+    timer restarts and the class can raise a new early warning.
+
+    Order-safe: files may be ingested out of timestamp order, so the span is
+    widened in both directions rather than assuming every frame is the newest.
+
+    Counted classes ("Outside-person-2-object-1") share one presence across
+    tally changes — a second person arriving must not reset the dwell timer.
+    """
+    gap = timedelta(minutes=config.PERIMETER_GAP_MINUTES)
+
+    cols = "id, badge, first_seen, last_seen, last_camera, cameras_json, alert_sent"
+    if config.is_counted_outside(badge):
+        row = conn.execute(
+            f"SELECT {cols} FROM sessions "
+            f"WHERE closed=0 AND {_NORM_SQL} LIKE ? ORDER BY id DESC LIMIT 1",
+            (config.OUTSIDE_COUNT_LIKE,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT {cols} FROM sessions "
+            f"WHERE closed=0 AND {_NORM_SQL}=? ORDER BY id DESC LIMIT 1",
+            (config.normalize_badge(badge),)
+        ).fetchone()
+
+    if row:
+        first = datetime.fromisoformat(row["first_seen"])
+        last = datetime.fromisoformat(row["last_seen"])
+        if (first - gap) <= ts <= (last + gap):
+            cams = json.loads(row["cameras_json"] or "{}")
+            cams[camera] = cams.get(camera, 0) + 1
+            new_first = min(first, ts)
+            new_last = max(last, ts)
+            if ts >= last:
+                # Newest frame: it carries the current camera and tally.
+                conn.execute(
+                    "UPDATE sessions SET badge=?, first_seen=?, last_seen=?, last_camera=?, "
+                    "total_sightings=total_sightings+1, cameras_json=? WHERE id=?",
+                    (badge, new_first.isoformat(), new_last.isoformat(), camera,
+                     json.dumps(cams), row["id"])
+                )
+            else:
+                # Late-arriving older frame: only widens the span backwards.
+                conn.execute(
+                    "UPDATE sessions SET first_seen=?, last_seen=?, "
+                    "total_sightings=total_sightings+1, cameras_json=? WHERE id=?",
+                    (new_first.isoformat(), new_last.isoformat(), json.dumps(cams), row["id"])
+                )
+            return row["id"], "sighting", bool(row["alert_sent"])
+
+        if ts < first - gap:
+            # A late frame from BEFORE the current presence. It must not end
+            # the live session — file it into the past presence it belongs to.
+            return _file_historical_frame(conn, badge, camera, ts, gap)
+
+        # Newer and not seen for longer than the gap — that presence is over.
+        # The dwell checker only looks at OPEN sessions every 30s, so a
+        # presence that met its dwell rule but is closed here, between ticks,
+        # would otherwise never raise its early warning. Judge it now.
+        _alert_if_dwell_met(conn, row, pending_alerts)
+        conn.execute("UPDATE sessions SET closed=1, closed_at=? WHERE id=?",
+                     (last.isoformat(), row["id"]))
+
+    cur = conn.execute(
+        "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json) "
+        "VALUES (?,?,?,?,?)",
+        (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}))
+    )
+    return cur.lastrowid, "entry", False
+
+
+def _file_historical_frame(conn, badge: str, camera: str, ts: datetime, gap: timedelta):
+    """Attach a late-arriving old frame to the closed presence it falls in,
+    or record it as its own closed presence. Never touches the open session."""
+    family_sql = (f"{_NORM_SQL} LIKE ?", (config.OUTSIDE_COUNT_LIKE,)) \
+        if config.is_counted_outside(badge) \
+        else (f"{_NORM_SQL}=?", (config.normalize_badge(badge),))
+
+    lo, hi = (ts - gap).isoformat(), (ts + gap).isoformat()
+    past = conn.execute(
+        "SELECT id, first_seen, last_seen, cameras_json FROM sessions "
+        f"WHERE closed=1 AND {family_sql[0]} AND last_seen >= ? AND first_seen <= ? "
+        "ORDER BY id DESC LIMIT 1",
+        (*family_sql[1], lo, hi)
+    ).fetchone()
+
+    if past:
+        cams = json.loads(past["cameras_json"] or "{}")
+        cams[camera] = cams.get(camera, 0) + 1
+        first = min(datetime.fromisoformat(past["first_seen"]), ts)
+        last = max(datetime.fromisoformat(past["last_seen"]), ts)
+        conn.execute(
+            "UPDATE sessions SET first_seen=?, last_seen=?, closed_at=?, "
+            "total_sightings=total_sightings+1, cameras_json=? WHERE id=?",
+            (first.isoformat(), last.isoformat(), last.isoformat(), json.dumps(cams), past["id"])
+        )
+        return past["id"], "sighting", False
+
+    cur = conn.execute(
+        "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json, closed, closed_at) "
+        "VALUES (?,?,?,?,?,1,?)",
+        (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}), ts.isoformat())
+    )
+    return cur.lastrowid, "entry", False
+
+
+def _update_outside_presence(conn, badge: str, camera: str, ts: datetime):
+    """Presence for an outside-perimeter class on ONE camera.
+
+    A detection means the object is there from that moment. The presence then
+    stays open until an operator acknowledges its early warning — it does not
+    end just because no further frame arrived. Dwell is therefore
+    now - first sighting, so an entry at 11:00 has dwelt 60 min by 12:00.
+
+    Keyed by class AND camera: an object at cam-perimeter-4 and another at
+    cam-perimeter-7 are separate presences with separate alerts. Counted
+    classes (Outside-person-N-object-M) share one presence per camera as the
+    tally changes.
+    """
+    if config.is_counted_outside(badge):
+        fam_sql, fam_params = f"{_NORM_SQL} LIKE ?", (config.OUTSIDE_COUNT_LIKE,)
+    else:
+        fam_sql, fam_params = f"{_NORM_SQL}=?", (config.normalize_badge(badge),)
+
+    row = conn.execute(
+        "SELECT id, first_seen, last_seen, cameras_json, alert_sent FROM sessions "
+        f"WHERE closed=0 AND {fam_sql} AND last_camera=? ORDER BY id DESC LIMIT 1",
+        (*fam_params, camera)
+    ).fetchone()
+
+    if row:
+        first = datetime.fromisoformat(row["first_seen"])
+        last = datetime.fromisoformat(row["last_seen"])
+        cams = json.loads(row["cameras_json"] or "{}")
+        cams[camera] = cams.get(camera, 0) + 1
+        # Order-safe: an older frame widens the presence back to when it began.
+        conn.execute(
+            "UPDATE sessions SET badge=CASE WHEN ? >= last_seen THEN ? ELSE badge END, "
+            "first_seen=?, last_seen=?, total_sightings=total_sightings+1, cameras_json=? "
+            "WHERE id=?",
+            (ts.isoformat(), badge, min(first, ts).isoformat(), max(last, ts).isoformat(),
+             json.dumps(cams), row["id"])
+        )
+        return row["id"], "sighting", bool(row["alert_sent"])
+
+    cur = conn.execute(
+        "INSERT INTO sessions(badge, first_seen, last_seen, last_camera, cameras_json) "
+        "VALUES (?,?,?,?,?)",
+        (badge, ts.isoformat(), ts.isoformat(), camera, json.dumps({camera: 1}))
+    )
+    return cur.lastrowid, "entry", False
+
+
+def update_session(conn, badge: str, camera: str, ts: datetime, is_exit: bool,
+                   pending_alerts=None):
     """
     Find open session for badge, extend it OR close it (on exit) OR open new one.
     Returns (session_id, detection_type, is_loitering)
       where type is 'entry' | 'sighting' | 'exit'
       and is_loitering=True if the session already had alert_sent=1.
     """
+    # Perimeter classes use continuous presence; everything else keeps the
+    # original behaviour below, untouched.
+    if config.zone_for(badge) == config.ZONE_OUTSIDE:
+        return _update_outside_presence(conn, badge, camera, ts)
+    if config.is_perimeter_class(badge):          # breach classes
+        return _update_perimeter_session(conn, badge, camera, ts, pending_alerts)
+
     gap = timedelta(minutes=config.SESSION_GAP_MINUTES)
 
     row = conn.execute(
@@ -259,6 +469,7 @@ def handle_new_file(path: Path):
     camera, badge, ts = parsed
     session_id, det_type, is_loitering = None, None, False
     breach = None
+    closed_presence_alerts = []   # early warnings for presences closed during ingest
 
     with _db_lock:
         conn = db()
@@ -276,7 +487,8 @@ def handle_new_file(path: Path):
                 # always open/extend a session so the breach alert has context.
                 is_breach = config.is_breach_badge(badge)
                 is_exit = (camera in config.EXIT_CAMERAS) and not is_breach
-                session_id, det_type, is_loitering = update_session(conn, badge, camera, ts, is_exit)
+                session_id, det_type, is_loitering = update_session(
+                    conn, badge, camera, ts, is_exit, closed_presence_alerts)
                 # Stamp the detection with its session (visit) ID and final type
                 conn.execute(
                     "UPDATE detections SET type=?, session_id=? WHERE id=?",
@@ -353,6 +565,13 @@ def handle_new_file(path: Path):
         "session_id": session_id,
         "detection_type": det_type,
     })
+
+    # Early warnings for presences that met their dwell rule and closed here.
+    # Reuses the existing, unchanged fire_alert() delivery path.
+    if closed_presence_alerts and _main_loop:
+        for a in closed_presence_alerts:
+            print(f"[dwell] early warning on close: {a['badge']} present {a['duration_seconds'] // 60} min")
+            asyncio.run_coroutine_threadsafe(fire_alert(a), _main_loop)
 
     # Fire BREACH alert AFTER archiving so the image file exists for Telegram
     if breach and _main_loop:
@@ -524,6 +743,29 @@ async def fire_breach_alert(breach: dict):
 # DWELL CHECKER (runs every 30s)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _presence_seconds(badge: str, first_seen: str, last_seen: str, now: datetime,
+                      closed_at: Optional[str] = None) -> float:
+    """How long this object has been CONTINUOUSLY present, in seconds.
+
+    Perimeter classes: while still being seen (idle within the gap) the timer
+    runs to now; once it has gone quiet, presence is the observed span only.
+    That stops a single old frame from reading as hours of dwell.
+
+    Legacy classes keep the original first_seen-to-now measure.
+    """
+    first = datetime.fromisoformat(first_seen)
+    if config.zone_for(badge) == config.ZONE_OUTSIDE:
+        # Present from first sighting until the alert is acknowledged.
+        end = datetime.fromisoformat(closed_at) if closed_at else now
+        return max(0.0, (end - first).total_seconds())
+    if not config.is_perimeter_class(badge):
+        return (now - first).total_seconds()
+    last = datetime.fromisoformat(last_seen)
+    still_present = (now - last) <= timedelta(minutes=config.PERIMETER_GAP_MINUTES)
+    end = now if still_present else last
+    return max(0.0, (end - first).total_seconds())
+
+
 async def loitering_loop():
     while True:
         try:
@@ -562,8 +804,9 @@ async def check_loitering():
                 if dwell_min is None:
                     continue
                 first = datetime.fromisoformat(r["first_seen"])
-                if (now - first) >= timedelta(minutes=dwell_min):
-                    duration = int((now - first).total_seconds())
+                presence = _presence_seconds(r["badge"], r["first_seen"], r["last_seen"], now)
+                if presence >= dwell_min * 60:
+                    duration = int(presence)
                     zone = config.zone_for(r["badge"])
                     with conn:
                         last_image_row = conn.execute(
@@ -610,6 +853,26 @@ async def check_loitering():
                     "WHERE closed=0 AND alert_sent=0 AND last_seen < ?",
                     (now.isoformat(), stale_cutoff)
                 )
+
+            # Perimeter classes have no exit camera, so the "keep an alerted
+            # session open until it exits" rule above would hold them open
+            # forever and swallow every later detection. Instead, once a
+            # perimeter object has not been seen for PERIMETER_GAP_MINUTES,
+            # its presence is over — alerted or not.
+            perim_cutoff = now - timedelta(minutes=config.PERIMETER_GAP_MINUTES)
+            to_close = [
+                s["id"] for s in conn.execute(
+                    "SELECT id, badge, last_seen FROM sessions WHERE closed=0"
+                ).fetchall()
+                if config.zone_for(s["badge"]) == config.ZONE_BREACH
+                and datetime.fromisoformat(s["last_seen"]) < perim_cutoff
+            ]
+            if to_close:
+                with conn:
+                    conn.executemany(
+                        "UPDATE sessions SET closed=1, closed_at=last_seen WHERE id=?",
+                        [(sid,) for sid in to_close]
+                    )
         finally:
             conn.close()
 
@@ -1374,10 +1637,16 @@ def api_detections(date: Optional[str] = None, month: Optional[str] = None,
                    all_time: bool = False,
                    limit: int = 200, offset: int = 0):
     where, params = _detections_query(date, month, badge, camera, search, zone, all_time)
+    # Qualify columns: the WHERE clause refers to detections' own badge/camera/
+    # timestamp, so the session join must not make those names ambiguous.
+    where_q = where
     sql = (
-        "SELECT id, filename, camera, badge, timestamp, type, session_id "
-        f"FROM detections WHERE {where} "
-        "ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        "SELECT d.id, d.filename, d.camera, d.badge, d.timestamp, d.type, d.session_id, "
+        "       s.first_seen AS s_first, s.last_seen AS s_last, s.closed AS s_closed, "
+        "       s.closed_at AS s_closed_at "
+        "FROM (SELECT * FROM detections WHERE " + where_q + ") d "
+        "LEFT JOIN sessions s ON s.id = d.session_id "
+        "ORDER BY d.timestamp DESC LIMIT ? OFFSET ?"
     )
     conn = db()
     try:
@@ -1394,6 +1663,17 @@ def api_detections(date: Optional[str] = None, month: Optional[str] = None,
             "zone": config.zone_for(r["badge"]),
             "zone_label": config.zone_label(r["badge"]),
             "counts": config.parse_counts(r["badge"]),
+            # Continuous-presence span of the session behind this detection,
+            # so the UI can show real dwell instead of time-since-first-ever.
+            "session_first_seen": r["s_first"],
+            "session_last_seen": r["s_last"],
+            "session_closed": bool(r["s_closed"]) if r["s_closed"] is not None else None,
+            "session_closed_at": r["s_closed_at"],
+            "dwell_seconds": (
+                int(_presence_seconds(r["badge"], r["s_first"], r["s_last"], datetime.utcnow(),
+                                      r["s_closed_at"] if r["s_closed"] else None))
+                if r["s_first"] and r["s_last"] else None
+            ),
             "has_image": (archive / r["filename"]).exists(),
         } for r in rows]
     finally:
@@ -1531,6 +1811,7 @@ def api_perimeter_rules():
         "inside_badges": sorted(config.INSIDE_BADGES),
         "default_dwell_minutes": config.LOITER_MINUTES,
         "breach_cooldown_seconds": config.BREACH_COOLDOWN_SECONDS,
+        "perimeter_gap_minutes": config.PERIMETER_GAP_MINUTES,
         "zone_labels": config.ZONE_LABELS,
     }
 
@@ -1538,13 +1819,17 @@ def api_perimeter_rules():
 # ─── /api/alerts/recent — perimeter alert log (breach + early warning) ────
 @app.get("/api/alerts/recent")
 def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
-                      today: bool = False):
+                      today: bool = False, status: Optional[str] = None):
+    """status=open → every UNACKNOWLEDGED alert, whatever day it fired on.
+    The alert bar uses this: an alert must never drop off it without an Ack,
+    including across midnight."""
     conn = db()
     try:
         sql = ("SELECT a.id, a.badge, a.triggered_at, a.duration_seconds, "
                "a.kind, a.camera, a.zone, a.image, a.acknowledged, "
                "a.acknowledged_at, a.acknowledged_by, a.session_id, "
-               "s.last_camera AS session_camera "
+               "s.last_camera AS session_camera, s.first_seen AS s_first, "
+               "s.closed AS s_closed, s.closed_at AS s_closed_at "
                "FROM alerts a LEFT JOIN sessions s ON s.id = a.session_id ")
         params = []
         clauses = []
@@ -1553,6 +1838,10 @@ def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
             params.append(kind)
         if today:
             clauses.append("date(a.triggered_at,'localtime')=date('now','localtime')")
+        if status == "open":
+            clauses.append("COALESCE(a.acknowledged,0)=0")
+        elif status == "acked":
+            clauses.append("a.acknowledged=1")
         if clauses:
             sql += "WHERE " + " AND ".join(clauses) + " "
         sql += "ORDER BY a.triggered_at DESC LIMIT ?"
@@ -1580,6 +1869,10 @@ def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
                 "zone": zone_val,
                 "zone_label": config.ZONE_LABELS.get(zone_val, zone_val),
                 "counts": config.parse_counts(r["badge"]),
+                # When this presence began, for a live "present for" duration
+                "session_first_seen": r["s_first"],
+                "session_closed": bool(r["s_closed"]) if r["s_closed"] is not None else None,
+                "session_closed_at": r["s_closed_at"],
                 "camera": r["camera"] or r["session_camera"] or "—",
                 "session_id": r["session_id"],
                 "acked": bool(r["acknowledged"]),
@@ -1614,6 +1907,18 @@ async def api_alert_ack(alert_id: int, request: Request):
             #    NOT whitelist the class: perimeter classes are detection
             #    classes, not people, so muting "Boundry-object" after one ack
             #    would silence every future breach on that camera.
+            #
+            # 3. An early warning's presence stays open until acknowledged, so
+            #    the ack is what ends it. The next detection on that camera
+            #    starts a fresh presence with its own 10-minute clock.
+            arow = conn.execute(
+                "SELECT session_id, kind FROM alerts WHERE id=?", (alert_id,)
+            ).fetchone()
+            if arow and arow["session_id"] and (arow["kind"] or "dwell") != "breach":
+                conn.execute(
+                    "UPDATE sessions SET closed=1, closed_at=? WHERE id=? AND closed=0",
+                    (now.isoformat(), arow["session_id"])
+                )
         return {"ok": True}
     finally:
         conn.close()
