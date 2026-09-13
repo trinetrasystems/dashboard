@@ -623,6 +623,119 @@
       color: var(--red);
     }
 
+    /* ─── Scheduled demo alerts ─── */
+    .sched-intro {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-dim);
+    }
+    .sched-intro b { color: var(--text); }
+    .sched-intro ul { margin: 8px 0 0 18px; }
+
+    .sched-block-title {
+      padding: 14px 20px 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    .sched-actions {
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+    }
+    .sched-msg { font-family: var(--mono); font-size: 13px; color: var(--text-dim); }
+    .sched-msg.ok { color: var(--green); }
+    .sched-msg.err { color: var(--red); }
+
+    .sched-chip-btn {
+      padding: 6px 12px;
+      border-radius: 7px;
+      background: var(--cyan-dim);
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .sched-chip-btn:hover { background: rgba(0, 212, 255, 0.22); }
+    .sched-chip-btn.danger {
+      background: rgba(255, 68, 68, 0.1);
+      border-color: rgba(255, 68, 68, 0.35);
+      color: var(--red);
+    }
+
+    .sched-targets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .sched-target {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px 4px 10px;
+      border-radius: 6px;
+      background: var(--card);
+      border: 1px solid var(--border-hover);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .sched-target button {
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; font-size: 14px; line-height: 1;
+    }
+    .sched-target button:hover { color: var(--red); }
+    .sched-empty { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+    .sched-list { max-height: 460px; overflow-y: auto; }
+    .sched-day {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    .sched-day-name { font-weight: 700; font-size: 14px; }
+    .sched-day-meta { font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-left: 10px; }
+    .sched-row {
+      display: grid;
+      grid-template-columns: 90px 110px 1fr 160px 96px 80px;
+      gap: 12px;
+      align-items: center;
+      padding: 9px 20px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+    .sched-row .dim { color: var(--text-dim); }
+    .sched-status {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+    .sched-status.pending   { background: var(--cyan-dim); color: var(--cyan); }
+    .sched-status.released  { background: rgba(0, 230, 118, 0.12); color: var(--green); }
+    .sched-status.cancelled { background: var(--card); color: var(--text-muted); text-decoration: line-through; }
+    .sched-status.missed    { background: rgba(255, 170, 0, 0.12); color: var(--amber); }
+    .sched-zone-breach  { color: var(--red); }
+    .sched-zone-outside { color: var(--amber); }
+
     .btn-simulate {
       padding: 11px 28px;
       background: linear-gradient(135deg, #7c3aed, #4f46e5);
@@ -929,6 +1042,109 @@
       </div>
 
 
+      <!-- ─── SCHEDULED DEMO ALERTS ─────────────────────────────── -->
+      <div class="admin-section">
+        <div class="section-title">📅 Scheduled Demo Alerts</div>
+        <div class="settings-card">
+
+          <div class="sched-intro">
+            Set up a demo once and share the dashboard link. Each entry is held here and dropped in
+            <b>at its scheduled time</b>, so it appears live for whoever has the dashboard open.
+            <ul>
+              <li><b>Boundry-object</b> flashes the moment its time arrives.</li>
+              <li><b>Outside classes</b> appear at their time and flash <b>after the dwell rule</b> (10 min).</li>
+              <li>The server must be running at those times. Real Telegram alerts are sent as normal.</li>
+            </ul>
+          </div>
+
+          <!-- A · schedule one alert -->
+          <div class="sched-block-title">Schedule an alert</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Class</div>
+              <div class="setting-hint">Pick one or type a class · counted form: Outside-person-2-object-1</div>
+            </div>
+            <input class="setting-input" type="text" id="sch-badge" list="sch-classes" value="BOUNDRY-OBJECT"
+                   oninput="updateFlashPreview()">
+            <datalist id="sch-classes">
+              <option value="BOUNDRY-OBJECT">
+              <option value="OUTSIDE-PERSON">
+              <option value="OUTSIDE-OBJECT">
+              <option value="OUTSIDE-PERSON-2-OBJECT-1">
+            </datalist>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Camera</div>
+              <div class="setting-hint">Use a camera nothing real reports from, e.g. cam-demo-1</div>
+            </div>
+            <input class="setting-input" type="text" id="sch-camera" value="cam-demo-1">
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Date &amp; time it appears</div>
+              <div class="setting-hint" id="sch-flash-hint">—</div>
+            </div>
+            <div style="display:flex; gap:10px;">
+              <input class="setting-input" type="date" id="sch-date" style="flex:1;" onchange="updateFlashPreview()">
+              <input class="setting-input" type="time" id="sch-time" style="flex:1;" onchange="updateFlashPreview()">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Snapshot (optional)</div>
+              <div class="setting-hint">Leave empty to use a test image</div>
+            </div>
+            <input class="setting-input" type="file" id="sch-file" accept="image/*">
+          </div>
+          <div class="sched-actions">
+            <button class="btn-simulate" id="sch-btn" onclick="scheduleAlert()">📅&nbsp; Schedule Alert</button>
+            <span class="sched-msg" id="sch-msg"></span>
+          </div>
+
+          <!-- B · copy a whole day -->
+          <div class="sched-block-title">Copy a day's demo to other dates</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Copy from</div>
+              <div class="setting-hint" id="copy-source-hint">Everything on that day — shown and still scheduled</div>
+            </div>
+            <input class="setting-input" type="date" id="copy-source" onchange="previewCopySource()">
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Copy to</div>
+              <div class="setting-hint">Same times, same snapshots · past times and duplicates are skipped</div>
+            </div>
+            <div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <button class="sched-chip-btn" onclick="quickTargets(1)">Next day</button>
+                <button class="sched-chip-btn" onclick="quickTargets(2)">Next 2 days</button>
+                <button class="sched-chip-btn" onclick="quickTargets(7)">Next 7 days</button>
+                <input class="setting-input" type="date" id="copy-add-date" style="width:auto;">
+                <button class="sched-chip-btn" onclick="addCopyTarget()">+ Add date</button>
+              </div>
+              <div class="sched-targets" id="copy-targets"><span class="sched-empty">No dates chosen</span></div>
+            </div>
+          </div>
+          <div class="sched-actions">
+            <button class="btn-simulate" id="copy-btn" onclick="copyDay()">📋&nbsp; Copy Demo</button>
+            <span class="sched-msg" id="copy-msg"></span>
+          </div>
+
+          <!-- C · what is scheduled -->
+          <div class="sched-block-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Schedule</span>
+            <button class="sched-chip-btn" onclick="loadSchedule()">↻ Refresh</button>
+          </div>
+          <div id="sched-list" class="sched-list">
+            <div class="sched-empty" style="padding:18px 20px;">Loading…</div>
+          </div>
+
+        </div>
+      </div>
+
+
       <!-- ─── DANGER ZONE ──────────────────────────────────────── -->
       <div class="admin-section">
         <div class="section-title" style="color: var(--red);">☢️ Danger Zone</div>
@@ -1010,6 +1226,7 @@
       document.getElementById('login-page').style.display = 'none';
       document.getElementById('admin-page').style.display = 'block';
       await loadConfig();
+      initSchedule();
     }
 
 
@@ -1207,6 +1424,236 @@
           btn.textContent = '📥\u00a0 Drop Detection';
         }
       }
+    }
+
+    /* ── Scheduled demo alerts ── */
+    let _schedRules = null;
+    let _copyTargets = [];
+
+    function _isoDate(d) {
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+    function _normClass(b) {
+      return String(b || '').trim().toLowerCase().replace(/_/g, '-').replace('boundary', 'boundry');
+    }
+    function _fmtDay(iso) {
+      const d = new Date(iso + 'T00:00:00');
+      const today = _isoDate(new Date());
+      const tmr = _isoDate(new Date(Date.now() + 86400000));
+      const label = d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+      return iso === today ? `Today · ${label}` : iso === tmr ? `Tomorrow · ${label}` : label;
+    }
+    function _schedMsg(id, text, cls) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.className = 'sched-msg' + (cls ? ' ' + cls : '');
+    }
+    async function _schedFetch(url, opts = {}) {
+      const r = await fetch(url, { credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, ...opts });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `Server error (${r.status})`);
+      return data;
+    }
+
+    /* When will this entry actually flash on the dashboard? */
+    function _flashDescription(badge) {
+      const k = _normClass(badge);
+      if (!_schedRules) return '';
+      if ((_schedRules.breach_badges || []).includes(k)) return { mins: 0, text: 'flashes instantly' };
+      const rules = _schedRules.dwell_rules || {};
+      let mins = null;
+      if (Object.prototype.hasOwnProperty.call(rules, k)) mins = rules[k];
+      else if (/^outside-person-\d+-object-\d+$/.test(k)) mins = rules['outside-person'] || 10;
+      else if ((_schedRules.inside_badges || []).includes(k)) return { mins: null, text: 'never alerts (inside class)' };
+      else mins = _schedRules.default_dwell_minutes;
+      return { mins, text: `flashes ${mins} min after it appears` };
+    }
+
+    function updateFlashPreview() {
+      const hint = document.getElementById('sch-flash-hint');
+      const badge = document.getElementById('sch-badge').value;
+      const date = document.getElementById('sch-date').value;
+      const time = document.getElementById('sch-time').value;
+      const f = _flashDescription(badge);
+      if (!f) { hint.textContent = '—'; return; }
+      if (!date || !time || f.mins == null) { hint.textContent = f.text; return; }
+      const at = new Date(`${date}T${time}:00`);
+      at.setMinutes(at.getMinutes() + f.mins);
+      const hhmm = at.toTimeString().slice(0, 5);
+      hint.textContent = `${f.text} · on the dashboard at ${hhmm}`;
+    }
+
+    async function initSchedule() {
+      try { _schedRules = await (await fetch('/api/perimeter/rules')).json(); } catch (e) { }
+      const now = new Date(Date.now() + 5 * 60000);
+      document.getElementById('sch-date').value = _isoDate(now);
+      document.getElementById('sch-time').value = now.toTimeString().slice(0, 5);
+      document.getElementById('copy-source').value = _isoDate(new Date());
+      updateFlashPreview();
+      previewCopySource();
+      renderCopyTargets();
+      loadSchedule();
+    }
+
+    async function scheduleAlert() {
+      const btn = document.getElementById('sch-btn');
+      const payload = {
+        badge: document.getElementById('sch-badge').value.trim().toUpperCase(),
+        camera: document.getElementById('sch-camera').value.trim().toLowerCase(),
+        date: document.getElementById('sch-date').value,
+        time: document.getElementById('sch-time').value,
+      };
+      const file = document.getElementById('sch-file').files[0];
+      btn.disabled = true;
+      _schedMsg('sch-msg', 'Scheduling…');
+      try {
+        if (file) {
+          payload.image_base64 = await new Promise((res, rej) => {
+            const rd = new FileReader();
+            rd.onload = () => res(rd.result.split(',')[1]);
+            rd.onerror = rej;
+            rd.readAsDataURL(file);
+          });
+        }
+        const out = await _schedFetch('/api/admin/schedule', { method: 'POST', body: JSON.stringify(payload) });
+        const alertAt = out.item.alert_at ? new Date(out.item.alert_at).toTimeString().slice(0, 5) : '—';
+        _schedMsg('sch-msg', `✓ ${out.item.badge} scheduled · flashes ${_fmtDay(out.item.date)} at ${alertAt}`, 'ok');
+        loadSchedule();
+      } catch (e) {
+        _schedMsg('sch-msg', `✗ ${e.message}`, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function previewCopySource() {
+      const hint = document.getElementById('copy-source-hint');
+      const date = document.getElementById('copy-source').value;
+      if (!date) { hint.textContent = 'Pick a day to copy'; return; }
+      try {
+        const [dets, sched] = await Promise.all([
+          fetch(`/api/detections?date=${date}&limit=1000`).then(r => r.json()),
+          _schedFetch('/api/admin/schedule?days=366'),
+        ]);
+        const keys = new Set();
+        const pad = n => String(n).padStart(2, '0');
+        for (const d of dets) {
+          const t = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
+          keys.add(`${d.badge}|${d.camera}|${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`);
+        }
+        for (const s of sched.items) {
+          if (s.date === date && (s.status === 'pending' || s.status === 'released')) keys.add(`${s.badge}|${s.camera}|${s.time}`);
+        }
+        hint.textContent = keys.size
+          ? `${keys.size} entr${keys.size === 1 ? 'y' : 'ies'} on ${_fmtDay(date)} will be copied`
+          : `Nothing on ${_fmtDay(date)} to copy`;
+      } catch (e) {
+        hint.textContent = 'Could not preview that day';
+      }
+    }
+
+    function renderCopyTargets() {
+      const box = document.getElementById('copy-targets');
+      if (!_copyTargets.length) { box.innerHTML = '<span class="sched-empty">No dates chosen</span>'; return; }
+      box.innerHTML = _copyTargets.map(d =>
+        `<span class="sched-target">${_fmtDay(d)}<button title="Remove" onclick="removeCopyTarget('${d}')">×</button></span>`
+      ).join('');
+    }
+    function addCopyTarget(date) {
+      const d = date || document.getElementById('copy-add-date').value;
+      if (!d) return;
+      if (d === document.getElementById('copy-source').value) { _schedMsg('copy-msg', '✗ That is the source day', 'err'); return; }
+      if (!_copyTargets.includes(d)) _copyTargets.push(d);
+      _copyTargets.sort();
+      renderCopyTargets();
+    }
+    function removeCopyTarget(d) {
+      _copyTargets = _copyTargets.filter(x => x !== d);
+      renderCopyTargets();
+    }
+    function quickTargets(n) {
+      const src = document.getElementById('copy-source').value || _isoDate(new Date());
+      const base = new Date(src + 'T00:00:00');
+      _copyTargets = [];
+      for (let i = 1; i <= n; i++) _copyTargets.push(_isoDate(new Date(base.getTime() + i * 86400000)));
+      renderCopyTargets();
+    }
+
+    async function copyDay() {
+      const source = document.getElementById('copy-source').value;
+      const btn = document.getElementById('copy-btn');
+      if (!source) { _schedMsg('copy-msg', '✗ Pick a day to copy from', 'err'); return; }
+      if (!_copyTargets.length) { _schedMsg('copy-msg', '✗ Choose at least one date to copy to', 'err'); return; }
+      btn.disabled = true;
+      _schedMsg('copy-msg', 'Copying…');
+      try {
+        const out = await _schedFetch('/api/admin/schedule/copy', {
+          method: 'POST', body: JSON.stringify({ source_date: source, target_dates: _copyTargets }),
+        });
+        const skipped = [];
+        if (out.skipped_duplicate) skipped.push(`${out.skipped_duplicate} already scheduled`);
+        if (out.skipped_past) skipped.push(`${out.skipped_past} already past`);
+        _schedMsg('copy-msg',
+          `✓ ${out.created} alert${out.created === 1 ? '' : 's'} scheduled across ${_copyTargets.length} day${_copyTargets.length === 1 ? '' : 's'}` +
+          (skipped.length ? ` · skipped ${skipped.join(', ')}` : ''), 'ok');
+        loadSchedule();
+      } catch (e) {
+        _schedMsg('copy-msg', `✗ ${e.message}`, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadSchedule() {
+      const list = document.getElementById('sched-list');
+      try {
+        const data = await _schedFetch('/api/admin/schedule?days=60');
+        if (!data.items.length) {
+          list.innerHTML = '<div class="sched-empty" style="padding:18px 20px;">Nothing scheduled yet</div>';
+          return;
+        }
+        const byDay = {};
+        for (const it of data.items) (byDay[it.date] = byDay[it.date] || []).push(it);
+        list.innerHTML = Object.keys(byDay).sort().map(day => {
+          const items = byDay[day];
+          const pending = items.filter(i => i.status === 'pending').length;
+          const head = `
+            <div class="sched-day">
+              <div><span class="sched-day-name">${_fmtDay(day)}</span>
+                   <span class="sched-day-meta">${items.length} entr${items.length === 1 ? 'y' : 'ies'} · ${pending} pending</span></div>
+              ${pending ? `<button class="sched-chip-btn danger" onclick="cancelScheduledDay('${day}')">Cancel ${pending} pending</button>` : ''}
+            </div>`;
+          const rows = items.map(it => {
+            const flash = it.alert_at ? new Date(it.alert_at).toTimeString().slice(0, 8) : '—';
+            const zoneCls = it.zone === 'breach' ? 'sched-zone-breach' : it.zone === 'outside' ? 'sched-zone-outside' : '';
+            return `
+              <div class="sched-row">
+                <span title="Appears on the dashboard">${it.time}</span>
+                <span class="dim" title="Flashes on the dashboard">⚡ ${flash}</span>
+                <span><b class="${zoneCls}">${it.badge}</b></span>
+                <span class="dim">${it.camera}</span>
+                <span class="sched-status ${it.status}">${it.status}</span>
+                <span>${it.status === 'pending'
+                  ? `<button class="sched-chip-btn danger" onclick="cancelScheduled(${it.id})">Cancel</button>` : ''}</span>
+              </div>`;
+          }).join('');
+          return head + rows;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = `<div class="sched-empty" style="padding:18px 20px;color:var(--red);">Could not load schedule: ${e.message}</div>`;
+      }
+    }
+
+    async function cancelScheduled(id) {
+      try { await _schedFetch(`/api/admin/schedule/${id}`, { method: 'DELETE' }); loadSchedule(); }
+      catch (e) { alert(e.message); }
+    }
+    async function cancelScheduledDay(day) {
+      if (!confirm(`Cancel every pending alert on ${_fmtDay(day)}?`)) return;
+      try { await _schedFetch('/api/admin/schedule/cancel-date', { method: 'POST', body: JSON.stringify({ date: day }) }); loadSchedule(); }
+      catch (e) { alert(e.message); }
     }
 
     /* ── Reset Everything ── */

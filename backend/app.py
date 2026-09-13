@@ -92,6 +92,24 @@ def init_db():
             print("[migrate] adding session_id column to detections")
             conn.execute("ALTER TABLE detections ADD COLUMN session_id INTEGER REFERENCES sessions(id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_det_session ON detections(session_id)")
+        # Scheduled detections — released into incoming/ when their time comes.
+        # detect_at is LOCAL time, matching the filename convention and the
+        # admin panel's date/time inputs.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_detections (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                badge        TEXT NOT NULL,
+                camera       TEXT NOT NULL,
+                detect_at    TEXT NOT NULL,
+                image_source TEXT,
+                image_b64    TEXT,
+                label        TEXT,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                released_at  TEXT,
+                filename     TEXT
+            )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_detections(status, detect_at)")
         # MIGRATION: classify alerts by perimeter zone (breach vs early warning)
         acols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
         if "kind" not in acols:
@@ -1106,6 +1124,78 @@ async def image_cleanup_loop():
 # FASTAPI APP
 # ════════════════════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════════════════════
+# SCHEDULED DETECTIONS — demo alerts that play out at a chosen date & time
+#
+# A scheduled entry is held in the database and only dropped into incoming/
+# when its time arrives. Releasing on time (rather than writing a future-dated
+# file up front) is what makes a Boundry-object breach flash on schedule — a
+# breach fires the moment its file is ingested — and stops a future outside
+# entry from merging with real detections before its time.
+# ════════════════════════════════════════════════════════════════════════════
+
+# An entry more overdue than this when the server gets to it (e.g. the server
+# was off) is marked "missed" instead of firing stale alerts all at once.
+SCHEDULE_MISSED_GRACE = timedelta(minutes=30)
+
+
+def _image_bytes_for(image_b64: Optional[str], image_source: Optional[str]) -> bytes:
+    """Uploaded image → the archived snapshot being reused → a test image."""
+    import base64
+    if image_b64:
+        try:
+            return base64.b64decode(image_b64)
+        except Exception:
+            pass
+    if image_source:
+        src_path = Path(config.ARCHIVE_DIR) / Path(image_source).name
+        if src_path.exists() and src_path.stat().st_size > 0:
+            return src_path.read_bytes()
+    test_dir = Path(__file__).parent / "test_images"
+    images = sorted(test_dir.glob("*.jpg")) if test_dir.exists() else []
+    return random.choice(images).read_bytes() if images else MINIMAL_JPEG
+
+
+def _release_due_schedules():
+    """Drop every due entry into incoming/. Runs in a worker thread."""
+    now = datetime.now()
+    with _db_lock:
+        conn = db()
+        try:
+            due = conn.execute(
+                "SELECT * FROM scheduled_detections WHERE status='pending' AND detect_at <= ? "
+                "ORDER BY detect_at", (now.isoformat(),)
+            ).fetchall()
+            for r in due:
+                at = datetime.fromisoformat(r["detect_at"])
+                with conn:
+                    if now - at > SCHEDULE_MISSED_GRACE:
+                        conn.execute(
+                            "UPDATE scheduled_detections SET status='missed', released_at=? WHERE id=?",
+                            (now.isoformat(), r["id"]))
+                        print(f"[schedule] missed (server was not running): {r['badge']} @ {r['camera']} {at}")
+                        continue
+                    filename = f"{r['camera']}_{r['badge']}_{at:%Y%m%d-%H%M%S}.jpg"
+                    incoming = Path(config.INCOMING_DIR)
+                    incoming.mkdir(parents=True, exist_ok=True)
+                    (incoming / filename).write_bytes(_image_bytes_for(r["image_b64"], r["image_source"]))
+                    conn.execute(
+                        "UPDATE scheduled_detections SET status='released', released_at=?, filename=? WHERE id=?",
+                        (now.isoformat(), filename, r["id"]))
+                    print(f"[schedule] released {filename}")
+        finally:
+            conn.close()
+
+
+async def schedule_loop():
+    while True:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _release_due_schedules)
+        except Exception as e:
+            print(f"[schedule] error: {e}")
+        await asyncio.sleep(10)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _main_loop
@@ -1117,6 +1207,7 @@ async def lifespan(app: FastAPI):
     observer = start_watcher()
     loiter_task   = asyncio.create_task(loitering_loop())
     cleanup_task  = asyncio.create_task(image_cleanup_loop())
+    schedule_task = asyncio.create_task(schedule_loop())
     print("[trinetra] startup complete · http://%s:%d" % (config.HOST, config.PORT))
     try:
         yield
@@ -1126,6 +1217,7 @@ async def lifespan(app: FastAPI):
         observer.join(timeout=2)
         loiter_task.cancel()
         cleanup_task.cancel()
+        schedule_task.cancel()
 
 
 app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan)
@@ -2234,6 +2326,218 @@ async def admin_simulate(request: Request):
     return {"ok": True, "filename": filename, "test_image_used": test_image_used}
 
 
+# ─── /api/admin/schedule — demo alerts for future dates & times ───────────
+_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def _alert_at_for(badge: str, detect_at: datetime) -> Optional[datetime]:
+    """When a scheduled entry will actually flash on the dashboard."""
+    if config.is_breach_badge(badge):
+        return detect_at                                   # breach: instantly
+    mins = config.dwell_minutes_for(badge)
+    return detect_at + timedelta(minutes=mins) if mins is not None else None
+
+
+def _schedule_row(r) -> dict:
+    at = datetime.fromisoformat(r["detect_at"])
+    alert_at = _alert_at_for(r["badge"], at)
+    return {
+        "id": r["id"],
+        "badge": r["badge"],
+        "camera": r["camera"],
+        "detect_at": r["detect_at"],
+        "date": at.strftime("%Y-%m-%d"),
+        "time": at.strftime("%H:%M:%S"),
+        "alert_at": alert_at.isoformat() if alert_at else None,
+        "zone": config.zone_for(r["badge"]),
+        "zone_label": config.zone_label(r["badge"]),
+        "label": r["label"],
+        "status": r["status"],
+        "has_image": bool(r["image_b64"] or r["image_source"]),
+        "released_at": r["released_at"],
+        "filename": r["filename"],
+    }
+
+
+def _schedule_key_exists(conn, badge: str, camera: str, detect_at: datetime) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM scheduled_detections WHERE badge=? AND camera=? AND detect_at=? "
+        "AND status IN ('pending','released')",
+        (badge, camera, detect_at.isoformat())
+    ).fetchone() is not None
+
+
+@app.get("/api/admin/schedule")
+def admin_schedule_list(request: Request, days: int = 30):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    start = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = datetime.now() + timedelta(days=max(1, min(days, 366)))
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_detections WHERE detect_at >= ? AND detect_at <= ? "
+            "ORDER BY detect_at", (start.isoformat(), end.isoformat())
+        ).fetchall()
+        return {"items": [_schedule_row(r) for r in rows], "now": datetime.now().isoformat()}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/schedule")
+async def admin_schedule_create(request: Request):
+    """Schedule one detection for a future date & time."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    body = await request.json()
+    badge = (body.get("badge") or "").strip().upper()
+    camera = (body.get("camera") or "").strip().lower()
+    if not badge or not _NAME_RE.match(badge):
+        raise HTTPException(400, "Class name may only contain letters, numbers and hyphens")
+    if not camera or not _NAME_RE.match(camera):
+        raise HTTPException(400, "Camera name may only contain letters, numbers and hyphens")
+    try:
+        detect_at = datetime.strptime(f"{body.get('date')} {body.get('time')}", "%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Pick a valid date and time")
+    if detect_at < datetime.now() - timedelta(minutes=1):
+        raise HTTPException(400, "That time has already passed — use Drop Test Detection for past or current entries")
+
+    conn = db()
+    try:
+        with conn:
+            if _schedule_key_exists(conn, badge, camera, detect_at):
+                raise HTTPException(409, "An identical entry is already scheduled")
+            cur = conn.execute(
+                "INSERT INTO scheduled_detections(badge, camera, detect_at, image_b64, label) "
+                "VALUES (?,?,?,?,?)",
+                (badge, camera, detect_at.isoformat(), body.get("image_base64") or None,
+                 (body.get("label") or "").strip() or None)
+            )
+            row = conn.execute("SELECT * FROM scheduled_detections WHERE id=?", (cur.lastrowid,)).fetchone()
+        return {"ok": True, "item": _schedule_row(row)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/schedule/{item_id}")
+def admin_schedule_cancel(request: Request, item_id: int):
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    conn = db()
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE scheduled_detections SET status='cancelled' WHERE id=? AND status='pending'",
+                (item_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Nothing pending with that id")
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/schedule/cancel-date")
+async def admin_schedule_cancel_date(request: Request):
+    """Cancel every still-pending entry on one date."""
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    body = await request.json()
+    date = (body.get("date") or "").strip()
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Pick a valid date")
+    conn = db()
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE scheduled_detections SET status='cancelled' "
+                "WHERE status='pending' AND detect_at >= ? AND detect_at < ?",
+                (day.isoformat(), (day + timedelta(days=1)).isoformat()))
+        return {"ok": True, "cancelled": cur.rowcount}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/schedule/copy")
+async def admin_schedule_copy(request: Request):
+    """Copy one day's demo onto other dates, at the same clock times.
+
+    The source day's entries are everything that day holds: detections
+    already on the dashboard AND entries still scheduled for it. Each copy
+    reuses the original snapshot, so every demo day shows the same images.
+    Times already in the past on a target date are skipped, as are exact
+    duplicates, so copying twice is safe.
+    """
+    if not _check_admin(request):
+        raise HTTPException(401, "Not authenticated")
+    body = await request.json()
+    try:
+        source = datetime.strptime((body.get("source_date") or "").strip(), "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Pick a valid source date")
+    targets = []
+    for t in body.get("target_dates") or []:
+        try:
+            targets.append(datetime.strptime(str(t).strip(), "%Y-%m-%d"))
+        except ValueError:
+            raise HTTPException(400, f"Invalid target date: {t}")
+    if not targets:
+        raise HTTPException(400, "Choose at least one date to copy to")
+    if any(t.date() == source.date() for t in targets):
+        raise HTTPException(400, "A target date is the same as the source date")
+
+    day_lo, day_hi = source, source + timedelta(days=1)
+    local_offset = datetime.now() - datetime.utcnow()
+    conn = db()
+    try:
+        # (badge, camera, clock-time) → image to reuse
+        entries = {}
+        for d in conn.execute(
+            "SELECT badge, camera, timestamp, filename FROM detections "
+            "WHERE date(timestamp,'localtime') = ? ORDER BY timestamp",
+            (source.strftime("%Y-%m-%d"),)
+        ).fetchall():
+            local_ts = datetime.fromisoformat(d["timestamp"]) + local_offset
+            key = (d["badge"], d["camera"], local_ts.strftime("%H:%M:%S"))
+            entries.setdefault(key, {"image_source": d["filename"], "image_b64": None})
+        for s in conn.execute(
+            "SELECT badge, camera, detect_at, image_source, image_b64 FROM scheduled_detections "
+            "WHERE status IN ('pending','released') AND detect_at >= ? AND detect_at < ?",
+            (day_lo.isoformat(), day_hi.isoformat())
+        ).fetchall():
+            key = (s["badge"], s["camera"], datetime.fromisoformat(s["detect_at"]).strftime("%H:%M:%S"))
+            entries.setdefault(key, {"image_source": s["image_source"], "image_b64": s["image_b64"]})
+
+        if not entries:
+            raise HTTPException(404, f"Nothing on {source:%d %b %Y} to copy")
+
+        created, skipped_past, skipped_dupe = 0, 0, 0
+        now = datetime.now()
+        label = (body.get("label") or "").strip() or f"copy of {source:%d %b}"
+        with conn:
+            for target in targets:
+                for (badge, camera, hms), img in sorted(entries.items(), key=lambda kv: kv[0][2]):
+                    h, m, s = (int(x) for x in hms.split(":"))
+                    at = target.replace(hour=h, minute=m, second=s)
+                    if at < now:
+                        skipped_past += 1
+                        continue
+                    if _schedule_key_exists(conn, badge, camera, at):
+                        skipped_dupe += 1
+                        continue
+                    conn.execute(
+                        "INSERT INTO scheduled_detections(badge, camera, detect_at, image_source, image_b64, label) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (badge, camera, at.isoformat(), img["image_source"], img["image_b64"], label))
+                    created += 1
+        return {"ok": True, "source_entries": len(entries), "created": created,
+                "skipped_past": skipped_past, "skipped_duplicate": skipped_dupe}
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/reset")
 def admin_reset_all(request: Request):
     """Wipe ALL data: every DB table + archive images + dead-letter + heartbeats. Irreversible."""
@@ -2270,7 +2574,10 @@ def admin_reset_all(request: Request):
                 conn.execute("DELETE FROM detections")
                 conn.execute("DELETE FROM sessions")
                 conn.execute("DELETE FROM whitelist")
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions')")
+                # Scheduled demo entries reuse archived snapshots that were just
+                # deleted above, so they go too — "all data" means all of it.
+                conn.execute("DELETE FROM scheduled_detections")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions','scheduled_detections')")
         finally:
             conn.close()
 
