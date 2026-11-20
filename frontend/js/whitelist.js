@@ -53,7 +53,7 @@ function renderList() {
         </div>
         <div style="display:flex;align-items:center;">
           <span class="added">added ${fmtDate(added)}</span>
-          <button class="remove" onclick="onRemove('${escapeHtml(w.badge)}')">remove</button>
+          <button class="remove" data-badge="${escapeHtml(w.badge)}">remove</button>
         </div>
       </div>`;
   }).join('');
@@ -91,6 +91,19 @@ window.onRemove = onRemove;
 
 document.addEventListener('DOMContentLoaded', async () => {
   bootstrap('wl');
+  // Remove buttons carry the badge in a data attribute — no value is ever
+  // written into an inline event handler.
+  document.getElementById('wl-list').addEventListener('click', e => {
+    const btn = e.target.closest('button.remove[data-badge]');
+    if (btn) onRemove(btn.dataset.badge);
+  });
+  // Whitelisting silences alerts, so only administrators may change the list.
+  getMe().then(me => {
+    if (me.role !== 'admin') {
+      document.querySelector('.admin-input').style.display = 'none';
+      document.getElementById('wl-list').classList.add('read-only');
+    }
+  }).catch(() => { });
   await refreshAll();
   document.getElementById('wl-add-btn').addEventListener('click', onAdd);
   document.getElementById('wl-reason').addEventListener('keydown', e => {

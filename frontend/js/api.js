@@ -10,25 +10,48 @@
 const USE_DUMMY_DATA = false;   // ← set true to bypass backend for offline preview
 const API_BASE = '';            // empty = same origin (FastAPI serves the frontend)
 
-async function apiGet(path) {
-  const r = await fetch(`${API_BASE}${path}`);
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
+/* Signed out or session expired → back to the sign-in page. */
+async function apiCheck(path, r) {
+  if (r.status === 401) {
+    window.location.replace('login.html');
+    throw new Error('Signed out');
+  }
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.detail || `${path} ${r.status}`);
+  }
   return r.json();
+}
+async function apiGet(path) {
+  const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' });
+  return apiCheck(path, r);
 }
 async function apiPost(path, body) {
   const r = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     body: JSON.stringify(body || {}),
   });
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
-  return r.json();
+  return apiCheck(path, r);
 }
 async function apiDelete(path) {
-  const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
-  return r.json();
+  const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE', credentials: 'same-origin' });
+  return apiCheck(path, r);
 }
+
+/* Who is signed in — {user_id, role}. Cached for the page's lifetime. */
+let _mePromise = null;
+function getMe() {
+  if (USE_DUMMY_DATA) return Promise.resolve({ user_id: 'demo', role: 'admin' });
+  if (!_mePromise) _mePromise = apiGet('/api/me');
+  return _mePromise;
+}
+async function signOut() {
+  try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) { }
+  window.location.replace('login.html');
+}
+window.signOut = signOut;
 
 /* ─── Data fetchers ─── */
 async function getStats() {

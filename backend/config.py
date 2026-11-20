@@ -245,9 +245,24 @@ def dwell_minutes_for(badge: str):
 # Delete archived images older than this many days. 0 = keep forever (disabled).
 IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "0"))
 
-# ─── ADMIN CREDENTIALS ────────────────────────────────────────────────────────
+# ─── ACCOUNTS & SESSIONS ──────────────────────────────────────────────────────
+# Accounts live in the database (dashboard_accounts table) with PBKDF2-hashed passwords.
+# ADMIN_EMAIL / ADMIN_PASSWORD are read ONCE, to create the first administrator
+# when the database has none. There is no built-in default password: if
+# ADMIN_PASSWORD is empty or too weak, a random one is generated and written
+# to <DATA_DIR>/initial-admin-password.txt (readable only by this user).
+# After the first administrator exists, ADMIN_PASSWORD is removed from .env.
 ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL",    "trinetra@admin.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+# A session with no request for this many minutes is signed out.
+IDLE_MINUTES = int(os.environ.get("TRINETRA_IDLE_MINUTES", "60"))
+# Absolute session lifetime, whatever the activity.
+SESSION_HOURS_ADMIN    = int(os.environ.get("TRINETRA_SESSION_HOURS_ADMIN",    "8"))
+SESSION_HOURS_OPERATOR = int(os.environ.get("TRINETRA_SESSION_HOURS_OPERATOR", "12"))
+# Activity log (admin panel → Activity Log): entries older than this are pruned
+# once a day. 0 = keep forever.
+AUDIT_RETENTION_DAYS = int(os.environ.get("TRINETRA_AUDIT_RETENTION_DAYS", "365"))
 
 # ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -294,3 +309,5 @@ def print_summary():
     print(f"[config] BREACH_COOL   = {BREACH_COOLDOWN_SECONDS}s")
     print(f"[config] PERIM_GAP     = {PERIMETER_GAP_MINUTES} min (continuous-presence window)")
     print(f"[config] IMAGE_CLEANUP = {'disabled' if IMAGE_RETENTION_DAYS == 0 else f'{IMAGE_RETENTION_DAYS} days'}")
+    print(f"[config] SESSIONS      = idle {IDLE_MINUTES} min · admin {SESSION_HOURS_ADMIN} h · operator {SESSION_HOURS_OPERATOR} h")
+    print(f"[config] ACTIVITY LOG  = keep {AUDIT_RETENTION_DAYS or 'forever'} days")

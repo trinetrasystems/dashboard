@@ -70,7 +70,9 @@ function renderTopbar(activeTab) {
   </div>
   <div class="topbar-right">
     <div class="time-stamp"><b id="clock">${fmtDate(NOW)} · ${fmtTime(NOW)}</b></div>
-    <a href="admin.html" class="icon-btn" title="Admin Panel" style="text-decoration:none;font-size:15px;">⚙</a>
+    <span class="time-stamp" id="signed-in-user" title="Signed in"></span>
+    <a href="admin.html" class="icon-btn" id="admin-link" title="Admin Panel" style="text-decoration:none;font-size:15px;display:none;">⚙</a>
+    <button class="icon-btn" id="sign-out-btn" title="Sign out">⏻</button>
     <button class="icon-btn" id="theme-toggle" title="Toggle theme">☾</button>
     <button class="icon-btn" onclick="location.reload()" title="Refresh">↻</button>
   </div>
@@ -413,5 +415,18 @@ function bootstrap(activeTab) {
   // refreshes them again on its own 5s cycle.
   if (typeof getStats === 'function') {
     getStats().then(updateTopbarPills).catch(() => { /* offline — keep placeholders */ });
+  }
+
+  // Signed-in account: show who it is; the admin link only for administrators.
+  const outBtn = document.getElementById('sign-out-btn');
+  if (outBtn && typeof signOut === 'function') outBtn.addEventListener('click', signOut);
+  if (typeof getMe === 'function') {
+    getMe().then(me => {
+      const who = document.getElementById('signed-in-user');
+      if (who) who.textContent = me.user_id;
+      const adm = document.getElementById('admin-link');
+      if (adm && me.role === 'admin') adm.style.display = '';
+      document.body.dataset.role = me.role;
+    }).catch(() => { /* apiGet already redirects on 401 */ });
   }
 }

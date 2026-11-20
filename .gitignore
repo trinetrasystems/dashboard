@@ -41,3 +41,7 @@ data/
 # A Firebase service-account key here blocked a push via GitHub push protection.
 secrets/
 *service-account*.json
+
+# Runtime secrets and session files — never commit.
+.env
+cookies.txt

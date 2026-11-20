@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trinetra Systems · Activity Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e17; --surface: #111827; --card: rgba(255,255,255,0.03);
+    --border: rgba(255,255,255,0.07); --border-hover: rgba(255,255,255,0.15);
+    --cyan: #00d4ff; --cyan-dim: rgba(0,212,255,0.12); --green: #00e676; --red: #ff4444; --amber: #ffaa00;
+    --violet: #b388ff; --text: #e8edf5; --text-dim: #6b7a90; --text-muted: #3d4f6a;
+    --radius: 12px; --font: 'Bricolage Grotesque', sans-serif; --mono: 'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; }
+  a { color: inherit; }
+
+  /* top bar — same as the admin panel */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 32px; height: 60px; background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; letter-spacing: 0.04em; white-space: nowrap; }
+  .brand a { color: var(--text-dim); text-decoration: none; font-size: 13px; margin-left: 16px; font-weight: 600; }
+  .brand a:hover { color: var(--cyan); }
+  .who { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--text-dim); font-family: var(--mono); min-width: 0; }
+  .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn-logout {
+    padding: 7px 16px; background: rgba(255,68,68,0.1); border: 1px solid rgba(255,68,68,0.3); border-radius: 6px;
+    color: #ff8080; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); white-space: nowrap;
+  }
+  .btn-logout:hover { background: rgba(255,68,68,0.2); }
+
+  .body { max-width: 1240px; margin: 0 auto; padding: 32px 24px 80px; }
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .page-title { font-size: 26px; font-weight: 700; }
+  .page-sub { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+  .live { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+  .live input { accent-color: var(--cyan); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cyan);
+    margin: 0 0 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .section { margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+  /* last-24-hour tiles */
+  .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .tile .n { font-size: 26px; font-weight: 700; font-family: var(--mono); line-height: 1.1; }
+  .tile .l { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .tile.warn { border-color: rgba(255,68,68,0.35); background: rgba(255,68,68,0.06); }
+  .tile.warn .n { color: var(--red); }
+
+  .two { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
+  .two > div { min-width: 0; }
+
+  /* tables */
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-dim); padding: 10px 14px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); white-space: nowrap;
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: rgba(255,255,255,0.02); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .dim { color: var(--text-dim); }
+  .nowrap { white-space: nowrap; }
+  .empty { padding: 28px; text-align: center; color: var(--text-dim); font-size: 13px; }
+  .user-link { background: none; border: none; color: var(--cyan); font-family: var(--mono); font-size: 12px; cursor: pointer; padding: 0; text-align: left; word-break: break-all; }
+  .user-link:hover { text-decoration: underline; }
+  .role { display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+          padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
+  .role.admin { color: var(--amber); background: rgba(255,170,0,0.12); }
+  .role.operator { color: var(--cyan); background: var(--cyan-dim); }
+  .role.unknown { color: var(--text-dim); background: rgba(255,255,255,0.05); }
+  .when-rel { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+  /* activity badges */
+  .badge { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .t-ok     { color: var(--green);  background: rgba(0,230,118,0.10); }
+  .t-info   { color: var(--cyan);   background: var(--cyan-dim); }
+  .t-change { color: var(--amber);  background: rgba(255,170,0,0.12); }
+  .t-danger { color: #ff8080;       background: rgba(255,68,68,0.14); }
+  .t-view   { color: var(--text-dim); background: rgba(255,255,255,0.05); }
+  .t-demo   { color: var(--violet); background: rgba(179,136,255,0.12); }
+  tr.row-danger td { background: rgba(255,68,68,0.04); }
+  .detail { max-width: 380px; word-break: break-word; }
+
+  /* filters */
+  .filters { display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 1fr 1.5fr; gap: 10px; padding: 14px; border-bottom: 1px solid var(--border); }
+  .filters label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 5px; }
+  .inp {
+    width: 100%; padding: 8px 11px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 7px;
+    color: var(--text); font-family: var(--mono); font-size: 12px; outline: none; color-scheme: dark;
+  }
+  .inp:focus { border-color: var(--cyan); background: rgba(0,212,255,0.04); }
+  select.inp option { background: var(--surface); }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .bar-left, .bar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); font-family: var(--mono); cursor: pointer; }
+  .chk input { accent-color: var(--cyan); }
+  .btn {
+    padding: 6px 12px; border-radius: 7px; background: var(--cyan-dim); border: 1px solid rgba(0,212,255,0.35);
+    color: var(--cyan); font-family: var(--mono); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { background: rgba(0,212,255,0.22); }
+  .btn.ghost { background: transparent; border-color: var(--border-hover); color: var(--text-dim); }
+  .btn.ghost:hover { color: var(--text); }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .count { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
+  .err { margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none;
+         background: rgba(255,68,68,0.1); border: 1px solid rgba(255,68,68,0.3); color: #ff8080; }
+
+  @media (max-width: 1000px) {
+    .tiles { grid-template-columns: repeat(3, 1fr); }
+    .two { grid-template-columns: 1fr; }
+    .filters { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 600px) {
+    .topbar { padding: 0 16px; }
+    .brand a.hide-sm, .who span { display: none; }
+    .body { padding: 24px 16px 60px; }
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .filters { grid-template-columns: 1fr; }
+    /* entries become stacked cards on phones */
+    table.stack thead { display: none; }
+    table.stack tr { display: block; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    table.stack tr:last-child { border-bottom: none; }
+    table.stack td { display: flex; gap: 10px; padding: 3px 0; border: none; white-space: normal; background: none !important; }
+    table.stack td::before {
+      content: attr(data-label); flex: 0 0 64px; font-family: var(--font); font-size: 10px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); padding-top: 3px;
+    }
+    table.stack td.empty { display: block; }
+    table.stack td.empty::before { content: none; }
+    table.stack td > * { min-width: 0; }
+    .detail { max-width: none; }
+    .pager { padding: 10px; }
+  }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">
+      TRINETRA · ADMIN
+      <a href="/admin.html">← Admin Panel</a>
+      <a href="/index.html" class="hide-sm">Dashboard</a>
+    </div>
+    <div class="who"><span id="me">—</span><button class="btn-logout" id="sign-out" type="button">Sign Out</button></div>
+  </div>
+
+  <div class="body">
+    <div class="page-head">
+      <div>
+        <div class="page-title">Activity Log</div>
+        <div class="page-sub" id="page-sub">Every sign-in, change and page visit by every account · times shown in your local time</div>
+      </div>
+      <label class="live" title="Refresh every 15 seconds">
+        <span class="dot on" id="live-dot"></span>
+        <input type="checkbox" id="auto" checked> Live updates
+      </label>
+    </div>
+
+    <div class="err" id="err" role="alert"></div>
+
+    <div class="section">
+      <div class="section-title">Last 24 hours</div>
+      <div class="tiles">
+        <div class="tile"><div class="n" id="t-signins">–</div><div class="l">Sign-ins</div></div>
+        <div class="tile" id="tile-failed"><div class="n" id="t-failed">–</div><div class="l">Failed sign-ins</div></div>
+        <div class="tile" id="tile-locked"><div class="n" id="t-locked">–</div><div class="l">Accounts locked</div></div>
+        <div class="tile"><div class="n" id="t-changes">–</div><div class="l">Changes made</div></div>
+        <div class="tile"><div class="n" id="t-acks">–</div><div class="l">Alerts acknowledged</div></div>
+        <div class="tile"><div class="n" id="t-views">–</div><div class="l">Page views</div></div>
+      </div>
+    </div>
+
+    <div class="section two">
+      <div>
+        <div class="section-title">Signed in now</div>
+        <div class="card tbl-wrap">
+          <table class="stack">
+            <thead><tr><th>User</th><th>Signed in</th><th>Last active</th><th>IP address</th><th>Browser</th></tr></thead>
+            <tbody id="online"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">Accounts</div>
+        <div class="card tbl-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Last sign-in</th></tr></thead>
+            <tbody id="accounts"><tr><td colspan="2" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">All activity</div>
+      <div class="card">
+        <div class="filters">
+          <div><label for="f-user">User</label><select class="inp" id="f-user"><option value="">All users</option></select></div>
+          <div><label for="f-cat">Activity</label><select class="inp" id="f-cat"><option value="">All activity</option></select></div>
+          <div><label for="f-from">From</label><input class="inp" type="date" id="f-from"></div>
+          <div><label for="f-to">To</label><input class="inp" type="date" id="f-to"></div>
+          <div><label for="f-q">Search</label><input class="inp" type="search" id="f-q" placeholder="user, details or IP" maxlength="100"></div>
+        </div>
+        <div class="bar">
+          <div class="bar-left">
+            <label class="chk"><input type="checkbox" id="f-hide"> Hide page views</label>
+            <button class="btn ghost" id="clear" type="button">Clear filters</button>
+          </div>
+          <div class="bar-right">
+            <span class="count" id="count"></span>
+            <button class="btn" id="export" type="button">⬇ Export CSV</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table class="stack">
+            <thead><tr><th>Time</th><th>User</th><th>Activity</th><th>Details</th><th>IP address</th><th>Browser</th></tr></thead>
+            <tbody id="log"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button class="btn ghost" id="newer" type="button" disabled>← Newer</button>
+          <span class="count" id="page-info"></span>
+          <button class="btn ghost" id="older" type="button" disabled>Older →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="js/activity.js"></script>
+</body>
+</html>

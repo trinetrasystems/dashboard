@@ -1852,3 +1852,6 @@ tbody td.mono {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* Operators see the whitelist but cannot change it (admin only). */
+#wl-list.read-only .remove { display: none; }

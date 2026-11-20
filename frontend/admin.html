@@ -774,8 +774,8 @@
       <div class="login-title">Admin Panel</div>
       <div class="login-sub">Sign in to manage system configuration</div>
       <div class="field">
-        <label>Email</label>
-        <input id="login-email" type="email" placeholder="trinetra@admin.com" autocomplete="username">
+        <label>Administrator user ID</label>
+        <input id="login-email" type="text" placeholder="admin user ID" autocomplete="username" maxlength="64">
       </div>
       <div class="field">
         <label>Password</label>
@@ -792,6 +792,7 @@
       <div class="admin-brand">
         TRINETRA · ADMIN
         <a href="/index.html">← Back to Dashboard</a>
+        <a href="/activity.html">📋 Activity Log</a>
       </div>
       <button class="btn-logout" onclick="doLogout()">Sign Out</button>
     </div>
@@ -877,7 +878,7 @@
               <div class="setting-label">Bot Token</div>
               <div class="setting-hint">TELEGRAM_TOKEN · from @BotFather</div>
             </div>
-            <input class="setting-input" type="text" id="TELEGRAM_TOKEN" placeholder="123456:ABC-DEF…">
+            <input class="setting-input" type="password" id="TELEGRAM_TOKEN" placeholder="123456:ABC-DEF…" autocomplete="off">
           </div>
           <div class="setting-row">
             <div>
@@ -962,23 +963,42 @@
         </div>
       </div>
 
-      <!-- Admin Account -->
+      <!-- Accounts -->
       <div class="admin-section">
-        <div class="section-title">🔐 Admin Account</div>
+        <div class="section-title">🔐 Accounts</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
-              <div class="setting-label">Admin Email</div>
-              <div class="setting-hint">ADMIN_EMAIL · login email</div>
+              <div class="setting-label">Signed in as <span id="acc-me">—</span></div>
+              <div class="setting-hint">Passwords: 12–128 characters, not a common password, not containing the user ID</div>
             </div>
-            <input class="setting-input" type="email" id="ADMIN_EMAIL">
           </div>
           <div class="setting-row">
             <div>
-              <div class="setting-label">New Password</div>
-              <div class="setting-hint">ADMIN_PASSWORD · leave blank to keep current</div>
+              <div class="setting-label">Change my password</div>
+              <div class="setting-hint">Current password required · other sessions of this account are signed out</div>
             </div>
-            <input class="setting-input" type="password" id="ADMIN_PASSWORD" placeholder="leave blank to keep current">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <input class="setting-input" type="password" id="acc-cur" placeholder="current password" autocomplete="current-password">
+              <input class="setting-input" type="password" id="acc-new" placeholder="new password" autocomplete="new-password">
+              <button class="sched-chip-btn" id="acc-change-btn" type="button">Change</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Add account</div>
+              <div class="setting-hint">Operators view the dashboard and acknowledge alerts · administrators also change settings and the whitelist</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <input class="setting-input" type="text" id="acc-uid" placeholder="user ID" maxlength="64" autocomplete="off">
+              <input class="setting-input" type="password" id="acc-pw" placeholder="password" autocomplete="new-password">
+              <select class="setting-input" id="acc-role"><option value="operator">operator</option><option value="admin">admin</option></select>
+              <button class="sched-chip-btn" id="acc-add-btn" type="button">Add</button>
+            </div>
+          </div>
+          <div class="setting-row" style="display:block;">
+            <div id="acc-msg" class="setting-hint" style="margin-bottom:8px;"></div>
+            <div id="acc-list"></div>
           </div>
         </div>
       </div>
@@ -1190,6 +1210,13 @@
   </div>
 
   <script>
+    /* Every value from the server is escaped before it is placed in the page. */
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
     /* ── Auth ── */
     async function doLogin() {
       const btn = document.getElementById('login-btn');
@@ -1206,9 +1233,14 @@
           body: JSON.stringify({ email, password: pass }),
           credentials: 'same-origin',
         });
-        if (!r.ok) throw new Error('bad credentials');
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(r.status === 429 ? (d.detail || 'Too many failed sign-ins — try again in 15 minutes')
+                                           : 'Invalid user ID or password.');
+        }
         showAdmin();
-      } catch (_) {
+      } catch (e) {
+        err.textContent = e.message || 'Invalid user ID or password.';
         err.style.display = 'block';
         btn.textContent = 'Sign In →';
         btn.disabled = false;
@@ -1241,12 +1273,15 @@
           'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
           'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
           'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
-          'ADMIN_EMAIL',
         ];
         FIELDS.forEach(k => {
           const el = document.getElementById(k);
           if (el && cfg[k] !== undefined) el.value = cfg[k];
         });
+        // The bot token is a secret: the server only says whether one is set.
+        document.getElementById('TELEGRAM_TOKEN').placeholder =
+          cfg.TELEGRAM_TOKEN_SET ? 'set — leave blank to keep current' : '123456:ABC-DEF…';
+        await loadAccounts();
 
         // Also load the database records
         await loadDatabase();
@@ -1254,6 +1289,66 @@
         console.error('loadConfig failed:', e);
       }
     }
+
+    /* ── Accounts ── */
+    async function _accFetch(url, opts = {}) {
+      const r = await fetch(url, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 401) { doLogout(); throw new Error('Signed out'); }
+      if (!r.ok) throw new Error(data.detail || `Server error (${r.status})`);
+      return data;
+    }
+    function _accMsg(text, ok) {
+      const el = document.getElementById('acc-msg');
+      el.textContent = text;
+      el.style.color = ok ? 'var(--green)' : 'var(--red)';
+    }
+    async function loadAccounts() {
+      try {
+        const me = await _accFetch('/api/me');
+        document.getElementById('acc-me').textContent = me.user_id;
+        const users = await _accFetch('/api/admin/users');
+        const list = document.getElementById('acc-list');
+        list.innerHTML = users.map(u => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:13px;">
+            <span>${escapeHtml(u.user_id)} <span style="color:var(--text-dim)">· ${escapeHtml(u.role)}</span></span>
+            ${u.user_id === me.user_id ? '<span style="color:var(--text-dim)">you</span>'
+              : `<button class="sched-chip-btn danger" data-del-user="${escapeHtml(u.user_id)}" type="button">Delete</button>`}
+          </div>`).join('');
+      } catch (e) {
+        _accMsg('Could not load accounts: ' + e.message, false);
+      }
+    }
+    document.getElementById('acc-list').addEventListener('click', async e => {
+      const b = e.target.closest('button[data-del-user]');
+      if (!b) return;
+      const uid = b.dataset.delUser;
+      if (!confirm(`Delete account ${uid}?`)) return;
+      try { await _accFetch(`/api/admin/users/${encodeURIComponent(uid)}`, { method: 'DELETE' }); _accMsg(`✓ ${uid} deleted`, true); loadAccounts(); }
+      catch (err) { _accMsg(err.message, false); }
+    });
+    document.getElementById('acc-add-btn').addEventListener('click', async () => {
+      const user_id = document.getElementById('acc-uid').value.trim();
+      const password = document.getElementById('acc-pw').value;
+      const role = document.getElementById('acc-role').value;
+      try {
+        await _accFetch('/api/admin/users', { method: 'POST', body: JSON.stringify({ user_id, password, role }) });
+        document.getElementById('acc-uid').value = '';
+        document.getElementById('acc-pw').value = '';
+        _accMsg(`✓ ${user_id} added (${role})`, true);
+        loadAccounts();
+      } catch (err) { _accMsg(err.message, false); }
+    });
+    document.getElementById('acc-change-btn').addEventListener('click', async () => {
+      const current_password = document.getElementById('acc-cur').value;
+      const new_password = document.getElementById('acc-new').value;
+      try {
+        await _accFetch('/api/password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) });
+        document.getElementById('acc-cur').value = '';
+        document.getElementById('acc-new').value = '';
+        _accMsg('✓ Password changed', true);
+      } catch (err) { _accMsg(err.message, false); }
+    });
 
     /* ── Database Management ── */
     async function loadDatabase() {
@@ -1277,7 +1372,7 @@
 
         // Build headers from first row keys
         const keys = Object.keys(data.records[0]);
-        thead.innerHTML = '<tr>' + keys.map(k => `<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border);">${k}</th>`).join('') + '<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); width: 80px; position: sticky; right: 0; background: var(--surface);">Action</th></tr>';
+        thead.innerHTML = '<tr>' + keys.map(k => `<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border);">${escapeHtml(k)}</th>`).join('') + '<th style="padding: 10px 20px; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); width: 80px; position: sticky; right: 0; background: var(--surface);">Action</th></tr>';
 
         // PK for the table
         const pk = table === 'whitelist' ? 'badge' : 'id';
@@ -1287,16 +1382,16 @@
             let val = row[k];
             if (val === null) val = '—';
             else if (typeof val === 'string' && val.length > 50) val = val.substring(0, 47) + '...';
-            return `<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono);">${val}</td>`;
+            return `<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono);">${escapeHtml(val)}</td>`;
           }).join('');
 
           const rowId = row[pk];
           const encodedId = encodeURIComponent(rowId);
-          return `<tr>${tds}<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); position: sticky; right: 0; background: var(--surface);"><button onclick="deleteRecord('${table}', '${encodedId}')" style="background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-dim)'" title="Delete record">🗑️</button></td></tr>`;
+          return `<tr>${tds}<td style="padding: 8px 20px; border-bottom: 1px solid var(--border); position: sticky; right: 0; background: var(--surface);"><button onclick="deleteRecord('${escapeHtml(table)}', '${escapeHtml(encodedId)}')" style="background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-dim)'" title="Delete record">🗑️</button></td></tr>`;
         }).join('');
       } catch (e) {
         console.error(e);
-        tbody.innerHTML = `<tr><td style="padding: 20px; text-align: center; color: var(--red);">Error loading records: ${e.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td style="padding: 20px; text-align: center; color: var(--red);">Error loading records: ${escapeHtml(e.message)}</td></tr>`;
       }
     }
 
@@ -1642,7 +1737,7 @@
           return head + rows;
         }).join('');
       } catch (e) {
-        list.innerHTML = `<div class="sched-empty" style="padding:18px 20px;color:var(--red);">Could not load schedule: ${e.message}</div>`;
+        list.innerHTML = `<div class="sched-empty" style="padding:18px 20px;color:var(--red);">Could not load schedule: ${escapeHtml(e.message)}</div>`;
       }
     }
 
@@ -1719,17 +1814,12 @@
         'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
         'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
-        'ADMIN_EMAIL',
       ];
       const updates = {};
       FIELDS.forEach(k => {
         const el = document.getElementById(k);
         if (el && el.value.trim() !== '') updates[k] = el.value.trim();
       });
-
-      /* Password — only include if filled in */
-      const pw = document.getElementById('ADMIN_PASSWORD').value;
-      if (pw) updates['ADMIN_PASSWORD'] = pw;
 
       try {
         const r = await fetch('/api/admin/config', {
@@ -1744,7 +1834,7 @@
           throw new Error(e.detail || 'Save failed');
         }
         const result = await r.json();
-        document.getElementById('ADMIN_PASSWORD').value = '';
+        document.getElementById('TELEGRAM_TOKEN').value = '';
         msg.className = 'save-msg ' + (result.restart_required ? 'warn' : 'ok');
         msg.textContent = result.restart_required
           ? '⚠ Settings saved — restart server for full effect'
