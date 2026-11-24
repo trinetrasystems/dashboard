@@ -90,6 +90,7 @@ function fillSettings() {
   const m = c.models.find(x => x.name === f.model.value);
   $('ds-model-help').textContent = m ? `classes: ${m.labels.join(', ')}${m.kind === 'built-in' ? ' — stand-in until the perimeter model is ready' : ''}` : '';
   f.threshold.value = c.threshold; f.save_every_s.value = c.save_every_s; f.frame_skip.value = c.frame_skip; f.loop_files.checked = c.loop_files;
+  f.nightly_restart.value = c.nightly_restart || '';
 }
 
 async function saveConfig(patch, msgId) {
@@ -384,7 +385,7 @@ onReady(async () => {
   $('ds-settings').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target.elements;
     try { await saveConfig({ model: f.model.value, threshold: Number(f.threshold.value), save_every_s: Number(f.save_every_s.value),
-                             frame_skip: Number(f.frame_skip.value), loop_files: f.loop_files.checked }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
+                             frame_skip: Number(f.frame_skip.value), loop_files: f.loop_files.checked, nightly_restart: f.nightly_restart.value }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
   });
   // cameras
   $('cam-add').addEventListener('click', () => openCam(null));

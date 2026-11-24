@@ -19,7 +19,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,7 @@ CONFIG = DS / "config.json"
 ZONES = DS / "zones.json"
 INTENT = RUN / "intent.json"
 PIDF = RUN / "pipeline.pid"
+NIGHTLY_FILE = RUN / "nightly_restart.json"           # {"day": iso}: the planned night restart of that day is done
 APP = Path(__file__).resolve().parent / "pipeline"
 PY = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else sys.executable
 YOLO_LIB = "/root/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
@@ -54,8 +55,14 @@ CAM_RE = re.compile(r"^[A-Za-z0-9-]{1,40}$")          # the dashboard's file nam
 MAX_CAMERAS = 16
 ENGINE_STEP = 4                                       # engines for 4, 8, 12, 16 cameras: adding one camera rarely rebuilds
 SERIALIZE_RE = re.compile(r"serialize cuda engine to file:\s*(\S+)\s+successfully", re.I)
+# Automatic restart (as Workplace Analytics, 19 Nov 2026): a stop nobody asked for → started again at once; after a
+# memory (safety) stop RESTART_SETTLE_S later; still short of RESTART_MIN_GB FREE_MEM_AFTER_S after the stop → memory is
+# freed once (a stray pipeline, stale helpers, the page cache); max MAX_RESTARTS_PER_HOUR. Only Stop on the page keeps it off.
 MAX_RESTARTS_PER_HOUR, RESTART_MIN_GB = 5, 2.0
-DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "frame_skip": 2, "loop_files": True}
+RESTART_SETTLE_S = 30
+FREE_MEM_AFTER_S = 60
+DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "frame_skip": 2, "loop_files": True,
+            "nightly_restart": "00:00"}
 
 router = APIRouter()
 _lock = threading.Lock()
@@ -200,6 +207,10 @@ def check_config(raw: dict) -> dict:
     except (TypeError, ValueError):
         raise ValueError("threshold / image interval / frame skip must be numbers")
     cfg["loop_files"] = bool(cfg["loop_files"])
+    nr = str(cfg.get("nightly_restart") or "").strip()
+    if nr and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", nr):
+        raise ValueError("nightly restart: a time HH:MM (empty = off)")
+    cfg["nightly_restart"] = nr
     if cfg["model"] and not model_by_name(cfg["model"]):
         raise ValueError(f"model {cfg['model']} not found")
     return cfg
@@ -335,7 +346,7 @@ def grab_frame(cam: dict) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 PROC = None
 RESTARTS: list = []
-DOWN = {"since": None, "said": 0.0}
+DOWN = {"since": None, "said": 0.0, "freed": False}
 
 
 def intent() -> bool:
@@ -607,25 +618,65 @@ def do_build(job: Job):
 
 
 # ─── supervisor: the user wants it running but it is not (crash, stall, safety, reboot) → start it again ──────────
+def free_memory() -> str:
+    """memory held while the pipeline is stopped (as Workplace Analytics): a stray perimeter_pipeline.py the pid file does
+    not point to (one that hung while exiting), helper processes of this dashboard (probes / frame grabs) older than
+    2 min; then the page cache (best effort). The dashboard and a running pipeline are never touched."""
+    done, me, cur = [], os.getpid(), pid_alive()
+    try:
+        btime = next(int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime"))
+    except (OSError, StopIteration):
+        btime = 0
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) in (1, me, cur):
+            continue
+        try:
+            cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            st = (d / "stat").read_text().rsplit(")", 1)[1].split()          # after "(comm)": state ppid … starttime (#20)
+            ppid, age = int(st[1]), time.time() - (btime + int(st[19]) / os.sysconf("SC_CLK_TCK"))
+        except (OSError, ValueError, IndexError):
+            continue
+        if "perimeter_pipeline.py" in cmd or (ppid == me and age > 120 and " -c " in cmd):
+            try:
+                os.kill(int(d.name), signal.SIGKILL)
+                done.append(f"killed pid {d.name} ({cmd[:60].strip()}…)")
+            except OSError:
+                pass
+    try:
+        os.sync()
+        with open("/proc/sys/vm/drop_caches", "w") as f:
+            f.write("1")
+        done.append("page cache dropped")
+    except OSError:
+        pass
+    return ", ".join(done) or "nothing to free"
+
+
 def supervise_once(now: Optional[float] = None):
     now = now or time.time()
     if not intent() or pid_alive() or (JOB and JOB.status == "running"):
-        DOWN.update(since=None)
+        DOWN.update(since=None, freed=False)
         return None
     if not (RUN / "config_run.json").exists():
         return None
     if DOWN["since"] is None:
-        DOWN.update(since=now, said=now - 480)
+        DOWN.update(since=now, said=now - 480, freed=False)
     why = exit_reason() or "dashboard restart"
     down = now - DOWN["since"]
-    if why == "safety" and down < 30:
-        return None
+    if why == "safety" and down < RESTART_SETTLE_S:
+        return None                                   # a memory stop: let the memory come back first
     RESTARTS[:] = [t for t in RESTARTS if now - t < 3600]
     h, wait = host_health(), None
     if len(RESTARTS) >= MAX_RESTARTS_PER_HOUR:
         wait = f"{MAX_RESTARTS_PER_HOUR} restarts in the last hour"
     elif h["mem_available_gb"] < RESTART_MIN_GB:
         wait = f"only {h['mem_available_gb']} GB RAM available (needs {RESTART_MIN_GB} GB)"
+        if down >= FREE_MEM_AFTER_S and not DOWN["freed"]:
+            DOWN["freed"] = True
+            print(f"[ds] supervisor: {wait} - freeing memory: {free_memory()}", flush=True)
+            h = host_health()
+            if h["mem_available_gb"] >= RESTART_MIN_GB:
+                wait = None                           # enough now: start at once
     elif (h["temp_c"] or 0) > 80:
         wait = f"Jetson too hot ({h['temp_c']} °C)"
     elif h["free_disk_gb"] < 5:
@@ -637,14 +688,42 @@ def supervise_once(now: Optional[float] = None):
         return None
     RESTARTS.append(now)
     p, lf = launch()
-    DOWN.update(since=None)
-    print(f"[ds] supervisor: pipeline started again after '{why}' (pid {p.pid}, {lf.name})", flush=True)
+    DOWN.update(since=None, freed=False)
+    print(f"[ds] supervisor: pipeline started again after '{why}' (down {int(down)} s, "
+          f"{h['mem_available_gb']} GB RAM available; pid {p.pid}, {lf.name})", flush=True)
     return p
+
+
+def nightly_restart(now: Optional[datetime] = None) -> bool:
+    """once a night at the time set on the Pipeline tab (within 10 min, also after a dashboard restart): a running
+    pipeline is stopped cleanly and started again — frees the memory a long run collects (camera reconnects). Never
+    during an action, never when the user stopped it (as Workplace Analytics)."""
+    now = now or datetime.now()
+    at_s = (load_config().get("nightly_restart") or "").strip()
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at_s):
+        return False
+    at = datetime.combine(now.date(), datetime.strptime(at_s, "%H:%M").time())
+    if not at <= now < at + timedelta(minutes=10):
+        return False
+    if (read_json(NIGHTLY_FILE, {}) or {}).get("day") == now.date().isoformat():
+        return False
+    write_atomic(NIGHTLY_FILE, json.dumps({"day": now.date().isoformat(), "at": now.isoformat(timespec="seconds")}))
+    if not intent() or not pid_alive() or (JOB and JOB.status == "running"):
+        return False
+    print(f"[ds] nightly restart: stopping the pipeline cleanly", flush=True)
+    stop_pipeline()
+    p, lf = launch()
+    print(f"[ds] nightly restart: pipeline started again (pid {p.pid}, {lf.name})", flush=True)
+    return True
 
 
 def supervisor():
     while True:
         time.sleep(10)
+        try:
+            nightly_restart()
+        except Exception as e:
+            print(f"[ds] nightly restart: {e!r}", flush=True)
         try:
             supervise_once()
         except Exception as e:
