@@ -20,30 +20,33 @@ async function refreshAll() {
 
 function renderDropdown() {
   const sel = document.getElementById('wl-badge');
-  const whitelisted = new Set(whitelist.map(w => w.badge));
-  const available = allBadges.filter(b => !whitelisted.has(b.badge));
+  const whitelisted = new Set(whitelist.map(w => w.badge.toLowerCase()));
+  const available = allBadges.filter(b => !whitelisted.has(b.badge.toLowerCase()));
 
   if (available.length === 0) {
-    sel.innerHTML = `<option value="">— all badges are whitelisted —</option>`;
+    sel.innerHTML = `<option value="">— every class is whitelisted —</option>`;
     sel.disabled = true;
     return;
   }
 
   sel.disabled = false;
-  sel.innerHTML = `<option value="">— select a badge —</option>` +
+  sel.innerHTML = `<option value="">— select a class —</option>` +
     available.map(b => {
       const tag = b.auto_discovered ? ' (auto)' : '';
       return `<option value="${escapeHtml(b.badge)}">${escapeHtml(b.badge)}${tag}</option>`;
     }).join('');
 }
 
+const wlPager = pager('wl-pager', () => renderList());          // the Workplace Analytics pager
+
 function renderList() {
   const container = document.getElementById('wl-list');
+  const rows = wlPager.slice(whitelist);
   if (whitelist.length === 0) {
-    container.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:30px;font-size:14px;">no whitelisted badges</div>`;
+    container.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:30px;font-size:14px;">no whitelisted classes</div>`;
     return;
   }
-  container.innerHTML = whitelist.map(w => {
+  container.innerHTML = rows.map(w => {
     const added = new Date(w.added_at.endsWith('Z') ? w.added_at : w.added_at + 'Z');
     return `
       <div class="wl-row">

@@ -36,14 +36,14 @@
 
   <!-- Filter bar -->
   <div class="filter-bar">
-    <input class="filter-input search" id="visit-filter-search" placeholder="Search by badge or camera…">
+    <input class="filter-input search" id="visit-filter-search" placeholder="Search by class or camera…">
     <span class="filter-label">Status</span>
     <select class="filter-select" id="visit-filter-status">
       <option value="all" selected>All</option>
       <option value="closed">Completed only</option>
-      <option value="open">Currently in premises</option>
+      <option value="open">Still present</option>
     </select>
-    <span class="filter-label">Badge</span>
+    <span class="filter-label">Class</span>
     <select class="filter-select" id="visit-filter-badge"></select>
     <span class="filter-label">Date</span>
     <input type="date" class="filter-input" id="visit-filter-date">
@@ -54,7 +54,7 @@
     <div class="card-header">
       <div>
         <div class="card-title">Visits</div>
-        <div class="card-sub">each row = one badge presence from entry to exit · click for full timeline</div>
+        <div class="card-sub">each row = one presence of a class at a camera, first to last sighting · click for the timeline</div>
       </div>
       <div class="card-sub" id="visits-meta">—</div>
     </div>
@@ -62,7 +62,7 @@
       <thead>
         <tr>
           <th>#</th>
-          <th>Badge</th>
+          <th>Class</th>
           <th>Date</th>
           <th>Entered</th>
           <th>Exited</th>
@@ -76,6 +76,7 @@
         <tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-dim);">loading…</td></tr>
       </tbody>
     </table></div>
+    <div class="pager" id="visits-pager"></div>
   </div>
 
 </div>

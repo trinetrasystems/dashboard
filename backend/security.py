@@ -188,10 +188,14 @@ class BadRequest(Exception):
     """Raised for unparseable or wrongly-typed request bodies."""
 
 
+def _no_constant(name):                                # NaN / Infinity are not JSON: refused
+    raise ValueError(name)
+
+
 def parse_json_object(raw: bytes) -> dict:
     try:
-        data = json.loads(raw or b"{}")
-    except (ValueError, UnicodeDecodeError):
+        data = json.loads(raw or b"{}", parse_constant=_no_constant)
+    except (ValueError, UnicodeDecodeError, RecursionError):   # RecursionError: [[[[… nested very deep
         raise BadRequest()
     if not isinstance(data, dict):
         raise BadRequest()

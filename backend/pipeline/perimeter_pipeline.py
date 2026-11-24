@@ -27,6 +27,7 @@ import pyds
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import zones as Z
+from savepolicy import SavePolicy
 
 ROOT = os.environ.get("PERIMETER_ROOT", "/root/PERIMETER")
 DATA = os.environ.get("TRINETRA_DATA", f"{ROOT}/data")
@@ -39,7 +40,8 @@ MIN_FREE_GB, MAX_TEMP_C, RAM_FLOOR_KB = 5.0, 85.0, 716_800
 RECONNECT_S = 10
 RETRY_S = int(os.environ.get("PERIMETER_RETRY_S", "60"))
 TRACKER = "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml"
-COLORS = {Z.BREACH: (64, 64, 255), Z.OUTSIDE_PERSON: (0, 170, 255), Z.OUTSIDE_OBJECT: (0, 200, 255)}   # BGR
+COLORS = {Z.BREACH: (64, 64, 255), Z.OUTSIDE_PERSON: (0, 170, 255), Z.OUTSIDE_OBJECT: (0, 200, 255),
+          Z.ZONE_PERSON: (230, 150, 40), Z.ZONE_OBJECT: (230, 170, 80)}   # BGR
 _LOG_LOCK = threading.Lock()
 
 
@@ -57,11 +59,15 @@ def draw_zones(img, zone):
     h, w = img.shape[:2]
     P = lambda p: (int(p[0] * w), int(p[1] * h))
     over = img.copy()
-    for poly in zone.get("alert") or []:
-        cv2.fillPoly(over, [np.array([P(p) for p in poly], np.int32)], (40, 40, 220))
-    for poly in zone.get("ignore") or []:
-        cv2.fillPoly(over, [np.array([P(p) for p in poly], np.int32)], (90, 90, 90))
+    col = {"alert": (40, 40, 220), "watch": (220, 140, 40), "ignore": (90, 90, 90)}
+    for r in Z.regions(zone):
+        cv2.fillPoly(over, [np.array([P(p) for p in r["points"]], np.int32)], col[r["kind"]])
     cv2.addWeighted(over, 0.28, img, 0.72, 0, img)
+    for r in Z.regions(zone):
+        pts = np.array([P(p) for p in r["points"]], np.int32)
+        cv2.polylines(img, [pts], True, col[r["kind"]], 2, cv2.LINE_AA)
+        x, y = pts[:, 0].min(), pts[:, 1].min()
+        cv2.putText(img, r["name"], (int(x) + 4, int(y) + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
     line = zone.get("line") or []
     if len(line) >= 2:
         cv2.polylines(img, [np.array([P(p) for p in line], np.int32)], False, (0, 200, 255), 3, cv2.LINE_AA)
@@ -91,7 +97,8 @@ class App:
         self.last_buf, self.started_at = [0.0] * n, [0.0] * n
         self.src_frames, self.online, self.gen, self.reconnects = [0] * n, [False] * n, [0] * n, [0] * n
         self.reach, self.reach_busy, self.outage = [None] * n, [False] * n, [0] * n
-        self.last_save, self.last_snap = {}, {}
+        self.last_snap, self.seq = {}, 0
+        self.policy = SavePolicy(every=self.save_every)
         self.counts = collections.Counter()               # (camera, class) → images saved this run
         self.fps_cnt, self.fps = collections.Counter(), {}
         self.frames, self.started = 0, datetime.now().isoformat(timespec="seconds")
@@ -109,7 +116,7 @@ class App:
         if m == self.zones_mtime: return
         try:
             self.zones = json.load(open(self.zones_file)); self.zones_mtime = m
-            log("zones loaded:", ", ".join(f"{c} ({len((z or {}).get('alert') or [])} alert, line {'yes' if (z or {}).get('line') else 'no'})"
+            log("zones loaded:", ", ".join(f"{c} ({len(Z.regions(z or {}))} region(s), line {'yes' if (z or {}).get('line') else 'no'})"
                                          for c, z in self.zones.items() if c in self.cams) or "none for these cameras")
         except Exception as e:
             log("zones file not read:", repr(e))
@@ -129,7 +136,7 @@ class App:
         pgie = mk("nvinfer", "pgie"); pgie.set_property("config-file-path", self.pgie_cfg); pgie.set_property("batch-size", n)
         trk = mk("nvtracker", "tracker")
         trk.set_property("ll-lib-file", "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so")
-        trk.set_property("ll-config-file", TRACKER)
+        trk.set_property("ll-config-file", self.tracker_config())
         trk.set_property("tracker-width", 640); trk.set_property("tracker-height", 384)
         conv = mk("nvvideoconvert", "conv")
         caps = mk("capsfilter", "caps"); caps.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM), format=RGBA"))
@@ -139,6 +146,19 @@ class App:
         mux.link(pgie); pgie.link(trk); trk.link(conv); conv.link(caps); caps.link(sink)
         sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self.probe, None)
         bus = self.pipe.get_bus(); bus.add_signal_watch(); bus.connect("message", self.on_msg)
+
+    def tracker_config(self):
+        """NVIDIA's NvDCF (perf) tracker settings with probationAge 0: a new object is reported from its FIRST frame —
+        the default (2) holds back anything seen in only 1–2 frames, so a short / small appearance would be lost"""
+        out = os.path.join(os.path.dirname(os.path.abspath(self.pgie_cfg)), "tracker_perimeter.yml")
+        try:
+            text = open(TRACKER).read()
+            text = re.sub(r"(?m)^(\s*probationAge:\s*)\d+", r"\g<1>0", text)
+            with open(out, "w") as f:
+                f.write(text)
+            return out
+        except OSError as e:
+            log("tracker config not written (NVIDIA default used):", repr(e)); return TRACKER
 
     def make_source(self, i):
         s = self.srcs[i]; self.gen[i] += 1
@@ -260,39 +280,77 @@ class App:
     def frame(self, buf, fm):
         cam = self.cams[fm.pad_index]; self.frames += 1; self.fps_cnt[cam] += 1
         zone = self.zones.get(cam) or {}
-        hits, boxes = [], []
+        objs, boxes = [], []
         lo = fm.obj_meta_list
         while lo:
             o = pyds.NvDsObjectMeta.cast(lo.data); r = o.rect_params
             lab = self.labels[o.class_id] if 0 <= o.class_id < len(self.labels) else str(o.class_id)
             b = (r.left, r.top, r.width, r.height)
-            cls = Z.classify(lab, b, zone, MUX_W, MUX_H)
-            boxes.append((b, cls, lab, o.confidence))
-            if cls: hits.append(cls)
+            d = Z.describe(lab, b, zone, MUX_W, MUX_H)
+            c = Z.cls(d) if d else None
+            boxes.append((b, c, lab, o.confidence))
+            if d:
+                objs.append({**d, "label": lab, "cls": c, "track": int(o.object_id) if o.object_id < 2**53 else None,
+                             "conf": round(float(o.confidence), 3),
+                             "box": [round(b[0] / MUX_W, 4), round(b[1] / MUX_H, 4), round(b[2] / MUX_W, 4), round(b[3] / MUX_H, 4)]})
             lo = lo.next
-        now = time.monotonic()
-        due = [c for c in dict.fromkeys(hits) if now - self.last_save.get((cam, c), -1e9) >= self.save_every]
+        now, wall = time.monotonic(), datetime.now()
+        rel = self.policy.release(cam, now)                    # a held frame (news that had to wait): written now
+        if rel:
+            r_objs, (r_jpg, r_wall), r_cls = rel
+            self.write_images(cam, r_objs, r_cls, r_jpg, r_wall)
+            self.policy.saved(cam, r_objs, r_cls, now)
+        due, hold = self.policy.decide(cam, objs, now)         # savepolicy.py: nothing short / small / new is skipped
+        if (due or hold) and self.disk_low:                    # saving paused (disk low): no frame copies for nothing
+            self.policy.saved(cam, objs, due, now); due, hold = [], False
         snap = now - self.last_snap.get(cam, -1e9) >= 2.0
-        if not (due or snap): return
+        if not (due or hold or snap): return
         img = self.frame_image(buf, fm, zone, boxes)
         if img is None: return
         if snap:
             self.last_snap[cam] = now
             tmp = f"{SNAPS}/{cam}.tmp.jpg"; cv2.imwrite(tmp, img, [cv2.IMWRITE_JPEG_QUALITY, 80]); os.replace(tmp, f"{SNAPS}/{cam}.jpg")
-        if due and not self.disk_low:
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        if due or hold:
             ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])   # encoded in memory: the temp name has no .jpg
             if not ok:
                 log("IMAGE not encoded"); return
-            for c in due:
-                self.last_save[(cam, c)] = now
-                name = f"{cam}_{c}_{ts}.jpg"
-                tmp = os.path.join(self.incoming, f".{name}.part")          # renamed when complete: the dashboard sees a finished file
-                with open(tmp, "wb") as f:
-                    f.write(jpg.tobytes())
-                os.replace(tmp, os.path.join(self.incoming, name))
-                self.counts[(cam, c)] += 1
-                log("IMAGE", name)
+            if hold:
+                self.policy.hold(cam, objs, (jpg.tobytes(), wall), now)
+            else:
+                self.write_images(cam, objs, due, jpg.tobytes(), wall)
+                self.policy.saved(cam, objs, due, now)
+
+    def write_images(self, cam, objs, classes, jpg: bytes, wall: datetime):
+        """one image per class (+ the frame description, written FIRST: the image triggers the dashboard's ingest);
+        the time in the name to the millisecond — images of the same second never collide"""
+        ts = f"{wall.strftime('%Y%m%d-%H%M%S')}-{wall.microsecond // 1000:03d}"
+        self.seq += 1
+        meta = json.dumps({"v": 1, "frame": f"{cam}|{wall.isoformat(timespec='milliseconds')}|{self.seq}", "camera": cam,
+                           "ts": wall.isoformat(timespec="milliseconds"),
+                           "objects": [{k: o[k] for k in ("label", "kind", "regions", "alert", "outside", "track", "conf", "box")}
+                                       for o in objs]})
+        for c in classes:
+            name = f"{cam}_{c}_{ts}.jpg"
+            side = os.path.join(self.incoming, name[:-4] + ".json")
+            with open(side + ".part", "w") as f:
+                f.write(meta)
+            os.replace(side + ".part", side)
+            tmp = os.path.join(self.incoming, f".{name}.part")          # renamed when complete: the dashboard sees a finished file
+            with open(tmp, "wb") as f:
+                f.write(jpg)
+            os.replace(tmp, os.path.join(self.incoming, name))
+            self.counts[(cam, c)] += 1
+            log("IMAGE", name, f"({len(objs)} object(s))")
+
+    def flush_held(self):
+        """on stop: frames still held are written (a stop right after a short appearance must not lose it)"""
+        for cam, q in list(self.policy.held.items()):
+            while q:
+                objs, (jpg, wall) = q.popleft()
+                try:
+                    self.write_images(cam, objs, list(dict.fromkeys(o["cls"] for o in objs)), jpg, wall)
+                except OSError as e:
+                    log("held frame not written:", repr(e))
 
     def frame_image(self, buf, fm, zone, boxes):
         """this frame at 960x540 BGR with the zones and the boxes drawn"""
@@ -383,6 +441,7 @@ class App:
         try: self.loop.run()
         finally:
             self.pipe.set_state(Gst.State.NULL)
+            self.flush_held()
             try:
                 s = json.load(open(STATE)) if os.path.exists(STATE) else {}
                 s.update(running=False, pid=os.getpid(), exit_reason=self.exit_reason, stopped=datetime.now().isoformat(timespec="seconds"))

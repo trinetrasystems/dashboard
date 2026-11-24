@@ -19,7 +19,7 @@ from typing import Callable, Optional
 
 import config
 
-_TS_RE = re.compile(r"_(\d{4})(\d{2})(\d{2})-\d{6}\.jpg$")
+_TS_RE = re.compile(r"_(\d{4})(\d{2})(\d{2})-\d{6}(?:-\d{3})?\.jpg$")
 
 
 def image_day(p: Path) -> Optional[str]:

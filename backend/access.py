@@ -34,6 +34,7 @@ PERMISSIONS = [
     ("logs", "Logs & Charts", "Detection history, charts and visits"),
     ("manage_alerts", "Acknowledge alerts", "Acknowledge alerts and change the whitelist"),
     ("export", "Downloads", "Download detection logs as CSV"),
+    ("alert_rules", "Alert rules", "Create and change alert rules and regions"),
 ]
 PERMISSION_KEYS = [k for k, _, _ in PERMISSIONS]
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
@@ -44,10 +45,10 @@ PAGE_NEED = {
     "/login.html": None,
     "/": ("live",), "/index.html": ("live",), "/whitelist.html": ("live",),
     "/logs.html": ("logs",), "/visits.html": ("logs",),
-    "/users.html": "admin",
+    "/users.html": "admin", "/alerts.html": ("live",),
     "/admins.html": "support", "/activity.html": "support", "/admin.html": "support", "/deepstream.html": "support",
 }
-PAGE_LABELS = {"/": "Live", "/index.html": "Live", "/whitelist.html": "Whitelist", "/logs.html": "Logs & Charts",
+PAGE_LABELS = {"/alerts.html": "Alerts", "/": "Live", "/index.html": "Live", "/whitelist.html": "Whitelist", "/logs.html": "Logs & Charts",
                "/visits.html": "Visits", "/users.html": "Users", "/admins.html": "Admin Accounts",
                "/activity.html": "Activity Logs", "/admin.html": "Settings",
                "/deepstream.html": "DeepStream"}
@@ -262,7 +263,7 @@ class Access:
             return "support"
         if path == "/api/me/password":
             return "any"
-        if path in ("/api/stats", "/api/perimeter/rules", "/api/jetsons/status"):
+        if path in ("/api/stats", "/api/perimeter/rules"):
             return "any"                                   # the top bar of every page
         if path.startswith("/api/users"):
             return "admin"
@@ -272,8 +273,16 @@ class Access:
             return ("export",)
         if path in ("/api/detections/summary",) or path.startswith("/api/visits"):
             return ("logs",)
-        if path in ("/api/sessions/active", "/api/alerts/recent"):
+        if path in ("/api/sessions/active", "/api/alerts/recent", "/api/alerts", "/api/alerts/live"):
             return ("live",)
+        if path == "/api/alerts/ack-all" and method == "POST":
+            return ("manage_alerts",)
+        if path == "/api/alert-rules" or path.startswith("/api/alert-rules/"):
+            return ("live", "alert_rules") if method == "GET" else ("alert_rules",)
+        if path == "/api/regions" or path.startswith("/api/regions/"):
+            return ("alert_rules",)
+        if path == "/api/speaker" or path.startswith("/api/speaker/"):
+            return ("alert_rules",)                        # the Bluetooth speaker (Alerts page → Speaker)
         if re.fullmatch(r"/api/alerts/\d+/ack", path) and method == "POST":
             return ("manage_alerts",)
         if path.startswith("/api/whitelist"):
@@ -359,6 +368,15 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("DELETE", r"/api/admin/database/([^/]+)", "data", "Cleared a table"),
     ("POST", r"/api/admin/reset", "data", "Deleted all detection data"),
     ("POST", r"/api/ds/(start|stop|build)", "pipeline", "DeepStream"),
+    ("POST", r"/api/alert-rules", "alerts", "Created an alert rule"),
+    ("PUT", r"/api/alert-rules/(\d+)", "alerts", "Changed an alert rule"),
+    ("DELETE", r"/api/alert-rules/(\d+)", "alerts", "Deleted an alert rule"),
+    ("POST", r"/api/alerts/ack-all", "alerts", "Acknowledged all alerts"),
+    ("PUT", r"/api/regions/([^/]+)/zone", "alerts", "Changed regions"),
+    ("PUT", r"/api/speaker", "alerts", "Changed the speaker settings"),
+    ("POST", r"/api/speaker/test", "alerts", "Test beep on the speaker"),
+    ("POST", r"/api/speaker/connect", "alerts", "Connected a Bluetooth speaker"),
+    ("POST", r"/api/speaker/forget", "alerts", "Removed the Bluetooth speaker"),
     ("PUT", r"/api/ds/config", "pipeline", "Changed cameras / pipeline settings"),
     ("PUT", r"/api/ds/zones/([^/]+)", "pipeline", "Drew perimeter zones"),
 ]]

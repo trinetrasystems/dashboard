@@ -19,6 +19,7 @@ const ICONS = {
   'line-chart': '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>',
   'bar-chart':  '<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/>',
   'bell':       '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  'speaker':    '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
   'camera':     '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
   'settings':   '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   'calendar':   '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
@@ -123,6 +124,12 @@ function pager(id, onChange, size = 10) {
       draw();
       return rows.slice((st.page - 1) * st.size, st.page * st.size);
     },
+    total(n) {                                       // server-paged lists: the server says how many rows there are
+      st.total = n; st.used = st.size;
+      const pages = Math.max(1, Math.ceil(st.total / st.size));
+      if (st.page > pages) st.page = pages;
+      draw();
+    },
     reset() { st.page = 1; },
     get page() { return st.page; },
     get size() { return st.size; },
@@ -176,6 +183,7 @@ applyTheme(getTheme());
 const NAV = [
   { section: null, items: [
     { icon: 'shield',     label: 'Live',            href: 'index.html',      need: 'live' },
+    { icon: 'bell',       label: 'Alerts',          href: 'alerts.html',     need: 'live' },
     { icon: 'line-chart', label: 'Logs & Charts',   href: 'logs.html',       need: 'logs' },
     { icon: 'route',      label: 'Visits',          href: 'visits.html',     need: 'logs' },
     { icon: 'check-circle', label: 'Whitelist',     href: 'whitelist.html',  need: 'live' },
@@ -424,7 +432,7 @@ function initRangeControl(onChange) {
     ['from', 'to'].forEach(k => p.delete(k));
     p.set('range', st.range);
     if (range === 'custom' || range === 'day') { p.set('from', st.from); p.set('to', st.to); }
-    history.replaceState(null, '', `?${p}`);
+    history.replaceState(null, '', `?${p}${location.hash}`);   // keep the page tab (#rules …)
     $id('date-label').textContent = label();
     $id('date-input').value = st.to;
     onChange(st);
@@ -471,3 +479,101 @@ function initRangeControl(onChange) {
   return st;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * ALERT STRIP — every page (offline sites: the dashboard is where alerts are seen). While an alert is open (not
+ * acknowledged) a strip flashes on top of the page (red = critical, amber = warning), the browser tab title blinks
+ * and a new alert beeps (Web Audio — no sound file, no internet; browsers allow sound after the first click on the
+ * page). The Live page shows its own big banner instead of the strip, but beeps the same.
+ * ════════════════════════════════════════════════════════════════════════════ */
+const ALERT_STRIP = { last: null, ctx: null, muted: localStorage.getItem('alert-muted') === '1', title: document.title, blink: null, open: 0 };
+document.head.insertAdjacentHTML('beforeend', `<style>
+  .alert-strip { position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-radius: 12px; border: 2px solid var(--amber); background: var(--amber-bg); color: var(--text);
+    box-shadow: var(--shadow-lg); }
+  .alert-strip.crit { border-color: var(--red); background: var(--red-bg); animation: strip-flash 1.1s ease-in-out infinite; }
+  .alert-strip[hidden] { display: none; }
+  .alert-strip .as-icon { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: #fff; background: var(--amber); flex: none; }
+  .alert-strip.crit .as-icon { background: var(--red); }
+  .alert-strip .as-main { flex: 1; min-width: 200px; }
+  .alert-strip .as-title { font-weight: 700; }
+  .alert-strip .as-sub { font-size: 14px; color: var(--text-muted); }
+  .alert-strip .btn { height: 38px; font-size: 15px; }
+  @keyframes strip-flash { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.55); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); background: var(--surface); } }
+  @media (prefers-reduced-motion: reduce) { .alert-strip.crit { animation: none; } }
+</style>`);
+
+function beep(critical) {
+  if (ALERT_STRIP.muted) return;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ALERT_STRIP.ctx = ALERT_STRIP.ctx || new AC();
+    const c = ALERT_STRIP.ctx;
+    if (c.state === 'suspended') c.resume();
+    const tones = critical ? [0, 0.28, 0.56, 1.1, 1.38, 1.66] : [0, 0.35];
+    tones.forEach((t, i) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = 'square'; o.frequency.value = critical ? (i % 2 ? 1040 : 880) : 660;
+      g.gain.setValueAtTime(0.0001, c.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.25, c.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + t + 0.22);
+      o.connect(g); g.connect(c.destination); o.start(c.currentTime + t); o.stop(c.currentTime + t + 0.25);
+    });
+  } catch (_) { /* no audio here */ }
+}
+['click', 'keydown'].forEach(ev => document.addEventListener(ev, () => {         // browsers allow sound after a gesture
+  try { if (!ALERT_STRIP.ctx) ALERT_STRIP.ctx = new (window.AudioContext || window.webkitAudioContext)(); ALERT_STRIP.ctx.resume(); } catch (_) { }
+}, { once: true }));
+
+async function refreshAlertStrip() {
+  if (!can('live')) return;
+  let d;
+  try { d = await fetch('/api/alerts/live', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null); } catch (_) { return; }
+  if (!d) return;
+  const newest = d.latest[0];
+  const maxId = Math.max(0, ...d.latest.map(a => a.id));
+  if (ALERT_STRIP.last !== null && maxId > ALERT_STRIP.last) {
+    const fresh = d.latest.filter(a => a.id > ALERT_STRIP.last);
+    if (fresh.some(a => a.sound)) beep(fresh.some(a => a.severity === 'critical'));
+    window.dispatchEvent(new CustomEvent('perimeter-alert', { detail: fresh }));
+  }
+  ALERT_STRIP.last = Math.max(ALERT_STRIP.last || 0, maxId);
+  ALERT_STRIP.open = d.open;
+  // tab title: blinks while alerts are open
+  clearInterval(ALERT_STRIP.blink);
+  if (d.open) {
+    let on = false;
+    ALERT_STRIP.blink = setInterval(() => { on = !on; document.title = on ? `(${d.open}) ⚠ ${d.critical ? 'ALERT' : 'Warning'}` : ALERT_STRIP.title; }, 1000);
+  } else document.title = ALERT_STRIP.title;
+  if (currentPage() === 'index.html') return;          // the Live page has its own banner
+  let el = document.getElementById('alert-strip');
+  if (!el) {
+    const main = document.querySelector('main.main'); if (!main) return;
+    main.insertAdjacentHTML('afterbegin', `<div class="alert-strip" id="alert-strip" role="alert" hidden></div>`);
+    el = document.getElementById('alert-strip');
+    el.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-strip-mute]')) {
+        ALERT_STRIP.muted = !ALERT_STRIP.muted; localStorage.setItem('alert-muted', ALERT_STRIP.muted ? '1' : '');
+        refreshAlertStrip(); if (!ALERT_STRIP.muted) beep(false); return;
+      }
+      const a = e.target.closest('[data-strip-ack]');
+      if (a) { try { await apiPost(`/api/alerts/${a.dataset.stripAck}/ack`, {}); refreshAlertStrip(); } catch (err) { toast(err.message); } }
+    });
+  }
+  if (!d.open) { el.hidden = true; return; }
+  const t = new Date(newest.triggered_at.endsWith('Z') ? newest.triggered_at : newest.triggered_at + 'Z');
+  el.className = `alert-strip ${d.critical ? 'crit' : ''}`;
+  el.hidden = false;
+  el.innerHTML = `<span class="as-icon">${icon('alert')}</span>
+    <div class="as-main"><div class="as-title">${escapeHtml(newest.rule_name)} — ${escapeHtml(newest.message)}</div>
+      <div class="as-sub">${escapeHtml(newest.camera)}${newest.zone ? ' · ' + escapeHtml(newest.zone) : ''} · ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}
+        · ${d.open} open alert${d.open === 1 ? '' : 's'}${d.critical ? ` (${d.critical} critical)` : ''}</div></div>
+    ${can('manage_alerts') ? `<button class="btn" data-strip-ack="${newest.id}">${icon('check')}Acknowledge</button>` : ''}
+    <a class="btn primary" href="index.html">Open Live</a>
+    <button class="icon-btn" data-strip-mute title="${ALERT_STRIP.muted ? 'Sound off — click to turn it on' : 'Sound on — click to mute'}">${ALERT_STRIP.muted ? '🔇' : '🔊'}</button>`;
+}
+document.addEventListener('DOMContentLoaded', () => accessReady.then(ok => {
+  if (!ok || !can('live')) return;
+  refreshAlertStrip();
+  setInterval(() => { if (!document.hidden || ALERT_STRIP.open) refreshAlertStrip(); }, 4000);
+}));

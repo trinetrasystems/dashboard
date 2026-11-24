@@ -1,0 +1,16 @@
+[Unit]
+Description=Trinetra Perimeter - alert beep on the Bluetooth speaker
+After=bluetooth.service bluez-alsa.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+Environment=PERIMETER_DATA=/home/nvidia/PERIMETER_data
+ExecStart=/usr/bin/python3 -u /usr/local/lib/trinetra/perimeter-speaker.py
+Restart=always
+RestartSec=5
+Nice=-5
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

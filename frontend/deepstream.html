@@ -102,49 +102,13 @@
         <table class="details"><thead><tr><th>Camera</th><th>Stream address</th><th>Transport</th><th>On</th><th>Zones</th><th></th></tr></thead>
           <tbody id="cam-body"><tr><td colspan="6" class="empty">loading…</td></tr></tbody></table>
       </div>
+      <div class="pager" id="cam-pager" style="padding:12px 18px"></div>
     </div>
   </section>
 
   <!-- ═══ Perimeter zones ═══ -->
   <section class="ds-panel" id="tab-zones" hidden>
-    <div class="card">
-      <div class="zone-bar">
-        <select class="ds-input" id="zone-cam" aria-label="Camera"></select>
-        <button class="btn sm" id="zone-refresh" title="Take a new picture from the camera">↻ New picture</button>
-        <div class="seg zone-tools" id="zone-tools">
-          <button data-tool="line" title="Click along the wall / fence; double-click or Enter to finish">Perimeter line</button>
-          <button data-tool="outside" title="Click once on the outside of the line">Outside side</button>
-          <button data-tool="alert" title="Click the corners of the wall top / concertina wire; click the first point or double-click to close">Alert region</button>
-          <button data-tool="ignore" title="Click the corners of an area to ignore (a road, a moving tree)">Ignore region</button>
-        </div>
-        <button class="btn sm" id="zone-undo" title="Remove the last point (Ctrl+Z)">Undo</button>
-        <button class="btn sm danger-ghost" id="zone-clear">Clear all</button>
-        <span class="spacer" style="flex:1"></span>
-        <span class="form-result" id="zone-msg"></span>
-        <button class="btn primary" id="zone-save">Save zones</button>
-      </div>
-      <div class="zone-help"><div id="zone-help">Pick a tool, then click on the picture.</div>
-        <div class="zone-pointer mono" id="zone-pointer">&nbsp;</div></div>
-      <div class="zone-wrap">
-        <div class="zone-stage" id="zone-stage">
-          <img id="zone-img" alt="Camera picture">
-          <canvas id="zone-canvas"></canvas>
-          <div class="zone-empty" id="zone-empty" hidden></div>
-        </div>
-        <div class="zone-side">
-          <b>What is drawn</b>
-          <div class="zone-list" id="zone-list"></div>
-          <b>What a detection means</b>
-          <div class="legend">
-            <div><span class="sw" style="background:#ff4d5e"></span>In an <b>alert region</b> → <span class="mono">Boundry-object</span>: breach, alert at once</div>
-            <div><span class="sw" style="background:#ffb020"></span><b>Outside the line</b> → <span class="mono">outside-person</span> / <span class="mono">outside-object</span>: warning after the dwell time</div>
-            <div><span class="sw" style="background:#3ddc97"></span>Inside → not reported</div>
-            <div><span class="sw" style="background:#777"></span>In an <b>ignore region</b> → never reported</div>
-            <div>The point that counts is the bottom centre of each box (where the person stands).</div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <div class="card ze-card" id="zone-editor"></div>
   </section>
 
   <!-- ═══ Live view ═══ -->
@@ -182,6 +146,7 @@
 
 <script src="js/shell.js"></script>
 <script src="js/api.js"></script>
+<script src="js/zone-editor.js"></script>
 <script src="js/deepstream.js"></script>
 </body>
 </html>

@@ -1,12 +1,14 @@
 /* ────────────────────────────────────────────────────────────────────────────
  * LIVE PERIMETER PAGE — today only.
  *
- * Two zones drive everything (see the Pharma Perimeter deck, slide 4):
- *   1 Perimeter Alert Region — any detection alerts INSTANTLY
- *   2 Outside perimeter      — alerts as an EARLY WARNING after a dwell rule
+ * Zones come from the regions drawn per camera (Alerts → Regions):
+ *   1 Perimeter Alert Region — the client's presence rule alerts at once
+ *   2 Outside perimeter      — the client's dwell rules give the early warning
+ *   (watch regions: their own dwell / presence / count rules)
  *
- * The table lists ONE ROW PER DETECTION. Sessions keep running underneath so
- * the dwell rule still accumulates across frames and fires its early warning.
+ * The table lists ONE ROW PER DETECTION; its dwell timer counts against the
+ * shortest enabled dwell rule for that class. ALERTS are decided by the
+ * backend rule engine (alert_rules.py), never by this page.
  *
  * Zone rules come from the backend (/api/perimeter/rules), never hardcoded.
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -44,23 +46,12 @@ function pageSlice(rows, page) {
 
 /* Shared pager UI — hidden when everything fits on one page */
 function renderLivePager(elId, page, total, fnName) {
+  // the Workplace Analytics pager (same markup as shell.js pager()); page is 0-based here
   const el = document.getElementById(elId);
   if (!el) return;
-  if (total <= LIVE_PAGE_SIZE) { el.style.display = 'none'; return; }
-
-  const last = Math.max(0, Math.ceil(total / LIVE_PAGE_SIZE) - 1);
-  const from = page * LIVE_PAGE_SIZE + 1;
-  const to = Math.min(total, (page + 1) * LIVE_PAGE_SIZE);
-  const atStart = page === 0;
-  const atEnd = page >= last;
-
-  el.style.display = 'flex';
-  el.innerHTML = `
-    <button class="pager-btn" ${atStart ? 'disabled' : ''} onclick="${fnName}(0)">« First</button>
-    <button class="pager-btn" ${atStart ? 'disabled' : ''} onclick="${fnName}(${page - 1})">‹ Prev</button>
-    <span class="pager-status">${from}–${to} of ${total} · page ${page + 1} of ${last + 1}</span>
-    <button class="pager-btn" ${atEnd ? 'disabled' : ''} onclick="${fnName}(${page + 1})">Next ›</button>
-    <button class="pager-btn" ${atEnd ? 'disabled' : ''} onclick="${fnName}(${last})">Last »</button>`;
+  el.style.display = '';
+  el.className = 'pager';
+  el.innerHTML = waPagerHtml(page, total, LIVE_PAGE_SIZE, fnName);
 }
 
 function gotoDetPage(n) { detPage = n; renderDetectionsTable(); }
@@ -97,7 +88,7 @@ function zoneOf(badge) {
   if (!perimeterRules) return 'unknown';
   const k = normBadge(badge);
   if ((perimeterRules.breach_badges || []).includes(k)) return 'breach';
-  if (Object.prototype.hasOwnProperty.call(perimeterRules.dwell_rules || {}, k)) return 'outside';
+  if ((perimeterRules.outside_badges || []).includes(k)) return 'outside';
   if (COUNTED_RE.test(k)) return 'outside';
   if ((perimeterRules.inside_badges || []).includes(k)) return 'inside';
   return 'unknown';
@@ -112,9 +103,8 @@ function dwellMinutesFor(badge) {
   if ((perimeterRules.breach_badges || []).includes(k)) return null;
   const rules = perimeterRules.dwell_rules || {};
   if (Object.prototype.hasOwnProperty.call(rules, k)) return rules[k];
-  if (COUNTED_RE.test(k)) return rules['outside-person'] || 10;
-  if ((perimeterRules.inside_badges || []).includes(k)) return null;
-  return perimeterRules.default_dwell_minutes;
+  if (COUNTED_RE.test(k)) return rules['outside-person'] || null;
+  return null;                                   // no enabled dwell rule covers this class
 }
 /* "Outside-person-3-object-2" → {persons: 3, objects: 2} */
 function countsOf(badge) {
@@ -131,7 +121,7 @@ function countsText(c) {
 const ZONE_TAG = {
   breach:  { cls: 'breach', label: 'ALERT REGION' },
   outside: { cls: 'warn',   label: 'OUTSIDE' },
-  inside:  { cls: 'ok',     label: 'INSIDE' },
+  inside:  { cls: 'ok',     label: 'WATCH' },
   unknown: { cls: 'muted',  label: 'UNZONED' },
 };
 
@@ -208,16 +198,18 @@ function groupAlerts(alerts) {
   for (const a of alerts) {
     // One slot per class PER CAMERA: the same class on two cameras is two
     // different objects, each with its own Ack.
-    const key = `${a.badge}|${a.camera}`;
+    // One slot per alert rule PER CAMERA (rules from the Alerts page; older alerts: per class)
+    const key = `${a.rule_name || a.badge}|${a.camera}`;
+    const crit = a.severity === 'critical' || a.kind === 'breach';
     const g = groups.get(key);
     if (!g) {
-      groups.set(key, { key, badge: a.badge, latest: a, count: 1, ids: [a.id],
-                        alerts: [a], breach: a.kind === 'breach' });
+      groups.set(key, { key, badge: a.rule_name || a.badge, latest: a, count: 1, ids: [a.id],
+                        alerts: [a], breach: crit });
     } else {
       g.count++;
       g.ids.push(a.id);
       g.alerts.push(a);
-      g.breach = g.breach || a.kind === 'breach';
+      g.breach = g.breach || crit;
       // alerts arrive newest-first, so the first one seen is the latest
     }
   }
@@ -243,20 +235,20 @@ function renderBanner() {
     return;
   }
 
-  const breaches = open.filter(a => a.kind === 'breach').length;
+  const breaches = open.filter(a => a.severity === 'critical' || a.kind === 'breach').length;
   const warnings = open.length - breaches;
   const groups = groupAlerts(open);
 
   banner.style.display = 'block';
   banner.classList.toggle('has-breach', breaches > 0);
 
-  if (head) head.textContent = breaches > 0 ? 'PERIMETER BREACH' : 'EARLY WARNING';
+  if (head) head.textContent = breaches > 0 ? 'PERIMETER ALERT' : 'WARNING';
   if (sub) {
     const parts = [];
-    if (breaches) parts.push(`${breaches} breach`);
-    if (warnings) parts.push(`${warnings} early warning`);
+    if (breaches) parts.push(`${breaches} critical`);
+    if (warnings) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
     const extra = groups.length > BANNER_MAX_CHIPS
-      ? ` · ${groups.length} classes` : '';
+      ? ` · ${groups.length} rules / cameras` : '';
     sub.textContent = `${parts.join(' · ')}${extra} · unacknowledged`;
   }
   if (ackAll) ackAll.textContent = `✓ ACK ALL (${open.length})`;
@@ -312,9 +304,9 @@ function renderBanner() {
       <div class="alert-chip ${g.breach ? 'breach' : 'warning'} ${g.count > 1 ? 'grouped' : ''}"
            onclick="${chipClick}" title="${g.count > 1 ? `Click to see all ${g.count} alerts` : 'Click to see the snapshot'}">
         <div class="alert-chip-body">
-          <div class="alert-chip-kind">${g.breach ? '⚡ BREACH' : '⏱ EARLY WARNING'}${repeat}</div>
-          <div class="alert-chip-badge">${escapeHtml(a.badge)}</div>
-          <div class="alert-chip-meta">${escapeHtml(a.camera)} · ${detail}${g.breach ? '' : ` · ${mins} min`} · ${fmtTime(ts)}</div>
+          <div class="alert-chip-kind">${g.breach ? '⚡' : '⏱'} ${escapeHtml(a.rule_name || (g.breach ? 'BREACH' : 'EARLY WARNING'))}${repeat}</div>
+          <div class="alert-chip-badge">${escapeHtml(a.message || a.badge)}</div>
+          <div class="alert-chip-meta">${escapeHtml(a.camera)} · ${a.rule_id ? escapeHtml(a.zone || '') : detail}${g.breach || a.rule_id ? '' : ` · ${mins} min`} · ${fmtTime(ts)}</div>
           ${g.count > 1 ? media : ''}
         </div>
         ${g.count === 1 ? media : ''}
@@ -443,8 +435,8 @@ function renderKPIs() {
   if (sub && perimeterRules) {
     const mins = [...new Set(Object.values(perimeterRules.dwell_rules || {}))];
     sub.textContent = mins.length
-      ? `dwell · outside perimeter · ${mins.sort((a, b) => a - b).join('/')} min`
-      : 'dwell · outside perimeter';
+      ? `dwell & other rules · ${mins.sort((a, b) => a - b).join('/')} min`
+      : 'dwell, count & offline rules';
   }
 }
 
@@ -462,10 +454,17 @@ function renderZoneStrip() {
   const rule = document.getElementById('zone-outside-rule');
   if (rule && perimeterRules) {
     const rules = perimeterRules.dwell_rules || {};
-    const parts = Object.entries(rules).map(([b, m]) => `${b} ${m} min`);
+    const parts = Object.entries(rules).filter(([b]) => b.startsWith('outside-')).map(([b, m]) => `${b} ${m} min`);
     rule.textContent = parts.length
       ? `Strip beyond the wall — early warning after ${parts.join(' · ')}`
-      : 'Strip beyond the wall — dwell-based early warning';
+      : 'Strip beyond the wall — no dwell rule switched on (Alerts → Alert rules)';
+  }
+  const br = document.getElementById('zone-breach-rule');
+  if (br && perimeterRules) {
+    const names = perimeterRules.instant_rules || [];
+    br.textContent = names.length
+      ? `Wall top & concertina wire — alerts at once (${names.join(', ')})`
+      : 'Wall top & concertina wire — no instant rule switched on (Alerts → Alert rules)';
   }
 }
 
@@ -616,9 +615,9 @@ function renderAlertLog() {
     return;
   }
 
-  const breaches = active.filter(a => a.kind === 'breach').length;
+  const breaches = active.filter(a => a.severity === 'critical' || a.kind === 'breach').length;
   if (meta) {
-    meta.textContent = `${active.length} active · ${breaches} breach · ${active.length - breaches} early warning`;
+    meta.textContent = `${active.length} active · ${breaches} critical · ${active.length - breaches} warning`;
   }
 
   activePage = clampPage(activePage, active.length);
@@ -626,17 +625,17 @@ function renderAlertLog() {
 
   tbody.innerHTML = pageSlice(active, activePage).map(a => {
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
-    const isBreach = a.kind === 'breach';
+    const isBreach = a.severity === 'critical' || a.kind === 'breach';
     const mins = presentMinutes(a);
-    const counts = a.counts || countsOf(a.badge);
+    const counts = a.rule_id ? null : (a.counts || countsOf(a.badge));
 
-    const event = isBreach
-      ? 'Object in alert region'
+    const event = a.rule_id ? (a.message || a.rule_name)
+      : isBreach ? 'Object in alert region'
       : `Present ${mins} min · over ${dwellMinutesFor(a.badge) || 10} min limit`;
 
     const typeTag = isBreach
-      ? `<span class="status-tag alert">BREACH</span>`
-      : `<span class="status-tag warn">EARLY WARNING</span>`;
+      ? `<span class="status-tag alert">${escapeHtml(a.rule_name || 'BREACH')}</span>`
+      : `<span class="status-tag warn">${escapeHtml(a.rule_name || 'EARLY WARNING')}</span>`;
 
     const thumb = a.has_image
       ? `<div class="alert-thumb"><img src="/images/${encodeURIComponent(a.image)}" alt="" loading="lazy"
@@ -680,9 +679,9 @@ function renderAckedLog() {
   const sorted = [...acked].sort((x, y) =>
     new Date(y.acked_at || y.triggered_at) - new Date(x.acked_at || x.triggered_at));
 
-  const breaches = sorted.filter(a => a.kind === 'breach').length;
+  const breaches = sorted.filter(a => a.severity === 'critical' || a.kind === 'breach').length;
   if (meta) {
-    meta.textContent = `${sorted.length} acknowledged · ${breaches} breach · ${sorted.length - breaches} early warning`;
+    meta.textContent = `${sorted.length} acknowledged · ${breaches} critical · ${sorted.length - breaches} warning`;
   }
 
   ackedPage = clampPage(ackedPage, sorted.length);
@@ -690,17 +689,17 @@ function renderAckedLog() {
 
   tbody.innerHTML = pageSlice(sorted, ackedPage).map(a => {
     const ts = new Date(a.triggered_at.endsWith('Z') ? a.triggered_at : a.triggered_at + 'Z');
-    const isBreach = a.kind === 'breach';
+    const isBreach = a.severity === 'critical' || a.kind === 'breach';
     const mins = presentMinutes(a);
-    const counts = a.counts || countsOf(a.badge);
+    const counts = a.rule_id ? null : (a.counts || countsOf(a.badge));
 
-    const event = isBreach
-      ? 'Object in alert region'
+    const event = a.rule_id ? (a.message || a.rule_name)
+      : isBreach ? 'Object in alert region'
       : `Present ${mins} min · over ${dwellMinutesFor(a.badge) || 10} min limit`;
 
     const typeTag = isBreach
-      ? `<span class="status-tag alert">BREACH</span>`
-      : `<span class="status-tag warn">EARLY WARNING</span>`;
+      ? `<span class="status-tag alert">${escapeHtml(a.rule_name || 'BREACH')}</span>`
+      : `<span class="status-tag warn">${escapeHtml(a.rule_name || 'EARLY WARNING')}</span>`;
 
     const thumb = a.has_image
       ? `<div class="alert-thumb"><img src="/images/${encodeURIComponent(a.image)}" alt="" loading="lazy"

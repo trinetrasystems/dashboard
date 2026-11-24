@@ -193,6 +193,8 @@ def check_config(raw: dict) -> dict:
         seen.add(name.lower())
         if not re.match(r"^(rtsp|rtsps)://\S+$", uri) and not re.match(r"^file:///\S+$", uri):
             raise ValueError(f"{name}: the stream address starts with rtsp:// (a camera) or file:/// (a video on the Jetson)")
+        if uri.startswith("file://") and (".." in uri or not re.search(r"\.(mp4|mkv|avi|mov|h264|h265|264|265|ts|m4v)$", uri, re.I)):
+            raise ValueError(f"{name}: a video file (.mp4, .mkv, .avi, .mov, .h264, .h265, .ts)")
         if uri.startswith("file://") and available() and not _exists(uri[7:]):
             raise ValueError(f"{name}: no video file {uri[7:]} on the Jetson")
         tr = s.get("transport", "tcp")
@@ -745,9 +747,10 @@ def local_stop():
 # API (/api/ds/*: the Trinetra team only — access.py)
 # ════════════════════════════════════════════════════════════════════════════
 async def _body(request: Request) -> dict:
+    import security
     try:
-        b = await request.json()
-    except ValueError:
+        b = security.parse_json_object(await request.body())
+    except Exception:
         raise HTTPException(422, "Invalid request")
     if not isinstance(b, dict):
         raise HTTPException(422, "Invalid request")
@@ -771,7 +774,7 @@ def api_status():
     return {"available": available(), "running": bool(pid), "pid": pid, "intent": intent(), "state": st,
             "exit_reason": exit_reason(), "health": host_health(), "job": JOB.summary() if JOB else None,
             "model": model["name"] if model else None, "engine": plan, "cameras": len(streams),
-            "zones_drawn": sorted(c for c, z in load_zones().items() if z and (z.get("line") or z.get("alert")))}
+            "zones_drawn": sorted(c for c, z in load_zones().items() if z and (z.get("line") or Z.regions(z)))}
 
 
 @router.get("/api/ds/config")
@@ -800,6 +803,8 @@ async def api_probe(request: Request):
     uri, tr = str(body.get("uri", "")).strip(), "udp" if body.get("transport") == "udp" else "tcp"
     if not re.match(r"^(rtsp|rtsps)://\S+$|^file:///\S+$", uri):
         raise HTTPException(400, "The address starts with rtsp:// or file:///")
+    if uri.startswith("file://") and (".." in uri or not re.search(r"\.(mp4|mkv|avi|mov|h264|h265|264|265|ts|m4v)$", uri, re.I)):
+        raise HTTPException(400, "A video file (.mp4, .mkv, .avi, .mov, .h264, .h265, .ts)")
     import asyncio
     return await asyncio.to_thread(probe, uri, tr)
 

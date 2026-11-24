@@ -44,9 +44,8 @@ function ruleTextFor(zone, badge) {
   const rules = perimeterRules.dwell_rules || {};
   if (Object.prototype.hasOwnProperty.call(rules, k)) return `${rules[k]} min dwell`;
   // A counted class inherits the outside-person rule, matching the backend.
-  if (COUNTED_RE.test(k)) return `${rules['outside-person'] || 10} min dwell`;
-  if ((perimeterRules.inside_badges || []).includes(k)) return 'no alarm';
-  return `${perimeterRules.default_dwell_minutes} min dwell`;
+  if (COUNTED_RE.test(k) && rules['outside-person']) return `${rules['outside-person']} min dwell`;
+  return 'by alert rules';
 }
 
 async function refreshAll(resetPage = false) {
@@ -96,26 +95,10 @@ async function gotoPage(n) {
 window.gotoPage = gotoPage;
 
 function renderPager(total) {
-  const status = document.getElementById('pager-status');
   const pager = document.getElementById('log-pager');
-  if (!status || !pager) return;
-
-  if (total === 0) {
-    pager.style.display = 'none';
-    return;
-  }
-  pager.style.display = 'flex';
-
-  const from = logPage * PAGE_SIZE + 1;
-  const to = Math.min(total, (logPage + 1) * PAGE_SIZE);
-  status.textContent = `${from}–${to} of ${total} · page ${logPage + 1} of ${lastPage + 1}`;
-
-  const atStart = logPage === 0;
-  const atEnd = logPage >= lastPage;
-  document.getElementById('pager-first').disabled = atStart;
-  document.getElementById('pager-prev').disabled = atStart;
-  document.getElementById('pager-next').disabled = atEnd;
-  document.getElementById('pager-last').disabled = atEnd;
+  if (!pager) return;
+  pager.style.display = '';
+  pager.innerHTML = waPagerHtml(logPage, total, PAGE_SIZE, 'gotoPage');   // the Workplace Analytics pager
 }
 
 function initFilters() {

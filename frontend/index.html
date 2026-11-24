@@ -61,13 +61,13 @@
       <div class="kpi-icon"><span data-icon="walk"></span></div>
       <div><div class="kpi-label">Early Warnings</div>
         <div class="kpi-value" id="kpi-warning">—</div>
-        <div class="kpi-delta" id="kpi-warning-sub">dwell · outside perimeter</div></div>
+        <div class="kpi-delta" id="kpi-warning-sub">dwell, count &amp; offline rules</div></div>
     </div>
     <div class="kpi" data-tone="blue">
       <div class="kpi-icon"><span data-icon="bell"></span></div>
       <div><div class="kpi-label">Number of Alerts Today</div>
         <div class="kpi-value" id="kpi-total">—</div>
-        <div class="kpi-delta">breach + early warning</div></div>
+        <div class="kpi-delta">every alert rule</div></div>
     </div>
   </div>
   </div>
@@ -79,7 +79,7 @@
         <span class="zone-num">1</span>
         <span class="zone-name">Perimeter Alert Region</span>
       </div>
-      <div class="zone-rule">Wall top &amp; concertina wire — any detection alerts instantly</div>
+      <div class="zone-rule" id="zone-breach-rule">Wall top &amp; concertina wire — alerts at once</div>
       <div class="zone-foot">
         <span class="zone-count" id="zone-breach-count">—</span>
         <span class="zone-unit">detections today</span>
@@ -105,7 +105,7 @@
       <div class="card-header">
         <div>
           <div class="card-title">Today's Detections</div>
-          <div class="card-sub" id="watch-sub">one row per detection · dwell timed against each class's rule</div>
+          <div class="card-sub" id="watch-sub">one row per detection · dwell timed against the shortest dwell rule for its class</div>
         </div>
         <div class="card-sub">▼ newest first · today only</div>
       </div>

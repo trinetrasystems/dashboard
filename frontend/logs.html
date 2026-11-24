@@ -46,7 +46,7 @@
       <option value="">All zones</option>
       <option value="breach">Perimeter Alert Region</option>
       <option value="outside">Outside perimeter</option>
-      <option value="inside">Inside factory</option>
+      <option value="inside">Watch region</option>
       <option value="unknown">Unzoned</option>
     </select>
     <span class="filter-label">Class</span>
@@ -61,7 +61,7 @@
     <div class="card-header">
       <div>
         <div class="card-title">Detection Log</div>
-        <div class="card-sub">complete history · every frame the edge sent · click a row for the snapshot</div>
+        <div class="card-sub">complete history · every image the pipeline saved · click a row for the snapshot</div>
       </div>
       <div class="card-sub" id="log-meta">—</div>
     </div>
@@ -73,13 +73,7 @@
         <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-dim);">loading…</td></tr>
       </tbody>
     </table></div>
-    <div class="pager" id="log-pager">
-      <button class="pager-btn" id="pager-first" onclick="gotoPage(0)" title="First page">« First</button>
-      <button class="pager-btn" id="pager-prev" onclick="gotoPage(currentPage - 1)">‹ Prev</button>
-      <span class="pager-status" id="pager-status">—</span>
-      <button class="pager-btn" id="pager-next" onclick="gotoPage(currentPage + 1)">Next ›</button>
-      <button class="pager-btn" id="pager-last" onclick="gotoPage(lastPage)" title="Last page">Last »</button>
-    </div>
+    <div class="pager" id="log-pager"></div>
   </div>
 
   <!-- 4-chart grid -->

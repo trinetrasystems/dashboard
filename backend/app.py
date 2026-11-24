@@ -45,8 +45,10 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 import access
+import alert_rules
 import config
 import ds_control
+import speaker
 import housekeeping
 import security
 
@@ -95,6 +97,8 @@ def init_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_kind ON alerts(kind, triggered_at DESC)")
         # Sign-in accounts, sessions and the Activity Logs (access.py)
         ACCESS.init_schema(conn)
+        # Alert rules (the Alerts page) + frame observations; the alerts table also holds rule alerts
+        alert_rules.migrate(conn)
         conn.commit()
     finally:
         conn.close()
@@ -153,7 +157,7 @@ def parse_filename(name: str):
     try:
         # Filename timestamp is LOCAL time on the edge Jetson.
         # Convert to UTC for consistent storage (server stores everything in UTC).
-        dt_local = datetime.strptime(m["ts"], "%Y%m%d-%H%M%S")
+        dt_local = datetime.strptime(m["ts"], "%Y%m%d-%H%M%S") + timedelta(milliseconds=int(m["ms"] or 0))
         local_offset = datetime.now() - datetime.utcnow()
         dt = dt_local - local_offset
     except ValueError:
@@ -161,10 +165,16 @@ def parse_filename(name: str):
     return m["camera"], m["badge"], dt
 
 
+# The alerts come from the alert rules (alert_rules.py, the Alerts page) since 25 Nov 2026; the class-based alerts below
+# (instant breach classes, per-class dwell from the settings file) are kept switched off. The sessions they kept still
+# feed the Visits page.
+LEGACY_CLASS_ALERTS = False
+
+
 def _alert_if_dwell_met(conn, sess, pending_alerts):
     """Raise the early warning for a presence that is being closed, if it met
     its dwell rule and has not alerted yet. Exactly-once via alert_sent."""
-    if pending_alerts is None or sess["alert_sent"]:
+    if not LEGACY_CLASS_ALERTS or pending_alerts is None or sess["alert_sent"]:
         return
     dwell_min = config.dwell_minutes_for(sess["badge"])
     if dwell_min is None:
@@ -494,7 +504,7 @@ def handle_new_file(path: Path):
                     "SELECT 1 FROM whitelist WHERE badge=?", (badge,)
                 ).fetchone() is not None
 
-                if is_loitering and session_id and det_type == "sighting" and not is_whitelisted:
+                if LEGACY_CLASS_ALERTS and is_loitering and session_id and det_type == "sighting" and not is_whitelisted:
                     sess_row = conn.execute(
                         "SELECT first_seen, last_seen, last_camera FROM sessions WHERE id=?",
                         (session_id,)
@@ -517,7 +527,7 @@ def handle_new_file(path: Path):
 
                 # ── INSTANT BREACH: Perimeter Alert Region needs no dwell ──
                 breach = None
-                if is_breach and session_id and not is_whitelisted:
+                if LEGACY_CLASS_ALERTS and is_breach and session_id and not is_whitelisted:
                     if _breach_cooldown_passed(conn, badge, camera, ts):
                         bcur = conn.execute(
                             "INSERT INTO alerts(session_id, badge, triggered_at, "
@@ -538,7 +548,7 @@ def handle_new_file(path: Path):
                         }
                     else:
                         print(f"[breach] cooldown active — {badge} @ {camera} not re-alerted")
-                elif is_breach and is_whitelisted:
+                elif LEGACY_CLASS_ALERTS and is_breach and is_whitelisted:
                     print(f"[breach] suppressed: {badge} is whitelisted")
         finally:
             conn.close()
@@ -549,6 +559,8 @@ def handle_new_file(path: Path):
         shutil.move(str(path), Path(config.ARCHIVE_DIR) / path.name)
     except FileNotFoundError:
         pass
+
+    _run_alert_rules(path, camera, badge, ts)
 
     broadcast_sync({
         "type": "detection",
@@ -580,6 +592,99 @@ def handle_new_file(path: Path):
         )
 
 
+def _run_alert_rules(path: Path, camera: str, badge: str, ts_utc: datetime):
+    """the frame description the pipeline wrote next to the image (<image>.json) → the alert rules; an image without one
+    (an edge device, a test image) counts by its file-name class"""
+    side, meta = path.with_suffix(".json"), None
+    try:
+        if side.is_file() and side.stat().st_size <= 256_000:
+            meta = json.loads(side.read_text(errors="replace"))
+            if not isinstance(meta, dict):
+                meta = None
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[rules] frame description not read ({side.name}): {e!r}")
+    try:
+        side.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        RULES.ingest(camera, ts_utc + (datetime.now() - datetime.utcnow()), path.name, meta, badge)
+    except Exception as e:
+        print(f"[rules] {path.name}: {e!r}")
+
+
+def _rule_alert_notify(alert: dict):
+    """a new rule alert (any thread) → the dashboards (websocket) + Telegram / email when set up (optional: offline sites
+    see the alert on the dashboard)"""
+    print(f"[alert] {alert['severity'].upper()} · {alert['rule_name']} · {alert['camera']} · {alert['message']}")
+    speaker.on_alert(alert)                          # the Bluetooth speaker on the Jetson, when switched on
+    if _main_loop:
+        asyncio.run_coroutine_threadsafe(fire_rule_alert(alert), _main_loop)
+
+
+async def fire_rule_alert(alert: dict):
+    await wsm.broadcast({"type": "alert", **{k: alert[k] for k in ("alert_id", "rule_name", "severity", "kind", "camera",
+                                                                   "zone", "message", "image", "sound")}})
+    text = (f"{'🚨' if alert['severity'] == 'critical' else '⚠️'} {alert['rule_name'].upper()}\n"
+            f"📷 Camera : {alert['camera']}\n🧱 Region : {alert['zone']}\n📝 {alert['message']}\n"
+            f"🕐 {datetime.now().strftime('%d %b %Y  %H:%M:%S')}")
+    if config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_IDS:
+        photo = Path(config.ARCHIVE_DIR) / alert["image"] if alert.get("image") else None
+        for chat_id in config.TELEGRAM_CHAT_IDS:
+            try:
+                if photo and photo.is_file():
+                    await _send_telegram_photo(chat_id, text, photo)
+                else:
+                    await _send_telegram(chat_id, text)
+            except Exception as e:
+                print(f"[alert] telegram to {chat_id}: {type(e).__name__}")
+        _mark_alert(alert["alert_id"], "telegram_sent")
+    if config.SMTP_USER and config.SMTP_TO and config.SMTP_PASS:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _send_email, f"Trinetra alert: {alert['rule_name']}", text)
+            _mark_alert(alert["alert_id"], "email_sent")
+        except Exception as e:
+            print(f"[alert] email: {type(e).__name__}")
+
+
+RULES = alert_rules.Engine(lambda: db(), _db_lock, _rule_alert_notify, lambda: config.PRESENCE_GAP_SECONDS)
+
+
+async def offline_rules_loop():
+    """every 30 s: cameras without video (or the pipeline down while it should run) → the offline rules"""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            if not ds_control.available():
+                continue
+            cfg = ds_control.load_config()
+            cams = [s["name"] for s in cfg["streams"] if s["enabled"]]
+            st = ds_control.running_state()
+            streams = {s["name"]: s.get("last_frame_s") for s in st.get("streams", [])}
+            await asyncio.to_thread(RULES.check_offline, datetime.now(), cams, bool(ds_control.pid_alive()),
+                                    ds_control.intent(), streams)
+        except Exception as e:
+            print(f"[rules] offline check: {e!r}")
+
+
+async def speaker_loop():
+    """every 5 s: beep again on the Bluetooth speaker while an alert it is for stays unacknowledged (when set)"""
+    while True:
+        await asyncio.sleep(5)
+        try:
+            if not speaker.load()["repeat_s"]:
+                continue
+            conn = db()
+            try:
+                rows = conn.execute("SELECT COALESCE(severity, CASE WHEN kind='breach' THEN 'critical' ELSE 'warning' END), "
+                                    "COALESCE(sound, 1) FROM alerts WHERE acknowledged=0 AND rule_id IS NOT NULL").fetchall()
+            finally:
+                conn.close()
+            speaker.repeat_tick([(r[0], bool(r[1])) for r in rows])
+        except Exception as e:
+            print(f"[speaker] repeat: {e!r}")
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # FILE WATCHER (inotify-based via watchdog)
 # ════════════════════════════════════════════════════════════════════════════
@@ -595,11 +700,21 @@ class IncomingHandler(FileSystemEventHandler):
             handle_new_file(Path(event.dest_path))
 
 
+def _by_frame_time(p: Path):
+    """images in the order they were taken (the time in the file name; else the file time): a backlog after a restart
+    is replayed in order, so the alert rules see presences as they happened"""
+    m = config.FILENAME_RE.match(p.name)
+    try:
+        return ((m["ts"] + "-" + (m["ms"] or "000")) if m else datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y%m%d-%H%M%S-000"), p.name)
+    except OSError:
+        return ("", p.name)
+
+
 def scan_existing():
     """At startup, process any files left in incoming/ from a previous run."""
     incoming = Path(config.INCOMING_DIR)
     incoming.mkdir(parents=True, exist_ok=True)
-    files = sorted(incoming.glob("*.jpg"))
+    files = sorted(incoming.glob("*.jpg"), key=_by_frame_time)   # in time order: presences / alerts as they happened
     if files:
         print(f"[ingest] catching up on {len(files)} leftover file(s)")
     for f in files:
@@ -614,7 +729,7 @@ def incoming_sweeper():
         time.sleep(10)
         try:
             now = time.time()
-            for f in sorted(Path(config.INCOMING_DIR).glob("*.jpg")):
+            for f in sorted(Path(config.INCOMING_DIR).glob("*.jpg"), key=_by_frame_time):
                 try:
                     if now - f.stat().st_mtime >= 3:
                         handle_new_file(f)
@@ -807,7 +922,7 @@ async def check_loitering():
                   AND badge NOT IN (SELECT badge FROM whitelist)
             """).fetchall()
 
-            for r in rows:
+            for r in (rows if LEGACY_CLASS_ALERTS else []):
                 # Per-badge dwell threshold:
                 #   outside-perimeter classes use their own rule (default 10 min)
                 #   breach classes already alerted instantly  → None, skip
@@ -1044,37 +1159,6 @@ def _send_email(subject: str, body: str):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# HEARTBEAT STATUS — Jetson liveness via /data/heartbeats/*.txt mtime
-# ════════════════════════════════════════════════════════════════════════════
-
-def jetson_status() -> dict:
-    """Inspect /data/heartbeats/ for hb_<jetson>.txt files."""
-    Path(config.HEARTBEATS_DIR).mkdir(parents=True, exist_ok=True)
-    now = time.time()
-    seen = {}
-    for f in Path(config.HEARTBEATS_DIR).glob("hb_*.txt"):
-        name = f.stem.replace("hb_", "", 1)
-        seen[name] = now - f.stat().st_mtime  # age in seconds
-
-    jetsons = []
-    for name in config.EXPECTED_JETSONS:
-        age = seen.get(name)
-        online = age is not None and age < config.HEARTBEAT_STALE_SECONDS
-        jetsons.append({
-            "name": name,
-            "online": online,
-            "last_heartbeat_age_seconds": age,
-        })
-
-    online_count = sum(1 for j in jetsons if j["online"])
-    return {
-        "online": online_count,
-        "total": len(jetsons),
-        "jetsons": jetsons,
-    }
-
-
-# ════════════════════════════════════════════════════════════════════════════
 # HOUSEKEEPING — image retention, disk guard, Activity Logs pruning, nightly DB backup (housekeeping.py)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1088,10 +1172,51 @@ async def housekeeping_loop():
             if n % 6 == 0:
                 await asyncio.to_thread(housekeeping.retention)
                 await asyncio.to_thread(ACCESS.prune)
+                await asyncio.to_thread(_prune_observations)
         except Exception as e:
             print(f"[housekeeping] {e!r}")
         n += 1
         await asyncio.sleep(600)
+
+
+def _delete_batches(sql_ids: str, args: tuple, batch: int = 5000) -> int:
+    """delete in small batches (the dashboard and the ingest keep the database between batches)"""
+    total = 0
+    while True:
+        conn = db()
+        try:
+            with _db_lock, conn:
+                n = conn.execute(sql_ids.format(batch=batch), args).rowcount
+        finally:
+            conn.close()
+        total += n
+        if n < batch:
+            return total
+        time.sleep(0.2)
+
+
+def _prune_observations():
+    """frame observations: the alert rules look back at most a day (a dwell rule of 24 h) — 3 days kept; Detection Log
+    rows + finished visits older than TRINETRA_DETECTION_RETENTION_DAYS; a frame description left in incoming/ without
+    its image (the pipeline stopped between the two) goes after an hour"""
+    n = _delete_batches("DELETE FROM observations WHERE id IN (SELECT id FROM observations WHERE ts<? LIMIT {batch})",
+                        ((datetime.now() - timedelta(days=3)).isoformat(timespec="seconds"),))
+    d = v = 0
+    if config.DETECTION_RETENTION_DAYS > 0:
+        cut = (datetime.utcnow() - timedelta(days=config.DETECTION_RETENTION_DAYS)).isoformat()
+        d = _delete_batches("DELETE FROM detections WHERE id IN (SELECT id FROM detections WHERE timestamp<? LIMIT {batch})", (cut,))
+        v = _delete_batches("DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE closed=1 AND last_seen<? "
+                            "AND id NOT IN (SELECT session_id FROM alerts WHERE session_id IS NOT NULL) "
+                            "AND NOT EXISTS (SELECT 1 FROM detections d WHERE d.session_id=sessions.id) LIMIT {batch})", (cut,))
+                                                       # (a visit still named by a detection or an alert stays)
+        if d:
+            _stats_reset(); _SUMMARY.clear()
+    stale = [f for f in Path(config.INCOMING_DIR).glob("*.json") if time.time() - f.stat().st_mtime > 3600]
+    for f in stale:
+        f.unlink(missing_ok=True)
+    if n or d or v or stale:
+        print(f"[housekeeping] removed: {n} frame observation(s) > 3 days, {d} detection(s) + {v} visit(s) > "
+              f"{config.DETECTION_RETENTION_DAYS} days, {len(stale)} stray frame description(s)")
 
 
 async def backup_loop():
@@ -1123,6 +1248,8 @@ async def lifespan(app: FastAPI):
     loiter_task = asyncio.create_task(loitering_loop())
     house_task  = asyncio.create_task(housekeeping_loop())
     backup_task = asyncio.create_task(backup_loop())
+    offline_task = asyncio.create_task(offline_rules_loop())
+    speaker_task = asyncio.create_task(speaker_loop())
     if ds_control.available():
         ds_control.start()                           # DeepStream page: supervisor (keeps the pipeline running when wanted)
         print("[ds] DeepStream control on (pipeline restarted automatically when it was running)")
@@ -1137,7 +1264,7 @@ async def lifespan(app: FastAPI):
         print("[trinetra] shutting down")
         observer.stop()
         observer.join(timeout=2)
-        for t in (loiter_task, house_task, backup_task):
+        for t in (loiter_task, house_task, backup_task, offline_task, speaker_task):
             t.cancel()
         if _DB_KEEPER is not None:
             _DB_KEEPER.close()
@@ -1209,6 +1336,9 @@ def _no_cache(path: str, response):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
 
 
+MAX_BODY = 1_000_000                                  # bytes: the largest real request (regions of a camera) is far smaller
+
+
 @app.middleware("http")
 async def security_guard(request: Request, call_next):
     path, method = request.url.path, request.method
@@ -1220,6 +1350,16 @@ async def security_guard(request: Request, call_next):
         ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if response is None and ctype and ctype != "application/json":
             response = JSONResponse({"detail": "Requests must be JSON"}, 415)
+        # a body is read into memory: at most MAX_BODY, and its size must be declared (no endless chunked upload)
+        clen = request.headers.get("content-length")
+        if response is None and "chunked" in request.headers.get("transfer-encoding", "").lower():
+            response = JSONResponse({"detail": "Length required"}, 411)
+        elif response is None and clen:
+            try:
+                if int(clen) > MAX_BODY:
+                    response = JSONResponse({"detail": "Request too large"}, 413)
+            except ValueError:
+                response = JSONResponse({"detail": "Invalid request"}, 400)
     ident = await asyncio.to_thread(ACCESS.identity, request.cookies.get(SESSION_COOKIE))
     request.state.ident = ident
     need = ACCESS.route_permission(method, path)
@@ -1310,133 +1450,77 @@ def _str(body: dict, key: str, default: str = "", maxlen: int = 256) -> str:
 
 
 # ─── /api/stats — KPIs + chart data ───────────────────────────────────────
+def _utc_bounds(first_day, days: int = 1) -> tuple:
+    """local calendar days [first_day, first_day + days) → (start, end) as the stored UTC ISO text: a range the
+    timestamp index can use (date(timestamp,'localtime')=… cannot, and compared the UTC date with the local one)"""
+    from datetime import time as dtime, timezone
+    a = datetime.combine(first_day, dtime.min).astimezone(timezone.utc).replace(tzinfo=None)
+    b = datetime.combine(first_day + timedelta(days=days), dtime.min).astimezone(timezone.utc).replace(tzinfo=None)
+    return a.isoformat(), b.isoformat()
+
+
+_SERIES = {"key": None, "at": 0.0, "data": None}       # the 30-day series of the finished days (they do not change)
+
+
+def _past_series(conn, today) -> dict:
+    """detections / alerts per local day for the 29 days before today — computed at most every 15 min"""
+    if _SERIES["key"] == today and time.time() - _SERIES["at"] < 900:
+        return _SERIES["data"]
+    lo, hi = _utc_bounds(today - timedelta(days=29), 29)
+    det, alr = {}, {}
+    for r in conn.execute("SELECT date(timestamp,'localtime') d, COUNT(*) c FROM detections WHERE timestamp>=? AND timestamp<? GROUP BY d", (lo, hi)):
+        det[r["d"]] = r["c"]
+    for r in conn.execute("SELECT date(triggered_at,'localtime') d, SUM(kind='breach') b, SUM(kind!='breach') w, COUNT(*) c FROM alerts "
+                          "WHERE triggered_at>=? AND triggered_at<? GROUP BY d", (lo, hi)):
+        alr[r["d"]] = (r["b"] or 0, r["w"] or 0, r["c"])
+    _SERIES.update(key=today, at=time.time(), data={"det": det, "alr": alr})
+    return _SERIES["data"]
+
+
+def _stats_reset():
+    _SERIES["key"] = None
+
+
 @app.get("/api/stats")
 def api_stats():
+    """the top bar of every page + the Live page + the Logs charts: polled every few seconds, so today is read in ONE
+    pass over today's rows (index range) and the finished days come from a cache"""
+    today = datetime.now().date()
+    lo, hi = _utc_bounds(today)
     conn = db()
     try:
-        total_today = conn.execute(
-            "SELECT COUNT(*) FROM detections WHERE date(timestamp)=date('now','localtime')"
-        ).fetchone()[0]
-        active = conn.execute("SELECT COUNT(*) FROM sessions WHERE closed=0").fetchone()[0]
-        # Count sessions loitering by actual time elapsed, matching what the
-        # frontend banner shows. Uses first_seen age so it works immediately
-        # (no wait for the loitering loop) and includes whitelisted sessions
-        # (so the count stays > 0 even after acking a badge).
-        loitering = conn.execute(
-            "SELECT COUNT(*) FROM sessions "
-            "WHERE closed=0 "
-            "AND (julianday('now') - julianday(first_seen)) * 1440 >= ?"
-            , (config.LOITER_MINUTES,)
-        ).fetchone()[0]
+        by_badge, by_camera, hourly, det_by_zone, total_today = {}, {}, [0] * 24, {}, 0
+        for r in conn.execute("SELECT badge, camera, CAST(strftime('%H', timestamp, 'localtime') AS INT) h, COUNT(*) c FROM detections "
+                              "WHERE timestamp>=? AND timestamp<? GROUP BY badge, camera, h", (lo, hi)):
+            c = r["c"]; total_today += c
+            by_badge[r["badge"]] = by_badge.get(r["badge"], 0) + c
+            by_camera[r["camera"]] = by_camera.get(r["camera"], 0) + c
+            if r["h"] is not None and 0 <= r["h"] < 24:
+                hourly[r["h"]] += c
+        for b, c in by_badge.items():
+            z = config.zone_for(b)
+            det_by_zone[z] = det_by_zone.get(z, 0) + c
+        for z in (config.ZONE_BREACH, config.ZONE_OUTSIDE, config.ZONE_INSIDE, config.ZONE_UNKNOWN):
+            det_by_zone.setdefault(z, 0)
+        a = conn.execute("SELECT SUM(kind='breach'), SUM(kind!='breach') FROM alerts WHERE triggered_at>=? AND triggered_at<?", (lo, hi)).fetchone()
+        breaches_today, warnings_today = a[0] or 0, a[1] or 0
 
-        by_badge = conn.execute("""
-            SELECT badge, COUNT(*) AS c FROM detections
-            WHERE date(timestamp)=date('now','localtime')
-            GROUP BY badge ORDER BY c DESC LIMIT 7
-        """).fetchall()
-        by_camera = conn.execute("""
-            SELECT camera, COUNT(*) AS c FROM detections
-            WHERE date(timestamp)=date('now','localtime')
-            GROUP BY camera ORDER BY c DESC
-        """).fetchall()
+        zone_counts = {config.ZONE_BREACH: 0, config.ZONE_OUTSIDE: 0, config.ZONE_INSIDE: 0, config.ZONE_UNKNOWN: 0}
+        active = 0
+        for r in conn.execute("SELECT badge, COUNT(*) c FROM sessions WHERE closed=0 GROUP BY badge"):
+            z = config.zone_for(r["badge"]); active += r["c"]
+            zone_counts[z] = zone_counts.get(z, 0) + r["c"]
+        watching = zone_counts.get(config.ZONE_OUTSIDE, 0)
 
-        # Hourly buckets for today
-        hourly = [0] * 24
-        rows = conn.execute("""
-            SELECT CAST(strftime('%H', timestamp, 'localtime') AS INT) AS h, COUNT(*) AS c
-            FROM detections
-            WHERE date(timestamp)=date('now','localtime')
-            GROUP BY h
-        """).fetchall()
-        for r in rows:
-            hourly[r["h"]] = r["c"]
-
-        # Daily totals (last 30 days)
-        daily = [0] * 30
-        rows = conn.execute("""
-            SELECT date(timestamp,'localtime') AS d, COUNT(*) AS c
-            FROM detections
-            WHERE timestamp > datetime('now', '-30 days')
-            GROUP BY d
-        """).fetchall()
-        today = datetime.now().date()
-        for r in rows:
-            day = datetime.strptime(r["d"], "%Y-%m-%d").date()
-            idx = 29 - (today - day).days
-            if 0 <= idx < 30:
-                daily[idx] = r["c"]
-
-        # Loitering incidents (last 30 days)
-        loiter_daily = [0] * 30
-        rows = conn.execute("""
-            SELECT date(triggered_at,'localtime') AS d, COUNT(*) AS c
-            FROM alerts
-            WHERE triggered_at > datetime('now', '-30 days')
-            GROUP BY d
-        """).fetchall()
-        for r in rows:
-            day = datetime.strptime(r["d"], "%Y-%m-%d").date()
-            idx = 29 - (today - day).days
-            if 0 <= idx < 30:
-                loiter_daily[idx] = r["c"]
-
-        # -- Perimeter breakdown (zone rules live in config.py) -----------
-        breaches_today = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE kind='breach' "
-            "AND date(triggered_at,'localtime')=date('now','localtime')"
-        ).fetchone()[0]
-        warnings_today = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE kind!='breach' "
-            "AND date(triggered_at,'localtime')=date('now','localtime')"
-        ).fetchone()[0]
-
-        # Zone mapping is Python-side, so classify open sessions in Python.
-        open_rows = conn.execute(
-            "SELECT badge, first_seen FROM sessions WHERE closed=0"
-        ).fetchall()
-        zone_counts = {config.ZONE_BREACH: 0, config.ZONE_OUTSIDE: 0,
-                       config.ZONE_INSIDE: 0, config.ZONE_UNKNOWN: 0}
-        watching = 0
-        for r in open_rows:
-            z = config.zone_for(r["badge"])
-            zone_counts[z] = zone_counts.get(z, 0) + 1
-            if z == config.ZONE_OUTSIDE:
-                watching += 1
-
-        # Today's detections per zone - drives the dashboard zone strip
-        det_rows = conn.execute(
-            "SELECT badge, COUNT(*) AS c FROM detections "
-            "WHERE date(timestamp)=date('now','localtime') GROUP BY badge"
-        ).fetchall()
-        det_by_zone = {config.ZONE_BREACH: 0, config.ZONE_OUTSIDE: 0,
-                       config.ZONE_INSIDE: 0, config.ZONE_UNKNOWN: 0}
-        for r in det_rows:
-            z = config.zone_for(r["badge"])
-            det_by_zone[z] = det_by_zone.get(z, 0) + r["c"]
-
-        # Breach vs early warning over the last 30 days
-        breach_30d = [0] * 30
-        warn_30d = [0] * 30
-        rows = conn.execute(
-            "SELECT date(triggered_at,'localtime') AS d, "
-            "SUM(CASE WHEN kind='breach' THEN 1 ELSE 0 END) AS b, "
-            "SUM(CASE WHEN kind!='breach' THEN 1 ELSE 0 END) AS w "
-            "FROM alerts WHERE triggered_at > datetime('now', '-30 days') "
-            "GROUP BY d"
-        ).fetchall()
-        for r in rows:
-            day = datetime.strptime(r["d"], "%Y-%m-%d").date()
-            idx = 29 - (today - day).days
-            if 0 <= idx < 30:
-                breach_30d[idx] = r["b"] or 0
-                warn_30d[idx] = r["w"] or 0
-
-        js = jetson_status()
-
+        past = _past_series(conn, today)
+        days = [(today - timedelta(days=29 - i)).isoformat() for i in range(30)]
+        daily = [past["det"].get(d, 0) for d in days[:-1]] + [total_today]
+        breach_30d = [past["alr"].get(d, (0, 0, 0))[0] for d in days[:-1]] + [breaches_today]
+        warn_30d = [past["alr"].get(d, (0, 0, 0))[1] for d in days[:-1]] + [warnings_today]
+        alerts_30d = [past["alr"].get(d, (0, 0, 0))[2] for d in days[:-1]] + [breaches_today + warnings_today]
         return {
             "total_today": total_today,
             "active_sessions": active,
-            "loitering_count": loitering,
             "breaches_today": breaches_today,
             "warnings_today": warnings_today,
             "alerts_today": breaches_today + warnings_today,
@@ -1445,13 +1529,11 @@ def api_stats():
             "zone_detections_today": det_by_zone,
             "breach_30d": breach_30d,
             "warning_30d": warn_30d,
-            "jetsons_online": js["online"],
-            "jetsons_total": js["total"],
-            "by_badge": [[r["badge"], r["c"]] for r in by_badge],
-            "by_camera": [[r["camera"], r["c"]] for r in by_camera],
+            "by_badge": sorted(([b, c] for b, c in by_badge.items()), key=lambda x: -x[1])[:7],
+            "by_camera": sorted(([b, c] for b, c in by_camera.items()), key=lambda x: -x[1]),
             "hourly_today": hourly,
             "daily_30d": daily,
-            "loitering_30d": loiter_daily,
+            "loitering_30d": alerts_30d,
         }
     finally:
         conn.close()
@@ -1477,11 +1559,17 @@ def api_badges():
     """Return the full badge list from classes.txt PLUS any badges seen in detections.
     The 'source' field shows where each badge came from."""
     classes = set(load_classes())
+    try:                                              # + the labels of the DeepStream model in use (whitelist by label)
+        if ds_control.available():
+            m = ds_control.model_by_name(ds_control.load_config().get("model") or "")
+            classes |= set((m or {}).get("labels") or [])
+    except Exception as e:
+        print(f"[badges] model labels not read: {e!r}")
     # Also include any badges that showed up in detections but aren't in classes.txt
     conn = db()
     try:
         seen = {r[0] for r in conn.execute("SELECT DISTINCT badge FROM detections").fetchall()}
-        whitelisted = {r[0] for r in conn.execute("SELECT badge FROM whitelist").fetchall()}
+        whitelisted = {r[0].lower() for r in conn.execute("SELECT badge FROM whitelist").fetchall()}
     finally:
         conn.close()
 
@@ -1493,7 +1581,7 @@ def api_badges():
                 "badge": b,
                 "in_classes_file": b in classes,
                 "auto_discovered": b in seen and b not in classes,
-                "whitelisted": b in whitelisted,
+                "whitelisted": b.lower() in whitelisted,
             } for b in all_badges
         ],
     }
@@ -1612,7 +1700,7 @@ def api_visits(badge: Optional[str] = None, status: str = "all",
         rows = conn.execute(f"""
             SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
                    s.total_sightings, s.closed, s.closed_at, s.cameras_json,
-                   CASE WHEN s.badge IN (SELECT badge FROM whitelist) THEN 1 ELSE 0 END AS whitelisted
+                   CASE WHEN LOWER(s.badge) IN (SELECT LOWER(badge) FROM whitelist) THEN 1 ELSE 0 END AS whitelisted
             FROM sessions s
             {where_sql}
             ORDER BY s.first_seen DESC
@@ -1697,7 +1785,7 @@ def api_sessions_active():
         rows = conn.execute("""
             SELECT s.id, s.badge, s.first_seen, s.last_seen, s.last_camera,
                    s.total_sightings, s.cameras_json,
-                   CASE WHEN s.badge IN (SELECT badge FROM whitelist) THEN 1 ELSE 0 END AS whitelisted,
+                   CASE WHEN LOWER(s.badge) IN (SELECT LOWER(badge) FROM whitelist) THEN 1 ELSE 0 END AS whitelisted,
                    a.id AS alert_id, a.acknowledged, a.acknowledged_at, a.acknowledged_by,
                    (
                        SELECT d.filename FROM detections d
@@ -1771,12 +1859,19 @@ def _detections_query(date: Optional[str], month: Optional[str],
     """Build the WHERE clause. Defaults to today unless a date/month is given
     or all_time is set (the Logs page browses the full history)."""
     where, params = [], []
-    if date:
-        where.append("date(timestamp,'localtime')=?"); params.append(date)
-    elif month:
-        where.append("strftime('%Y-%m', timestamp, 'localtime')=?"); params.append(month)
-    elif not all_time:
-        where.append("date(timestamp,'localtime')=date('now','localtime')")
+    try:                                               # local days → UTC ranges (the timestamp index is used)
+        if date:
+            lo, hi = _utc_bounds(datetime.strptime(date, "%Y-%m-%d").date())
+        elif month:
+            m0 = datetime.strptime(month + "-01", "%Y-%m-%d").date()
+            m1 = (m0 + timedelta(days=32)).replace(day=1)
+            lo, hi = _utc_bounds(m0, (m1 - m0).days)
+        elif not all_time:
+            lo, hi = _utc_bounds(datetime.now().date())
+    except ValueError:
+        raise HTTPException(400, "Dates are YYYY-MM-DD, months YYYY-MM")
+    if date or month or not all_time:
+        where.append("timestamp>=? AND timestamp<?"); params += [lo, hi]
     if badge:
         where.append("badge=?"); params.append(badge)
     if camera:
@@ -1845,42 +1940,44 @@ def api_detections(date: Optional[str] = None, month: Optional[str] = None,
 # ─── /api/detections/summary — totals for the CURRENT filter set ─────────
 # The Logs table is paged (20 rows), so its charts must not be derived from
 # the visible page. This returns aggregates over every matching row.
+_SUMMARY = {}                                         # (filter) → (time, answer): a short cache
+
+
 @app.get("/api/detections/summary")
 def api_detections_summary(date: Optional[str] = None, month: Optional[str] = None,
                            badge: Optional[str] = None, camera: Optional[str] = None,
                            search: Optional[str] = None, zone: Optional[str] = None,
                            all_time: bool = False):
     where, params = _detections_query(date, month, badge, camera, search, zone, all_time)
+    key = (where, tuple(params))
+    hit = _SUMMARY.get(key)
+    if hit and time.time() - hit[0] < (60 if all_time or month else 8):   # the Logs page asks every 10 s
+        return hit[1]
     conn = db()
     try:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM detections WHERE {where}", params
-        ).fetchone()[0]
-        by_badge = conn.execute(
-            f"SELECT badge, COUNT(*) c FROM detections WHERE {where} "
-            "GROUP BY badge ORDER BY c DESC LIMIT 12", params
-        ).fetchall()
-        by_camera = conn.execute(
-            f"SELECT camera, COUNT(*) c FROM detections WHERE {where} "
-            "GROUP BY camera ORDER BY c DESC LIMIT 12", params
-        ).fetchall()
-
-        zone_counts = {}
-        for r in conn.execute(
-            f"SELECT badge, COUNT(*) c FROM detections WHERE {where} GROUP BY badge", params
-        ).fetchall():
-            z = config.zone_for(r["badge"])
-            zone_counts[z] = zone_counts.get(z, 0) + r["c"]
-
-        return {
-            "total": total,
-            "by_badge": [[r["badge"], r["c"]] for r in by_badge],
-            "by_camera": [[r["camera"], r["c"]] for r in by_camera],
-            "by_zone": zone_counts,
-            "badge_zones": {r["badge"]: config.zone_for(r["badge"]) for r in by_badge},
-        }
+        bb, bc, total = {}, {}, 0                      # ONE pass: badge × camera counts
+        for r in conn.execute(f"SELECT badge, camera, COUNT(*) c FROM detections WHERE {where} GROUP BY badge, camera", params):
+            total += r["c"]
+            bb[r["badge"]] = bb.get(r["badge"], 0) + r["c"]
+            bc[r["camera"]] = bc.get(r["camera"], 0) + r["c"]
     finally:
         conn.close()
+    zone_counts = {}
+    for b, c in bb.items():
+        z = config.zone_for(b)
+        zone_counts[z] = zone_counts.get(z, 0) + c
+    top_b = sorted(bb.items(), key=lambda x: -x[1])[:12]
+    out = {
+        "total": total,
+        "by_badge": [[b, c] for b, c in top_b],
+        "by_camera": [[k, c] for k, c in sorted(bc.items(), key=lambda x: -x[1])[:12]],
+        "by_zone": zone_counts,
+        "badge_zones": {b: config.zone_for(b) for b, _ in top_b},
+    }
+    if len(_SUMMARY) > 50:
+        _SUMMARY.clear()
+    _SUMMARY[key] = (time.time(), out)
+    return out
 
 
 @app.get("/api/detections/export")
@@ -1915,12 +2012,6 @@ def api_detections_export(request: Request, date: Optional[str] = None, month: O
     )
 
 
-# ─── /api/jetsons/status ──────────────────────────────────────────────────
-@app.get("/api/jetsons/status")
-def api_jetsons_status():
-    return jetson_status()
-
-
 # ─── /api/whitelist ───────────────────────────────────────────────────────
 @app.get("/api/whitelist")
 def api_whitelist_get():
@@ -1940,7 +2031,7 @@ _BADGE_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 @app.post("/api/whitelist")
 async def api_whitelist_add(request: Request):
     body = await read_json(request)
-    badge = _str(body, "badge", maxlen=64).strip().upper()
+    badge = _str(body, "badge", maxlen=64).strip()           # as the class / label is spelt; matched without case
     reason = _str(body, "reason", maxlen=200).strip()
     if not badge:
         raise HTTPException(400, "badge required")
@@ -1949,10 +2040,8 @@ async def api_whitelist_add(request: Request):
     conn = db()
     try:
         with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO whitelist(badge, reason) VALUES (?,?)",
-                (badge, reason)
-            )
+            conn.execute("DELETE FROM whitelist WHERE badge=? COLLATE NOCASE", (badge,))
+            conn.execute("INSERT INTO whitelist(badge, reason) VALUES (?,?)", (badge, reason))
     finally:
         conn.close()
     audit(request, "whitelist", "Added to whitelist", f"{badge}: {reason}"[:200])
@@ -1964,7 +2053,7 @@ def api_whitelist_remove(badge: str, request: Request):
     conn = db()
     try:
         with conn:
-            cur = conn.execute("DELETE FROM whitelist WHERE badge=?", (badge,))
+            cur = conn.execute("DELETE FROM whitelist WHERE badge=? COLLATE NOCASE", (badge[:64],))
     finally:
         conn.close()
     if not cur.rowcount:
@@ -1972,14 +2061,43 @@ def api_whitelist_remove(badge: str, request: Request):
     return {"ok": True}
 
 
+def _rule_dwell_minutes() -> dict:
+    """the shortest enabled dwell rule that covers each image class (the Live page times presences against it)"""
+    out = {}
+    conn = db()
+    try:
+        rules = [alert_rules.row_out(r) for r in conn.execute("SELECT * FROM alert_rules WHERE enabled=1 AND type='dwell'")]
+    finally:
+        conn.close()
+    for r in rules:
+        kinds = ("person", "object") if r["target"] == "any" else (r["target"],)
+        sides = {"*outside": ("outside",), "*alert": (), "*any": ("outside", "zone")}.get(r["region"], ("zone",))
+        for side in sides:
+            for k in kinds:
+                c = f"{side}-{k}"
+                out[c] = min(out.get(c, r["minutes"]), r["minutes"])
+    return dict(sorted(out.items()))
+
+
+def _instant_rule_names() -> list:
+    conn = db()
+    try:
+        return [r["name"] for r in conn.execute("SELECT name FROM alert_rules WHERE enabled=1 AND type='presence' "
+                                                "AND region IN ('*alert','*any') ORDER BY id")]
+    finally:
+        conn.close()
+
+
 # ─── /api/perimeter/rules — zone config, so the UI never hardcodes it ─────
 @app.get("/api/perimeter/rules")
 def api_perimeter_rules():
     return {
         "breach_badges": sorted(config.BREACH_BADGES),
-        "dwell_rules": {b: m for b, m in sorted(config.DWELL_RULES.items())},
+        "outside_badges": sorted(config.DWELL_RULES),
         "inside_badges": sorted(config.INSIDE_BADGES),
-        "default_dwell_minutes": config.LOITER_MINUTES,
+        "dwell_rules": _rule_dwell_minutes(),            # class → minutes, from the client's enabled dwell rules
+        "instant_rules": _instant_rule_names(),          # enabled presence rules on the alert regions
+        "default_dwell_minutes": None,
         "breach_cooldown_seconds": config.BREACH_COOLDOWN_SECONDS,
         "perimeter_gap_minutes": config.PERIMETER_GAP_MINUTES,
         "zone_labels": config.ZONE_LABELS,
@@ -1996,20 +2114,22 @@ def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
     conn = db()
     try:
         sql = ("SELECT a.id, a.badge, a.triggered_at, a.duration_seconds, "
-               "a.kind, a.camera, a.zone, a.image, a.acknowledged, "
+               "a.kind, a.camera, a.zone, a.image, a.acknowledged, a.rule_id, a.rule_name, a.severity, a.message, "
+               "a.object_count, a.sound, a.presence_start, "
                "a.acknowledged_at, a.acknowledged_by, a.session_id, "
                "s.last_camera AS session_camera, s.first_seen AS s_first, "
                "s.closed AS s_closed, s.closed_at AS s_closed_at "
                "FROM alerts a LEFT JOIN sessions s ON s.id = a.session_id ")
         params = []
         clauses = []
-        if kind in ("breach", "dwell"):
+        if kind in ("breach", "dwell", "presence", "count", "offline"):
             clauses.append("COALESCE(a.kind,'dwell')=?")
             params.append(kind)
         if today:
-            clauses.append("date(a.triggered_at,'localtime')=date('now','localtime')")
+            clauses.append("a.triggered_at>=? AND a.triggered_at<?")
+            params += list(_utc_bounds(datetime.now().date()))
         if status == "open":
-            clauses.append("COALESCE(a.acknowledged,0)=0")
+            clauses.append("a.acknowledged=0")
         elif status == "acked":
             clauses.append("a.acknowledged=1")
         if clauses:
@@ -2030,14 +2150,19 @@ def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
                 image = img_row["filename"] if img_row else None
             kind_val = r["kind"] or "dwell"
             zone_val = r["zone"] or config.zone_for(r["badge"])
+            sev = r["severity"] or ("critical" if kind_val == "breach" else "warning")
             out.append({
+                "rule_id": r["rule_id"], "rule_name": r["rule_name"] or ("Perimeter breach" if kind_val == "breach" else "Early warning"),
+                "severity": sev, "message": r["message"] or "", "object_count": r["object_count"],
+                "sound": bool(r["sound"] if r["sound"] is not None else 1),
+                "presence_start": r["presence_start"],
                 "id": r["id"],
                 "badge": r["badge"],
                 "triggered_at": r["triggered_at"],
                 "duration_seconds": r["duration_seconds"] or 0,
                 "kind": kind_val,
                 "zone": zone_val,
-                "zone_label": config.ZONE_LABELS.get(zone_val, zone_val),
+                "zone_label": config.ZONE_LABELS.get(zone_val, zone_val) if not r["rule_id"] else zone_val,
                 "counts": config.parse_counts(r["badge"]),
                 # When this presence began, for a live "present for" duration
                 "session_first_seen": r["s_first"],
@@ -2093,20 +2218,265 @@ async def api_alert_ack(alert_id: int, request: Request):
     return {"ok": True}
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# ALERTS PAGE — alert rules (what to alert about), the alert history, the open alerts (the flashing strip on every
+# page), regions for the client (drawn on the camera picture; no stream addresses)
+# ════════════════════════════════════════════════════════════════════════════
+def _cameras_and_regions() -> dict:
+    """{camera: [{name, kind}]} of the configured cameras (their regions from the zones file)"""
+    cfg = ds_control.load_config()
+    zones = ds_control.load_zones()
+    from pipeline import zones as Z
+    return {s["name"]: [{"name": r["name"], "kind": r["kind"]} for r in Z.regions(zones.get(s["name"]) or {})
+                        if r["kind"] != "ignore"] for s in cfg["streams"]}
+
+
+@app.get("/api/alert-rules")
+def api_alert_rules():
+    conn = db()
+    try:
+        rules = [alert_rules.row_out(r) for r in conn.execute("SELECT * FROM alert_rules ORDER BY id")]
+        last = {r[0]: r[1] for r in conn.execute("SELECT rule_id, MAX(triggered_at) FROM alerts WHERE rule_id IS NOT NULL GROUP BY rule_id")}
+    finally:
+        conn.close()
+    for r in rules:
+        r["last_alert"] = last.get(r["id"])
+    return {"rules": rules, "cameras": _cameras_and_regions(), "special_regions": alert_rules.SPECIAL_REGIONS,
+            "types": list(alert_rules.RULE_TYPES), "presence_gap_seconds": config.PRESENCE_GAP_SECONDS}
+
+
+async def _rule_body(request: Request) -> dict:
+    try:
+        return alert_rules.check(await read_json(request), set(_cameras_and_regions()))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/alert-rules")
+async def api_alert_rule_create(request: Request):
+    c = await _rule_body(request)
+    conn = db()
+    try:
+        if conn.execute("SELECT COUNT(*) FROM alert_rules").fetchone()[0] >= 200:
+            raise HTTPException(400, "At most 200 alert rules")
+        with _db_lock, conn:
+            cols = {**c, "created_by": request.state.ident.get("username")}
+            cur = conn.execute(f"INSERT INTO alert_rules({', '.join(alert_rules._q(k) for k in cols)}) VALUES({', '.join('?' * len(cols))})",
+                               [json.dumps(v) if isinstance(v, list) else v for v in cols.values()])
+        request.state.audit_target = c["name"]
+        return alert_rules.row_out(conn.execute("SELECT * FROM alert_rules WHERE id=?", (cur.lastrowid,)).fetchone())
+    finally:
+        conn.close()
+
+
+@app.put("/api/alert-rules/{rule_id}")
+async def api_alert_rule_update(rule_id: int, request: Request):
+    c = await _rule_body(request)
+    conn = db()
+    try:
+        if not conn.execute("SELECT 1 FROM alert_rules WHERE id=?", (rule_id,)).fetchone():
+            raise HTTPException(404, "Alert rule not found")
+        with _db_lock, conn:
+            conn.execute(f"UPDATE alert_rules SET {', '.join(alert_rules._q(k) + '=?' for k in c)}, updated_at=? WHERE id=?",
+                         [json.dumps(v) if isinstance(v, list) else v for v in c.values()] + [datetime.now().isoformat(timespec="seconds"), rule_id])
+        return alert_rules.row_out(conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+@app.delete("/api/alert-rules/{rule_id}")
+def api_alert_rule_delete(rule_id: int):
+    conn = db()
+    try:
+        with _db_lock, conn:
+            if not conn.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,)).rowcount:
+                raise HTTPException(404, "Alert rule not found")
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+def _alert_out(r, archive: Path) -> dict:
+    return {"id": r["id"], "rule_id": r["rule_id"], "rule_name": r["rule_name"] or ("Perimeter breach" if r["kind"] == "breach" else "Dwell"),
+            "severity": r["severity"] or ("critical" if r["kind"] == "breach" else "warning"), "kind": r["kind"] or "dwell",
+            "camera": r["camera"] or "—", "zone": r["zone"] or "", "message": r["message"] or r["badge"], "badge": r["badge"],
+            "triggered_at": r["triggered_at"], "presence_start": r["presence_start"], "duration_seconds": r["duration_seconds"] or 0,
+            "count": r["object_count"],
+            "image": r["image"], "has_image": bool(r["image"] and (archive / r["image"]).exists()), "sound": bool(r["sound"] if r["sound"] is not None else 1),
+            "acked": bool(r["acknowledged"]), "acked_at": r["acknowledged_at"], "acked_by": r["acknowledged_by"]}
+
+
+@app.get("/api/alerts")
+def api_alerts(date_from: Optional[str] = None, date_to: Optional[str] = None, severity: str = "", camera: str = "",
+               status: str = "", rule_id: Optional[int] = None, q: str = "", page: int = 1, size: int = 10):
+    """the alert history, newest first, a page at a time (dates: local days, YYYY-MM-DD)"""
+    where, args = [], []
+    try:                                               # local days → UTC range on the stored text (the index is used)
+        if date_from:
+            where.append("triggered_at>=?"); args.append(_utc_bounds(datetime.strptime(date_from, "%Y-%m-%d").date())[0])
+        if date_to:
+            where.append("triggered_at<?"); args.append(_utc_bounds(datetime.strptime(date_to, "%Y-%m-%d").date())[1])
+    except (ValueError, OverflowError):
+        raise HTTPException(400, "Dates are YYYY-MM-DD")
+    if severity in alert_rules.SEVERITIES:
+        where.append("COALESCE(severity, CASE WHEN kind='breach' THEN 'critical' ELSE 'warning' END)=?"); args.append(severity)
+    if camera:
+        where.append("camera=?"); args.append(camera[:40])
+    if status == "open":
+        where.append("acknowledged=0")
+    elif status == "acked":
+        where.append("acknowledged=1")
+    if rule_id:
+        where.append("rule_id=?"); args.append(rule_id)
+    if q.strip():
+        like = "%" + q.strip()[:80].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where.append("(rule_name LIKE ? ESCAPE '\\' OR message LIKE ? ESCAPE '\\' OR camera LIKE ? ESCAPE '\\' OR zone LIKE ? ESCAPE '\\' OR badge LIKE ? ESCAPE '\\')")
+        args += [like] * 5
+    w = (" WHERE " + " AND ".join(where)) if where else ""
+    size, page = max(1, min(size, 100)), max(1, page)
+    conn = db()
+    try:
+        total = conn.execute(f"SELECT COUNT(*) FROM alerts{w}", args).fetchone()[0]
+        rows = conn.execute(f"SELECT * FROM alerts{w} ORDER BY triggered_at DESC, id DESC LIMIT ? OFFSET ?",
+                            args + [size, (page - 1) * size]).fetchall()
+        cams = [r[0] for r in conn.execute("SELECT DISTINCT camera FROM alerts WHERE camera IS NOT NULL ORDER BY camera")]
+    finally:
+        conn.close()
+    archive = Path(config.ARCHIVE_DIR)
+    return {"items": [_alert_out(r, archive) for r in rows], "total": total, "page": page, "size": size, "cameras": cams}
+
+
+@app.get("/api/alerts/live")
+def api_alerts_live():
+    """the open (unacknowledged) alerts for the flashing strip on every page: how many, the newest few"""
+    conn = db()
+    try:
+        n = conn.execute("SELECT COUNT(*), SUM(COALESCE(severity, CASE WHEN kind='breach' THEN 'critical' ELSE 'warning' END)='critical') "
+                         "FROM alerts WHERE acknowledged=0").fetchone()
+        rows = conn.execute("SELECT * FROM alerts WHERE acknowledged=0 ORDER BY id DESC LIMIT 5").fetchall()
+    finally:
+        conn.close()
+    archive = Path(config.ARCHIVE_DIR)
+    return {"open": n[0] or 0, "critical": n[1] or 0, "latest": [_alert_out(r, archive) for r in rows]}
+
+
+@app.post("/api/alerts/ack-all")
+async def api_alerts_ack_all(request: Request):
+    conn = db()
+    try:
+        with _db_lock, conn:
+            n = conn.execute("UPDATE alerts SET acknowledged=1, acknowledged_at=?, acknowledged_by=? WHERE acknowledged=0",
+                             (datetime.utcnow().isoformat(), request.state.ident["username"])).rowcount
+    finally:
+        conn.close()
+    request.state.audit_target = f"{n} alert(s)"
+    return {"ok": True, "acknowledged": n}
+
+
+# ─── regions for the client (Alerts page → Regions): the cameras' pictures + zones, never the stream addresses ───
+@app.get("/api/regions")
+def api_regions():
+    return {"cameras": [{"name": s["name"], "enabled": s["enabled"]} for s in ds_control.load_config()["streams"]]}
+
+
+@app.get("/api/regions/{cam}/zone")
+def api_region_zone(cam: str):
+    return ds_control.api_zone(cam)
+
+
+@app.put("/api/regions/{cam}/zone")
+async def api_region_zone_save(cam: str, request: Request):
+    request.state.audit_target = cam
+    return await ds_control.api_zone_save(cam, request)
+
+
+@app.get("/api/regions/{cam}/frame")
+async def api_region_frame(cam: str, refresh: int = 0):
+    return await ds_control.api_frame(cam, refresh)
+
+
+# ─── the Bluetooth speaker (Alerts page → Speaker; the host agent does the Bluetooth, see speaker.py) ───
+def _speaker_out() -> dict:
+    return {"config": speaker.load(), "status": speaker.status(), "repeats": list(speaker.REPEATS)}
+
+
+@app.get("/api/speaker")
+def api_speaker():
+    return _speaker_out()
+
+
+@app.put("/api/speaker")
+async def api_speaker_save(request: Request):
+    try:
+        cfg = speaker.check(await read_json(request), speaker.load())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if cfg["enabled"] and not cfg["device"]:
+        raise HTTPException(400, "Connect a speaker first (Find speakers)")
+    speaker.save(cfg)
+    request.state.audit_target = f"{'on' if cfg['enabled'] else 'off'} · {cfg['severities']} · repeat {cfg['repeat_s']} s"
+    return _speaker_out()
+
+
+@app.post("/api/speaker/test")
+async def api_speaker_test(request: Request):
+    body = await read_json(request)
+    cfg = speaker.load()
+    if not cfg["device"]:
+        raise HTTPException(400, "Connect a speaker first (Find speakers)")
+    if not speaker.request("test", severity="critical" if body.get("severity") == "critical" else "warning"):
+        raise HTTPException(503, "The speaker service on the Jetson is not answering")
+    return _speaker_out()
+
+
+@app.post("/api/speaker/scan")
+async def api_speaker_scan(request: Request):
+    await read_json(request)
+    if not speaker.request("scan"):
+        raise HTTPException(503, "The speaker service on the Jetson is not answering")
+    return _speaker_out()
+
+
+@app.post("/api/speaker/connect")
+async def api_speaker_connect(request: Request):
+    body = await read_json(request)
+    try:
+        mac = speaker.clean_mac(body.get("mac"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    name = re.sub(r"[^\w .()&+'-]", "", str(body.get("name") or ""))[:60]
+    cfg = speaker.load()
+    old = cfg["device"]
+    cfg.update(device=mac, device_name=name)
+    speaker.save(cfg)
+    if old and old != mac:
+        speaker.request("forget", mac=old)
+    if not speaker.request("connect", mac=mac):
+        raise HTTPException(503, "The speaker service on the Jetson is not answering")
+    request.state.audit_target = f"{name or 'speaker'} ({mac})"
+    return _speaker_out()
+
+
+@app.post("/api/speaker/forget")
+async def api_speaker_forget(request: Request):
+    await read_json(request)
+    cfg = speaker.load()
+    if cfg["device"]:
+        speaker.request("forget", mac=cfg["device"])
+        request.state.audit_target = f"{cfg['device_name'] or 'speaker'} ({cfg['device']})"
+    cfg.update(device="", device_name="", enabled=False)
+    speaker.save(cfg)
+    return _speaker_out()
+
+
 # ─── /images/{filename} — serve archived images ───────────────────────────
 @app.get("/images/{filename}")
 def get_image(filename: str):
     safe = Path(filename).name  # strip any path separators
     p = Path(config.ARCHIVE_DIR) / safe
-    if p.exists():
+    if p.is_file():
         return FileResponse(p)
-    # Fallback: try to find last-seen image for the badge in this camera
-    parsed = parse_filename(safe)
-    if parsed:
-        camera, badge, _ = parsed
-        prefix = f"{camera}_{badge}_"
-        for cand in sorted(Path(config.ARCHIVE_DIR).glob(f"{prefix}*.jpg"), reverse=True):
-            return FileResponse(cand)
+    # never another image in its place: an alert's snapshot is evidence (deleted by retention → "no image")
     raise HTTPException(404, "no image available")
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2504,13 +2874,11 @@ def admin_storage():
 @app.get("/api/admin/config")
 def admin_get_config(request: Request):
     return {
-        "TRINETRA_LOITER_MINUTES":            config.LOITER_MINUTES,
         "TRINETRA_SESSION_GAP_MINUTES":       config.SESSION_GAP_MINUTES,
         "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": config.SESSION_AUTO_CLOSE_MINUTES,
-        "TRINETRA_EXIT_CAMERAS":              ",".join(sorted(config.EXIT_CAMERAS)),
+        "TRINETRA_PRESENCE_GAP_SECONDS":      int(config.PRESENCE_GAP_SECONDS),
         "TRINETRA_IMAGE_RETENTION_DAYS":      config.IMAGE_RETENTION_DAYS,
-        "TRINETRA_JETSONS":                   ",".join(config.EXPECTED_JETSONS),
-        "TRINETRA_HB_STALE":                  config.HEARTBEAT_STALE_SECONDS,
+        "TRINETRA_DETECTION_RETENTION_DAYS":  config.DETECTION_RETENTION_DAYS,
         # Secrets are never sent back — only whether one is set.
         "TELEGRAM_TOKEN":                     "",
         "TELEGRAM_TOKEN_SET":                 bool(config.TELEGRAM_TOKEN),
@@ -2526,14 +2894,12 @@ def admin_get_config(request: Request):
 # Anything not listed here is refused — the API can never write arbitrary keys
 # (paths, host, port, account credentials) into .env.
 _CONFIG_RULES = {
-    "TRINETRA_LOITER_MINUTES":             ("int", 1, 10080),
     "TRINETRA_SESSION_GAP_MINUTES":        ("int", 1, 10080),
     "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": ("int", 1, 10080),
     "TRINETRA_IMAGE_RETENTION_DAYS":       ("int", 0, 3650),
-    "TRINETRA_HB_STALE":                   ("int", 10, 86400),
+    "TRINETRA_DETECTION_RETENTION_DAYS":   ("int", 0, 3650),
+    "TRINETRA_PRESENCE_GAP_SECONDS":       ("int", 10, 3600),
     "SMTP_PORT":                           ("int", 1, 65535),
-    "TRINETRA_EXIT_CAMERAS": ("re", re.compile(r"^[A-Za-z0-9, -]{0,500}$")),
-    "TRINETRA_JETSONS":      ("re", re.compile(r"^[A-Za-z0-9, -]{0,500}$")),
     "TELEGRAM_TOKEN":        ("re", re.compile(r"^[0-9]{1,20}:[A-Za-z0-9_-]{20,100}$")),
     "TELEGRAM_CHAT_ID":      ("re", re.compile(r"^[0-9, -]{0,500}$")),
     "SMTP_HOST":             ("re", re.compile(r"^[A-Za-z0-9.-]{0,253}$")),
@@ -2604,15 +2970,11 @@ def _write_env(updates: dict):
 def _apply_config(updates: dict):
     """Hot-reload config module attributes so changes take effect immediately."""
     mapping = {
-        "TRINETRA_LOITER_MINUTES":             ("LOITER_MINUTES",              int),
         "TRINETRA_SESSION_GAP_MINUTES":        ("SESSION_GAP_MINUTES",         int),
         "TRINETRA_SESSION_AUTO_CLOSE_MINUTES": ("SESSION_AUTO_CLOSE_MINUTES",  int),
         "TRINETRA_IMAGE_RETENTION_DAYS":       ("IMAGE_RETENTION_DAYS",        int),
-        "TRINETRA_HB_STALE":                   ("HEARTBEAT_STALE_SECONDS",     int),
-        "TRINETRA_EXIT_CAMERAS":               ("EXIT_CAMERAS",
-                                                lambda v: {c.strip() for c in v.split(",") if c.strip()}),
-        "TRINETRA_JETSONS":                    ("EXPECTED_JETSONS",
-                                                lambda v: [j.strip() for j in v.split(",") if j.strip()]),
+        "TRINETRA_DETECTION_RETENTION_DAYS":   ("DETECTION_RETENTION_DAYS",    int),
+        "TRINETRA_PRESENCE_GAP_SECONDS":       ("PRESENCE_GAP_SECONDS",        float),
         "TELEGRAM_TOKEN":   ("TELEGRAM_TOKEN",    str),
         "TELEGRAM_CHAT_ID": ("TELEGRAM_CHAT_IDS",
                              lambda v: [cid.strip() for cid in v.split(",") if cid.strip()]),
@@ -2654,6 +3016,7 @@ def admin_get_database_table(request: Request, table: str, limit: int = 50, offs
 
 @app.delete("/api/admin/database/{table}/{record_id}")
 def admin_delete_database_record(request: Request, table: str, record_id: str):
+    _stats_reset(); _SUMMARY.clear(); RULES.reset_cache()   # the cached counts / presences start again
     if table not in ["detections", "sessions", "alerts", "whitelist"]:
         raise HTTPException(400, "Invalid table")
         
@@ -2681,6 +3044,7 @@ def admin_delete_database_record(request: Request, table: str, record_id: str):
 
 @app.delete("/api/admin/database/{table}")
 def admin_clear_database_table(request: Request, table: str):
+    _stats_reset(); _SUMMARY.clear(); RULES.reset_cache()   # the cached counts / presences start again
     if table not in ["detections", "sessions", "alerts", "whitelist"]:
         raise HTTPException(400, "Invalid table")
         
@@ -2705,6 +3069,7 @@ def admin_clear_database_table(request: Request, table: str):
 
 @app.post("/api/admin/reset")
 def admin_reset_all(request: Request):
+    _stats_reset(); _SUMMARY.clear(); RULES.reset_cache()   # the cached counts / presences start again
     """Wipe ALL data: every DB table + archive images + dead-letter + heartbeats. Irreversible."""
 
     def _clear_dir(directory: str, pattern: str = "*") -> int:
@@ -2737,7 +3102,8 @@ def admin_reset_all(request: Request):
                 conn.execute("DELETE FROM detections")
                 conn.execute("DELETE FROM sessions")
                 conn.execute("DELETE FROM whitelist")
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions')")
+                conn.execute("DELETE FROM observations")          # the alert rules' frame history
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions','observations')")
         finally:
             conn.close()
 

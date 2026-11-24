@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trinetra Systems · Badge Whitelist</title>
+<title>Trinetra Systems · Whitelist</title>
 <link rel="icon" type="image/png" href="img/favicon-32.png">
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/wa.css">
@@ -34,27 +34,29 @@
 
 <div class="admin-wrap">
   <div class="admin-card">
-    <div class="card-title" style="font-size: 18px;">Badge Whitelist</div>
+    <div class="card-title" style="font-size: 18px;">Whitelist</div>
     <div class="card-sub" style="margin-top: 6px;">
-      Whitelisted badges are exempt from loitering alerts — their cards are auto-muted in the banner,
-      excluded from the active alert count, and still appear normally in the detection log.
+      A whitelisted class or detector label never fires an alert rule (e.g. <i>zone-object</i> for a gate that is
+      always parked in a watch region). Its images still go into the Detection Log.
     </div>
 
     <div class="admin-input">
       <select id="wl-badge" class="filter-select" style="flex: 1; min-width: 180px; padding: 10px 12px;">
-        <option value="">— select a badge —</option>
+        <option value="">— select a class —</option>
       </select>
-      <input id="wl-reason" placeholder="reason (optional, e.g. security guard)" style="flex: 2;">
-      <button id="wl-add-btn">+ Add Badge</button>
+      <input id="wl-reason" placeholder="reason (optional, e.g. parked guard vehicle)" style="flex: 2;">
+      <button id="wl-add-btn">+ Add</button>
     </div>
 
     <div id="wl-list"></div>
+    <div class="pager" id="wl-pager"></div>
 
     <div class="notice">
-      <b>auto-mute behavior</b><br>
-      When a badge is added here, any active loitering alert for that badge is immediately muted —
-      the alert card greys out in the banner and the active alert count drops. The badge still appears
-      in the Currently in Premises table with a <span class="status-tag wl" style="vertical-align: middle;">WHITELIST</span> tag and all sightings remain in the detection log.
+      <b>how it works</b><br>
+      From the moment a class is added here, new frames with it no longer count for any alert rule; alerts already
+      raised stay in the alert history until acknowledged. Its presences show a
+      <span class="status-tag wl" style="vertical-align: middle;">WHITELIST</span> tag on the Visits page.
+      To stop one kind of alert only, switch that rule off on the Alerts page instead.
     </div>
   </div>
 </div>

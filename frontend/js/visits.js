@@ -26,10 +26,12 @@ async function populateBadgeDropdown() {
   if (sel.options.length > 1) return;
   try {
     const b = await getBadges();
-    sel.innerHTML = `<option value="">All badges</option>` +
+    sel.innerHTML = `<option value="">All classes</option>` +
       (b.badges || []).map(x => `<option value="${escapeHtml(x.badge)}">${escapeHtml(x.badge)}</option>`).join('');
   } catch (e) { console.error('badges fetch failed:', e); }
 }
+
+const visitPager = pager('visits-pager', () => renderVisitsTable());   // the Workplace Analytics pager
 
 function renderVisitsTable() {
   const tbody = document.getElementById('visits-body');
@@ -47,12 +49,13 @@ function renderVisitsTable() {
   document.getElementById('visits-meta').textContent =
     `showing ${visits.length} of ${cachedVisits.length}`;
 
+  const pageRows = visitPager.slice(visits);
   if (visits.length === 0) {
     tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-dim);">no visits match filters</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = visits.map((v, idx) => {
+  tbody.innerHTML = pageRows.map((v, idx) => {
     const first = new Date(v.first_seen.endsWith('Z') ? v.first_seen : v.first_seen + 'Z');
     const last  = new Date(v.last_seen.endsWith('Z')  ? v.last_seen  : v.last_seen  + 'Z');
     const duration = v.duration_seconds;
@@ -74,9 +77,7 @@ function renderVisitsTable() {
       ? '<span class="status-tag" style="background:rgba(155,138,255,0.15);color:var(--violet);border:1px solid var(--violet);">COMPLETED</span>'
       : (v.whitelisted
         ? '<span class="status-tag wl">WHITELIST</span>'
-        : duration / 60 >= LOITER_MIN
-          ? '<span class="status-tag alert">LOITERING</span>'
-          : '<span class="status-tag ok">IN PREMISES</span>');
+        : '<span class="status-tag ok">PRESENT</span>');
 
     return `
       <tr class="clickable" onclick="showVisitTimeline(${v.id})">

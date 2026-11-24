@@ -78,37 +78,31 @@
 
     <div class="admin-body">
 
-      <!-- Detection & Sessions -->
+      <!-- Alerts & presences -->
       <div class="admin-section">
-        <div class="section-title">Detection &amp; Session Settings</div>
+        <div class="section-title">Alerts &amp; Presences</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
-              <div class="setting-label">Loitering Threshold</div>
-              <div class="setting-hint">TRINETRA_LOITER_MINUTES · minutes</div>
+              <div class="setting-label">Default presence gap</div>
+              <div class="setting-hint">TRINETRA_PRESENCE_GAP_SECONDS · seconds · sightings of the same region closer than this
+                count as one presence (the detector may miss an object for a while) · each alert rule can set its own</div>
             </div>
-            <input class="setting-input" type="number" id="TRINETRA_LOITER_MINUTES" min="1" max="120">
+            <input class="setting-input" type="number" id="TRINETRA_PRESENCE_GAP_SECONDS" min="10" max="3600">
           </div>
           <div class="setting-row">
             <div>
-              <div class="setting-label">Session Gap</div>
-              <div class="setting-hint">TRINETRA_SESSION_GAP_MINUTES · minutes</div>
+              <div class="setting-label">Visit gap</div>
+              <div class="setting-hint">TRINETRA_SESSION_GAP_MINUTES · minutes · Visits page: a class seen again after this starts a new visit</div>
             </div>
             <input class="setting-input" type="number" id="TRINETRA_SESSION_GAP_MINUTES" min="1" max="60">
           </div>
           <div class="setting-row">
             <div>
-              <div class="setting-label">Session Auto-Close</div>
-              <div class="setting-hint">TRINETRA_SESSION_AUTO_CLOSE_MINUTES · minutes</div>
+              <div class="setting-label">Visit auto-close</div>
+              <div class="setting-hint">TRINETRA_SESSION_AUTO_CLOSE_MINUTES · minutes · Visits page: a visit not seen for this long is closed</div>
             </div>
             <input class="setting-input" type="number" id="TRINETRA_SESSION_AUTO_CLOSE_MINUTES" min="1" max="60">
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Exit Cameras</div>
-              <div class="setting-hint">TRINETRA_EXIT_CAMERAS · comma-separated</div>
-            </div>
-            <input class="setting-input" type="text" id="TRINETRA_EXIT_CAMERAS" placeholder="e.g. gate-exit">
           </div>
         </div>
       </div>
@@ -127,6 +121,14 @@
           </div>
           <div class="setting-row">
             <div>
+              <div class="setting-label">Days the Detection Log is kept</div>
+              <div class="setting-hint">TRINETRA_DETECTION_RETENTION_DAYS · rows of the Detection Log and finished visits (0 = forever) ·
+                alerts are always kept · keeps the database small on the Jetson</div>
+            </div>
+            <input class="setting-input" type="number" id="TRINETRA_DETECTION_RETENTION_DAYS" min="0" max="3650">
+          </div>
+          <div class="setting-row">
+            <div>
               <div class="setting-label">Storage</div>
               <div class="setting-hint" id="storage-hint">Disk guard: when free space runs low, the oldest day of images goes first (never today)</div>
             </div>
@@ -135,30 +137,9 @@
         </div>
       </div>
 
-      <!-- Jetson Registry -->
-      <div class="admin-section">
-        <div class="section-title">Jetson Registry</div>
-        <div class="settings-card">
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Expected Jetsons</div>
-              <div class="setting-hint">TRINETRA_JETSONS · comma-separated names</div>
-            </div>
-            <input class="setting-input" type="text" id="TRINETRA_JETSONS" placeholder="e.g. jetson-gate">
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Heartbeat Stale Timeout</div>
-              <div class="setting-hint">TRINETRA_HB_STALE · seconds</div>
-            </div>
-            <input class="setting-input" type="number" id="TRINETRA_HB_STALE" min="10">
-          </div>
-        </div>
-      </div>
-
       <!-- Telegram -->
       <div class="admin-section">
-        <div class="section-title">Telegram Alerts</div>
+        <div class="section-title">Telegram Alerts <span class="setting-hint" style="font-weight:400">· optional, needs internet — every alert always shows on the dashboard</span></div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
@@ -179,7 +160,7 @@
 
       <!-- Email -->
       <div class="admin-section">
-        <div class="section-title">Email Alerts</div>
+        <div class="section-title">Email Alerts <span class="setting-hint" style="font-weight:400">· optional, needs internet or a local mail server</span></div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
@@ -247,6 +228,7 @@
               </tbody>
             </table>
           </div>
+          <div class="pager" id="db-pager"></div>
         </div>
       </div>
 
@@ -328,9 +310,8 @@
         if (r.status === 401 || r.status === 403) { location.replace('login.html?team=1&next=admin.html'); return; }
         const cfg = await r.json();
         const FIELDS = [
-          'TRINETRA_LOITER_MINUTES', 'TRINETRA_SESSION_GAP_MINUTES',
-          'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_EXIT_CAMERAS',
-          'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
+          'TRINETRA_PRESENCE_GAP_SECONDS', 'TRINETRA_SESSION_GAP_MINUTES',
+          'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_DETECTION_RETENTION_DAYS',
           'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
           'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
         ];
@@ -363,6 +344,7 @@
     }
 
     /* ── Database Management ── */
+    const dbPager = pager('db-pager', () => loadDatabase(), 20);   // the Workplace Analytics pager
     async function loadDatabase() {
       const tbody = document.getElementById('db-records');
       const thead = document.getElementById('db-thead');
@@ -370,11 +352,13 @@
       const table = document.getElementById('db-table-select').value;
 
       try {
-        const r = await fetch(`/api/admin/database/${table}?limit=50`, { credentials: 'same-origin' });
+        if (table !== loadDatabase.table) { dbPager.reset(); loadDatabase.table = table; }
+        const r = await fetch(`/api/admin/database/${table}?limit=${dbPager.size}&offset=${(dbPager.page - 1) * dbPager.size}`, { credentials: 'same-origin' });
         if (!r.ok) throw new Error('Failed to load database');
         const data = await r.json();
 
-        totalEl.textContent = `Showing latest 50 of ${data.total} total records`;
+        totalEl.textContent = `${data.total} record${data.total === 1 ? '' : 's'}, newest first`;
+        dbPager.total(data.total);
 
         if (data.records.length === 0) {
           thead.innerHTML = '';
@@ -481,7 +465,7 @@
         // Show success in save bar
         const msg = document.getElementById('save-msg');
         msg.className = 'save-msg ok';
-        msg.textContent = `✓ Reset complete — ${result.deleted_images} images, ${result.deleted_dead_letter} dead-letter, ${result.deleted_heartbeats} heartbeat files cleared`;
+        msg.textContent = `✓ Reset complete — ${result.deleted_images} images, ${result.deleted_dead_letter} rejected files cleared`;
         msg.style.display = 'block';
         setTimeout(() => { msg.style.display = 'none'; }, 6000);
       } catch (e) {
@@ -501,9 +485,8 @@
       msg.style.display = 'none';
 
       const FIELDS = [
-        'TRINETRA_LOITER_MINUTES', 'TRINETRA_SESSION_GAP_MINUTES',
-        'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_EXIT_CAMERAS',
-        'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_JETSONS', 'TRINETRA_HB_STALE',
+        'TRINETRA_PRESENCE_GAP_SECONDS', 'TRINETRA_SESSION_GAP_MINUTES',
+        'TRINETRA_SESSION_AUTO_CLOSE_MINUTES', 'TRINETRA_IMAGE_RETENTION_DAYS', 'TRINETRA_DETECTION_RETENTION_DAYS',
         'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TO',
       ];

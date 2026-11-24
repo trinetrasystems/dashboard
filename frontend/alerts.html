@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · Alerts</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<link rel="stylesheet" href="css/deepstream.css">
+<link rel="stylesheet" href="css/alerts.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">Alerts</h1>
+        <div class="page-sub">What happened, and what you want to be alerted about</div>
+      </div>
+      <div class="head-controls">
+        <label class="date-pill" id="date-pill" title="Pick a day">
+          <span data-icon="calendar"></span>
+          <span id="date-label">Today</span>
+          <span data-icon="chevron-down" class="dim"></span>
+          <input type="date" id="date-input" aria-label="Pick a day">
+        </label>
+        <div class="seg" id="range-seg" role="tablist">
+          <button data-range="today" class="active">Today</button>
+          <button data-range="week" title="Last 7 days">Week</button>
+          <button data-range="month" title="Last 30 days">Month</button>
+          <button data-range="custom">Custom</button>
+        </div>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+      <div class="popover" id="custom-pop" hidden>
+        <div class="pop-row">
+          <label>From <input type="date" id="custom-from"></label>
+          <label>To <input type="date" id="custom-to"></label>
+        </div>
+        <div class="pop-actions">
+          <button class="btn ghost" id="custom-cancel">Cancel</button>
+          <button class="btn primary" id="custom-apply">Apply</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="seg tab-seg" id="al-tabs">
+      <button data-tab="history" class="active"><span data-icon="bell"></span>Alerts</button>
+      <button data-tab="rules"><span data-icon="settings"></span>Alert rules</button>
+      <button data-tab="regions" data-need="alert_rules"><span data-icon="map-pin"></span>Regions</button>
+      <button data-tab="speaker" data-need="alert_rules"><span data-icon="speaker"></span>Speaker</button>
+    </div>
+
+    <!-- ═══ the alerts ═══ -->
+    <section class="card" id="tab-history">
+      <div class="card-head wrap">
+        <h2 class="card-title">Alerts <span class="count-pill" id="al-count">0</span></h2>
+        <div class="head-controls">
+          <div class="seg small" id="sev-filter"><button data-sev="" class="active">All</button><button data-sev="critical">Critical</button><button data-sev="warning">Warning</button></div>
+          <div class="seg small" id="status-filter"><button data-status="" class="active">All</button><button data-status="open">Open</button><button data-status="acked">Acknowledged</button></div>
+          <label class="select-pill compact"><span data-icon="video"></span><select id="cam-filter" aria-label="Camera"><option value="">All cameras</option></select></label>
+          <button class="btn" id="ack-all" data-need="manage_alerts"><span data-icon="check"></span>Acknowledge all open</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="details alerts-hist">
+          <thead><tr><th>Time</th><th>Alert</th><th>What happened</th><th>Camera · region</th><th>Snapshot</th><th>Status</th></tr></thead>
+          <tbody id="al-body"><tr><td colspan="6" class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager" id="al-pager"></div>
+    </section>
+
+    <!-- ═══ alert rules ═══ -->
+    <section class="card" id="tab-rules" hidden>
+      <div class="card-head wrap">
+        <h2 class="card-title">Alert rules <span class="count-pill" id="rule-count">0</span></h2>
+        <div class="head-controls">
+          <span class="card-hint">A rule is checked on every camera image; changes apply to the next image</span>
+          <button class="btn primary" id="rule-new" data-need="alert_rules"><span data-icon="plus"></span>New rule</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="details rules-table">
+          <thead><tr><th>On</th><th>Rule</th><th>When</th><th>Where</th><th>Active</th><th>Severity</th><th>Last alert</th><th></th></tr></thead>
+          <tbody id="rule-body"><tr><td colspan="8" class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager" id="rule-pager"></div>
+    </section>
+
+    <!-- ═══ the Bluetooth speaker on the Jetson ═══ -->
+    <section class="card" id="tab-speaker" hidden>
+      <div class="card-head wrap">
+        <h2 class="card-title">Bluetooth speaker</h2>
+        <div class="head-controls"><span class="card-hint">A loud beep in the guard room, from the Jetson itself — no internet, no browser needed</span></div>
+      </div>
+      <div class="spk-status" id="spk-status">loading…</div>
+      <div class="as-form spk-form">
+        <label class="as-switch"><input type="checkbox" id="spk-enabled"><span class="as-track"></span>
+          <span><b>Beep on the Bluetooth speaker</b><small>for every new alert of a rule with “Sound” on (Alert rules)</small></span></label>
+        <div class="as-row">
+          <div><span class="as-label">Which alerts</span>
+            <div class="seg small" id="spk-sev"><button type="button" data-v="critical">Critical only</button><button type="button" data-v="all">Critical + warning</button></div></div>
+          <div><span class="as-label">Until acknowledged</span>
+            <select class="ds-input" id="spk-repeat">
+              <option value="0">Beep once per alert</option><option value="30">Beep again every 30 s</option>
+              <option value="60">Beep again every 1 min</option><option value="120">Beep again every 2 min</option><option value="300">Beep again every 5 min</option>
+            </select></div>
+        </div>
+        <div class="spk-dev">
+          <div><span class="as-label">Speaker</span><div id="spk-device" class="spk-device">—</div></div>
+          <div class="spk-actions">
+            <button class="btn" id="spk-test" type="button"><span data-icon="speaker"></span>Test beep</button>
+            <button class="btn" id="spk-scan" type="button"><span data-icon="refresh"></span>Find speakers</button>
+            <button class="btn danger-ghost" id="spk-forget" type="button" hidden>Remove speaker</button>
+          </div>
+        </div>
+        <div id="spk-found" class="spk-found" hidden></div>
+        <div class="spk-help"><b>Connecting a speaker</b>
+          <ol>
+            <li>Switch the speaker on and put it in <b>pairing mode</b> (usually: hold its Bluetooth button until it blinks), within a few metres of the Jetson.</li>
+            <li><b>Find speakers</b> (12 s), then <b>Connect</b> next to it.</li>
+            <li><b>Test beep</b>, then switch the beep on.</li>
+          </ol>
+          The Jetson reconnects to the speaker by itself before each beep. Keep the speaker on mains power with its auto-off disabled:
+          a speaker that switched itself off cannot beep. The browser beep on every open dashboard page stays as it is.</div>
+      </div>
+    </section>
+
+    <!-- ═══ regions (the client's admins) ═══ -->
+    <section id="tab-regions" hidden>
+      <div class="card ze-card" id="zone-editor"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ─── rule dialog ─── -->
+<div class="modal-backdrop" id="rule-modal" hidden>
+  <form class="modal form wide rule-form" id="rule-form" autocomplete="off">
+    <div class="card-head"><h2 class="card-title" id="rule-title">New alert rule</h2>
+      <button type="button" class="icon-btn" id="rule-close" aria-label="Close" data-icon="x"></button></div>
+    <label>Name <input name="name" required maxlength="60" placeholder="e.g. Person at the main gate over 5 min"></label>
+    <div class="form-2">
+      <label>Alert when <select name="type">
+        <option value="presence">someone / something is in the region (at once)</option>
+        <option value="dwell">it stays in the region for some time</option>
+        <option value="count">too many are in the region at once</option>
+        <option value="offline">a camera has no video</option>
+      </select></label>
+      <label data-for="presence dwell count">Who <select name="target">
+        <option value="person">a person</option><option value="object">an object</option><option value="any">a person or an object</option>
+      </select></label>
+    </div>
+    <div class="form-2">
+      <label data-for="presence dwell count">Region <select name="region"></select></label>
+      <label data-for="dwell offline"><span data-show="dwell">For at least (minutes)</span><span data-show="offline">Without video for (minutes)</span>
+        <input name="minutes" type="number" min="0.5" max="1440" step="0.5"></label>
+      <label data-for="count">At least (count) <input name="count" type="number" min="1" max="1000" step="1"></label>
+    </div>
+    <div class="field">
+      <span class="field-label">Cameras</span>
+      <div class="cam-checks" id="rule-cams"></div>
+    </div>
+    <div class="form-2">
+      <div class="field"><span class="field-label">Days</span>
+        <div class="day-checks" id="rule-days"></div></div>
+      <div class="field"><span class="field-label">Hours (empty = all day; 19:00 → 07:00 = overnight)</span>
+        <div class="hours"><input name="start" type="time"> → <input name="end" type="time"></div></div>
+    </div>
+    <div class="form-3 rule-adv">
+      <label data-for="presence dwell">Gone after unseen (s) <input name="gap" type="number" min="10" max="3600" step="5"
+        title="A presence ends when nothing matching is seen this long: short gaps in tracking do not split it"></label>
+      <label data-for="presence dwell">Repeat while there (min, 0 = once) <input name="repeat" type="number" min="0" max="1440" step="1"></label>
+      <label>Quiet after an alert (min) <input name="cooldown" type="number" min="0" max="1440" step="0.5"></label>
+    </div>
+    <div class="form-2">
+      <div class="field"><span class="field-label">Severity</span>
+        <div class="seg small" id="rule-sev"><button type="button" data-sev="critical">Critical (red, flashing)</button><button type="button" data-sev="warning">Warning (amber)</button></div></div>
+      <div class="field"><span class="field-label">On the dashboard</span>
+        <label class="radio"><input type="checkbox" name="sound"> Sound (a beep in the browser, no internet needed)</label>
+        <label class="radio"><input type="checkbox" name="enabled"> Rule on</label></div>
+    </div>
+    <div class="rule-preview" id="rule-preview"></div>
+    <div class="form-result" id="rule-result"></div>
+    <div class="pop-actions"><span class="spacer"></span>
+      <button type="button" class="btn ghost" id="rule-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="rule-save">Save rule</button></div>
+  </form>
+</div>
+
+<!-- ─── snapshot ─── -->
+<div class="modal-backdrop" id="snap-modal" hidden>
+  <div class="modal wide snap-modal">
+    <div class="card-head"><h2 class="card-title" id="snap-title">Snapshot</h2>
+      <button type="button" class="icon-btn" id="snap-close" aria-label="Close" data-icon="x"></button></div>
+    <div class="snap-sub" id="snap-sub"></div>
+    <img id="snap-img" alt="Alert snapshot">
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script src="js/zone-editor.js"></script>
+<script src="js/alerts.js"></script>
+</body>
+</html>

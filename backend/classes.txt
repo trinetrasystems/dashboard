@@ -1,34 +1,21 @@
-# Trinetra Systems — perimeter detection class list
+# Trinetra Systems — perimeter image classes
 # ────────────────────────────────────────────────────────────────────────────
-# One class per line.  Lines starting with # and blank lines are ignored.
+# The DeepStream pipeline names every saved image <camera>_<class>_<time>.jpg with one of these classes,
+# from where the detected object is (the regions drawn on the Alerts → Regions / DeepStream → Zones page):
 #
-# This file is the source of truth for which classes your YOLO model detects.
-# Should match the `names:` list in your YOLOv5/v8 data.yaml.
+#   Boundry-object   an object in an ALERT region (wall top, concertina, fence line)
+#   outside-person   a person on the outside side of the perimeter line
+#   outside-object   any other object on the outside side
+#   zone-person      a person in a WATCH region (inside the line)
+#   zone-object      any other object in a WATCH region
 #
-# Whitelist dropdown + Logs filter dropdown are populated from this file.
+# Alerts are NOT decided by the class: the client's alert rules (Alerts page) read each frame's description
+# (object kind, regions, outside / alert flags) — see backend/alert_rules.py.
+# The Detection Log / Whitelist dropdowns list these classes plus the labels of the DeepStream model in use.
 # Edit + refresh the browser — the file is read on every request, no restart.
-#
-# ZONE RULES (configured in .env → TRINETRA_BREACH_BADGES / TRINETRA_DWELL_BADGES):
-#
-#   Boundry-object   → Perimeter Alert Region · BREACH        · alert INSTANTLY
-#   outside-person   → Outside perimeter      · EARLY WARNING · after 10 min dwell
-#   outside-object   → Outside perimeter      · EARLY WARNING · after 10 min dwell
 
-# ─── Perimeter Alert Region (wall top / concertina) — instant breach ────────
 Boundry-object
-
-# ─── Outside perimeter — dwell-based early warning ─────────────────────────
 outside-person
 outside-object
-
-# Counted variant: the edge can put the live tally in the class name as
-#   Outside-person-<persons>-object-<objects>
-# e.g. Outside-person-3-object-2  →  3 people and 2 objects outside the wall.
-# Any such class is treated as Outside perimeter and inherits the
-# outside-person dwell rule. Clicking the row shows the tally. These are
-# recognised by pattern, so they do NOT need to be listed here.
-
-# ─── Legacy demo badges (kept so older test data still shows in filters) ───
-RED-CIRCLE
-BLUE-SQUARE
-GREEN-TRIANGLE
+zone-person
+zone-object

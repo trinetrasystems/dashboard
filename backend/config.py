@@ -68,23 +68,10 @@ CLASSES_FILE    = str(CLASSES_FILE)
 HOST = os.environ.get("TRINETRA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("TRINETRA_PORT", "8000"))
 
-# ─── JETSON REGISTRY ─────────────────────────────────────────────────────────
-EXPECTED_JETSONS = [
-    j.strip() for j in os.environ.get(
-        "TRINETRA_JETSONS",
-        ""
-    ).split(",") if j.strip()
-]
-HEARTBEAT_STALE_SECONDS = int(os.environ.get("TRINETRA_HB_STALE", "90"))
-
-# ─── DETECTION / LOITERING SETTINGS ──────────────────────────────────────────
-LOITER_MINUTES        = int(os.environ.get("TRINETRA_LOITER_MINUTES",      "15"))
+# ─── VISITS (presence sessions per class, Visits page) ───────────────────────
 SESSION_GAP_MINUTES   = int(os.environ.get("TRINETRA_SESSION_GAP_MINUTES",  "5"))
 SESSION_AUTO_CLOSE_MINUTES = int(os.environ.get("TRINETRA_SESSION_AUTO_CLOSE_MINUTES", "10"))
-EXIT_CAMERAS = {
-    c.strip() for c in os.environ.get("TRINETRA_EXIT_CAMERAS", "cam-gate").split(",")
-    if c.strip()
-}
+EXIT_CAMERAS: set = set()      # perimeter cameras have no exit gate: a visit ends when it goes quiet
 
 # ─── PERIMETER ZONE RULES ─────────────────────────────────────────────────────
 # The perimeter camera sees three zones (see the Pharma Perimeter deck, slide 4).
@@ -111,7 +98,7 @@ ZONE_UNKNOWN = "unknown"
 ZONE_LABELS = {
     ZONE_BREACH:  "Perimeter Alert Region",
     ZONE_OUTSIDE: "Outside perimeter",
-    ZONE_INSIDE:  "Inside factory",
+    ZONE_INSIDE:  "Watch region",
     ZONE_UNKNOWN: "Unzoned",
 }
 
@@ -177,7 +164,7 @@ DWELL_RULES = _parse_dwell_rules(
 
 # Tracked-but-silent classes (Inside factory). Empty by default so existing
 # deployments keep alerting on their own badge classes.
-INSIDE_BADGES = _parse_badge_set(os.environ.get("TRINETRA_INSIDE_BADGES", ""))
+INSIDE_BADGES = _parse_badge_set(os.environ.get("TRINETRA_INSIDE_BADGES", "zone-person,zone-object"))
 
 # Continuity window for perimeter classes, in minutes. Dwell means CONTINUOUS
 # presence: if a perimeter object is not seen for this long, it has left, and
@@ -237,20 +224,25 @@ def dwell_minutes_for(badge: str):
     if is_counted_outside(badge):
         # A counted class inherits the outside-person rule.
         return DWELL_RULES.get("outside-person", 10)
-    if key in INSIDE_BADGES:
-        return None                      # tracked, no alarm
-    return LOITER_MINUTES
+    return None                          # watch regions / unknown: only the client's alert rules decide
 
 
 # ─── IMAGE CLEANUP ────────────────────────────────────────────────────────────
 # Camera images are kept this many days (today counts as one); older days are deleted at night.
 # 0 = keep forever. The detections / alerts stay in the database either way.
 IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "30"))
+# Detection Log rows (and finished visits) kept this many days (0 = forever): the database stays small on the Jetson —
+# worst case 8 busy cameras ≈ 70 000 rows a day. Alerts are kept forever.
+DETECTION_RETENTION_DAYS = int(os.environ.get("TRINETRA_DETECTION_RETENTION_DAYS", "90"))
 # Disk guard: under this much free space the oldest day of images is deleted first (never today), at any hour.
 DISK_MIN_FREE_GB = float(os.environ.get("TRINETRA_DISK_MIN_FREE_GB", "15"))
 # Nightly database backup on this device (HH:MM, empty = off) and how many daily copies are kept.
 BACKUP_AT   = os.environ.get("TRINETRA_BACKUP_AT", "23:50")
 BACKUP_KEEP = int(os.environ.get("TRINETRA_BACKUP_KEEP", "7"))
+
+# ─── ALERT RULES (alert_rules.py) ─────────────────────────────────────────────
+# A presence (for the presence / dwell rules) ends when nothing matching was seen for this many seconds.
+PRESENCE_GAP_SECONDS = float(os.environ.get("TRINETRA_PRESENCE_GAP_SECONDS", "60"))
 
 # ─── ACCOUNTS & SESSIONS (access.py) ──────────────────────────────────────────
 # The Trinetra team: comma-separated user IDs, all signing in with SUPPORT_PASSWORD (empty = team login off).
@@ -288,8 +280,8 @@ SMTP_TO   = os.environ.get("SMTP_TO",   "")
 # Camera and badge names CANNOT contain underscores (use hyphens or camelCase).
 import re
 FILENAME_RE = re.compile(
-    r"^(?P<camera>[A-Za-z0-9-]+)_(?P<badge>[A-Za-z0-9-]+)_(?P<ts>\d{8}-\d{6})\.jpg$"
-)
+    r"^(?P<camera>[A-Za-z0-9-]+)_(?P<badge>[A-Za-z0-9-]+)_(?P<ts>\d{8}-\d{6})(?:-(?P<ms>\d{3}))?\.jpg$"
+)   # the perimeter pipeline adds milliseconds (…-HHMMSS-mmm.jpg): two images of the same second never collide
 
 
 # ─── PRINT CONFIG SUMMARY ON IMPORT ──────────────────────────────────────────
@@ -302,11 +294,8 @@ def print_summary():
     print(f"[config] ARCHIVE_DIR   = {ARCHIVE_DIR}")
     print(f"[config] FRONTEND_DIR  = {FRONTEND_DIR}")
     print(f"[config] CLASSES_FILE  = {CLASSES_FILE}")
-    print(f"[config] JETSONS       = {EXPECTED_JETSONS}")
-    print(f"[config] LOITER_MIN    = {LOITER_MINUTES} min")
     print(f"[config] GAP_MIN       = {SESSION_GAP_MINUTES} min")
     print(f"[config] AUTO_CLOSE    = {SESSION_AUTO_CLOSE_MINUTES} min")
-    print(f"[config] EXIT_CAMERAS  = {sorted(EXIT_CAMERAS)}")
     print(f"[config] BREACH_BADGES = {sorted(BREACH_BADGES)} (instant alert)")
     print(f"[config] DWELL_RULES   = " +
           ", ".join(f"{b}:{m}min" for b, m in sorted(DWELL_RULES.items())))

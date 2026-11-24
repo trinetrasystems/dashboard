@@ -2,8 +2,8 @@
  * COMMON HELPERS — used by all pages.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-const LOITER_MIN = 15;   // loitering threshold (minutes)
-const WARN_MIN = 5;      // approaching threshold (minutes)
+const LONG_MIN = 10;     // a presence this long shows red (the default outside-the-wall dwell rule)
+const WARN_MIN = 5;      // … and amber from here
 
 /* ─── Formatters ─── */
 
@@ -75,7 +75,7 @@ function openModal({ title, sub, filename, hasImage = true }) {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
-/* ─── Direct last-image modal for "Currently in Premises" row clicks ─── */
+/* ─── Direct last-image modal for a presence row click ─── */
 function openBadgeLastImage(session) {
   ensureModal();
   const modal = document.querySelector('.modal');
@@ -142,7 +142,7 @@ function renderBadgeSessionsList(badge, sessions) {
   if (sessions.length === 0) {
     document.getElementById('modal-sub').textContent = 'no sessions';
     document.getElementById('modal-body').innerHTML =
-      `<div class="modal-no-image">no sessions found for this badge</div>`;
+      `<div class="modal-no-image">no presences found for this class</div>`;
     return;
   }
 
@@ -307,16 +307,9 @@ window.closeModal = closeModal;
 /* ─── Status helpers ─── */
 function durationClass(secs) {
   const m = secs / 60;
-  if (m >= LOITER_MIN) return 'alert';
+  if (m >= LONG_MIN) return 'alert';
   if (m >= WARN_MIN) return 'warn';
   return 'ok';
-}
-function statusForSession(session) {
-  const secs = (Date.now() - session.first_seen.getTime()) / 1000;
-  if (session.whitelisted) return { cls: 'wl', label: 'WHITELIST' };
-  if (secs / 60 >= LOITER_MIN) return { cls: 'alert', label: 'LOITERING' };
-  if (secs / 60 >= WARN_MIN) return { cls: 'warn', label: 'APPROACHING' };
-  return { cls: 'ok', label: 'OK' };
 }
 
 /* ─── Header pills — breaches today / outside now (as WA's "At desk now"), shared by the perimeter pages ─── */
@@ -346,3 +339,18 @@ function bootstrap() {
 }
 
 const copyText = copyToClipboard;                    // shell.js (Workplace Analytics)
+
+/** the Workplace Analytics pager's markup for a list paged by the page itself (page 0-based; onclick = fnName(page)) */
+function waPagerHtml(page, total, size, fnName) {
+  if (total <= size) return total ? `<span class="pg-info">${total} ${total === 1 ? 'entry' : 'entries'}</span>` : '';
+  const pages = Math.ceil(total / size), cur = page + 1;
+  const a = page * size + 1, b = Math.min(total, cur * size);
+  const nums = [];
+  for (let p = 1; p <= pages; p++) {
+    if (p === 1 || p === pages || Math.abs(p - cur) <= 1) nums.push(p);
+    else if (nums[nums.length - 1] !== '…') nums.push('…');
+  }
+  const btn = (p, label, aria, on) => `<button type="button" class="pg-btn${on ? ' on' : ''}" onclick="${fnName}(${p - 1})"${p < 1 || p > pages || on ? ' disabled' : ''} aria-label="${aria}">${label}</button>`;
+  return `<span class="pg-info">${a}–${b} of ${total}</span><span class="pg-nav">` + btn(cur - 1, '‹', 'Previous page')
+    + nums.map(p => p === '…' ? '<span class="pg-gap">…</span>' : btn(p, p, `Page ${p}`, p === cur)).join('') + btn(cur + 1, '›', 'Next page') + '</span>';
+}

@@ -1,120 +1,64 @@
-# Trinetra Systems Monitor
+# Trinetra Perimeter dashboard
 
-Trinetra Systems Monitor is a smart loitering detection and personnel tracking system. It processes incoming detections from edge cameras (Jetson devices), groups them into logic "sessions" (visits), monitors for loitering, and provides a real-time monitoring dashboard and admin panel.
+Perimeter-violation monitoring for one site, fully offline: a DeepStream 7.1 pipeline on the Jetson watches the
+cameras, a FastAPI dashboard turns what it sees into **client-configured alerts** that flash and beep on every open
+dashboard page. No internet is needed; Telegram / email are optional extras.
 
-## Core Data Flow
+Built the same way as Trinetra Workplace Analytics (same sign-in, Activity Logs, optimisations and design). Installed
+and upgraded on a client's Jetson with the `trinetra-perimeter` skill (Docker container, port 8002, Tailscale Funnel
+`:8443`).
 
-The system operates on a continuous event-driven loop:
+## How it works
 
-1. **Edge Detections (Ingest)**: Edge Jetson devices detect a person and save a `.jpg` image to the `data/incoming/` directory. The filename contains metadata (e.g., `cam-parking_RED-CIRCLE_20260528-193935.jpg`).
-2. **Watchdog Processing**: The backend (`app.py`) watches the `incoming` directory using a file watcher. As soon as a file arrives:
-   - The image is parsed to extract the **Camera**, **Badge** (person ID), and **Timestamp**.
-   - A raw **Detection** log is inserted into the database.
-   - The image is moved to the `data/archive/` folder for long-term storage.
-3. **Session Management (Visits)**: The system groups rapid, successive detections of the same badge into a continuous **Session**. If a person is seen, their session opens. If they aren't seen for a certain gap (e.g., 5 mins) or they pass an "Exit Camera" (e.g., `cam-gate`), their session closes.
-4. **Loitering Check**: A background loop continuously checks open sessions. If a session stays open longer than the configured threshold (e.g., 15 mins), a loitering **Alert** is fired, and a red banner appears on the dashboard.
-5. **Dashboard & Admin**: The frontend uses a WebSocket to receive live updates. Users can acknowledge alerts (which auto-whitelists the badge) or manage the settings and database directly via the Admin panel.
-
----
-
-## Database Tables Explained
-
-The entire system state is stored in a single SQLite database (`data/trinetra.db`), managed automatically by the backend. It consists of four main tables:
-
-### 1. `detections` Table
-**What it is:** The raw, unfiltered log of every single time a camera spotted a person.
-- **Purpose**: Provides a granular, second-by-second history of movement.
-- **Key Fields**:
-  - `filename`: Links the detection to its saved image in `data/archive/`.
-  - `camera`: Which camera saw them.
-  - `badge`: The identity of the person (e.g., RED-CIRCLE).
-  - `type`: Either `entry` (first time seen), `sighting` (seen again), or `exit` (seen at an exit gate).
-- **Cleanup**: If you delete a row from this table via the Admin panel, the system also automatically deletes the linked `.jpg` image from the hard drive to free up space.
-
-### 2. `sessions` Table
-**What it is:** The grouped "visits" of people currently or previously in the premises.
-- **Purpose**: Instead of showing 50 separate detections for a person standing in front of a camera for 2 minutes, this table consolidates them into a single ongoing "Session".
-- **Key Fields**:
-  - `first_seen` & `last_seen`: Tracks exactly how long the person has been inside.
-  - `total_sightings`: How many raw detections are grouped into this session.
-  - `closed`: A boolean (`0` or `1`). If `0`, the person is currently in the building. If `1`, they have left or their session timed out.
-- **Dashboard Link**: This table directly powers the "Currently in Premises" section on the Live Dashboard.
-
-### 3. `alerts` Table
-**What it is:** A log of loitering violations.
-- **Purpose**: When a session exceeds the loitering threshold (e.g., 15 minutes), a row is added here.
-- **Key Fields**:
-  - `triggered_at`: When the loitering threshold was breached.
-  - `acknowledged`: Whether a security operator clicked "Ack" on the dashboard.
-  - `acknowledged_by`: Who acknowledged it (usually "operator").
-- **Dashboard Link**: This table powers the red "LOITERING DETECTED" banner. Once an alert is acknowledged, the banner is dismissed for that specific badge.
-
-### 4. `whitelist` Table
-**What it is:** A list of badges that are exempt from loitering alerts.
-- **Purpose**: Used for staff members, guards, or delivery personnel who are allowed to stay in the premises indefinitely without triggering alarms.
-- **Key Fields**:
-  - `badge`: The ID of the exempt person.
-  - `reason`: Why they were whitelisted (e.g., "Auto-whitelisted: acked alert #12").
-- **Workflow**: When an operator clicks "✓ Ack" on a loitering alert, the badge is automatically added to this table. The operator can later remove them from the whitelist using the "✕ Remove WL" button or the Whitelist tab.
-
----
-
-## Background Automated Tasks
-
-To keep the system running efficiently indefinitely, two background loops run continuously:
-
-1. **Loitering Loop (`loitering_loop`)**: 
-   - Runs every 10 seconds.
-   - Checks if any open session has been active longer than `TRINETRA_LOITER_MINUTES`.
-   - If yes, inserts an alert into the `alerts` table and notifies the frontend via WebSocket.
-   - Auto-closes sessions if no new detections have occurred within the `TRINETRA_SESSION_AUTO_CLOSE_MINUTES` timeframe.
-
-2. **Image Cleanup Loop (`image_cleanup_loop`)**:
-   - Runs every 24 hours (and once 60 seconds after server startup).
-   - Scans the `data/archive/` folder for `.jpg` files older than `TRINETRA_IMAGE_RETENTION_DAYS`.
-   - Deletes old images to prevent disk space exhaustion.
-   - **Important**: It does *not* delete the database logs. The history remains forever, but the dashboard will simply show "NO IMAGE AVAILABLE" when viewing older logs.
-
-## Admin Settings
-
-Configuration can be updated on the fly without touching code via the **⚙ Admin Panel**. Settings are saved directly to the `.env` file and hot-reloaded into memory instantly. 
-
-Settings include thresholds, retention policies, Telegram alert integrations, and SMTP configurations for email notifications.
-
----
-
-## How to Run the System
-
-### 1. First Time Setup & Run
-If this is your first time setting up the dashboard on a new machine, you need to create a virtual environment and install the required dependencies before running it:
-
-```bash
-cd /home/yash/dashboard
-
-# Create a virtual environment named "venv"
-python3 -m venv venv
-
-# Activate the virtual environment
-source venv/bin/activate
-
-# Install the required Python packages
-pip install -r backend/requirements.txt
-
-# Run the server
-python backend/app.py
+```
+cameras ─▶ DeepStream (nvurisrcbin → nvstreammux → nvinfer YOLO → nvtracker → probe)        backend/pipeline/
+             │  every object: kind (person / object), the regions it is in, outside the line?, track id
+             ▼
+           data/incoming/<camera>_<class>_<YYYYmmdd-HHMMSS>-<ms>.jpg  +  same name .json (the frame description)
+             ▼
+dashboard: archive the image ─▶ Detection Log / Visits                                    backend/app.py
+           frame description ─▶ alert rule engine ─▶ alerts table ─▶ flashing strip + beep  backend/alert_rules.py
 ```
 
-### 2. Subsequent Runs (Every time after the first)
-Once the virtual environment is already created and dependencies are installed, you just need to activate it and run the script:
+* **Regions** (Alerts → Regions, or DeepStream → Zones), drawn on each camera's picture:
+  the perimeter **line** with its outside side, named **alert** regions (wall top, concertina), named **watch**
+  regions, and **ignore** regions (trees, roads: never reported).
+* **Image classes** (backend/classes.txt): `Boundry-object` (in an alert region), `outside-person`,
+  `outside-object`, `zone-person`, `zone-object` (in a watch region).
+* **Alert rules** (Alerts → Alert rules), set by the client: *presence* (alert at once), *dwell* (present for N
+  minutes), *count* (N or more at once), *camera offline* (N minutes). Each rule: who (person / object / any),
+  where (alert regions, outside the line, any region, or one named region), cameras, days and hours, severity,
+  sound, repeat while still present, cooldown, and the **presence gap** (how long an object may be missed and still
+  be the same presence).
+* **Alerts** (Alerts → Alerts): history with filters, pager, snapshot, Ack / Ack all. Every page shows the red
+  flashing strip and beeps while an alert is open (mute per browser).
 
-```bash
-cd /home/yash/dashboard
+### Edge cases the rule engine handles
 
-# Activate the existing virtual environment
-source venv/bin/activate
+* An object missed for a while (tracked 1–10 s, missed 11–20 s, tracked 21–25 s) is **one** presence as long as each
+  break is shorter than the rule's gap (default 60 s); the dwell time runs from the first sighting.
+* The presence is found in both directions around each frame, so frames that arrive late or out of order never
+  raise a second alert for the same presence; a backlog after a restart is replayed in time order.
+* A tracker id switch, a person crossing between cameras' rules, border jitter between two regions: the presence is
+  per rule and region, not per track id.
+* The pipeline saves an image at once for every new object (probation age 0) and for every new crowd peak; a
+  single-frame object right after a save is held and written a moment later, never dropped; held frames are written
+  when the pipeline stops; file names carry milliseconds.
+* Camera offline alerts wait for the camera to stay back for 60 s before a new outage can alert (a flapping camera
+  gives one alert, not dozens).
 
-# Run the server
-python backend/app.py
-```
+## Pages
 
-> **Note**: For production environments, it is highly recommended to set this command up as a `systemd` service so that the dashboard starts automatically if the server reboots.
+| Page | Who | What |
+|---|---|---|
+| Live | users with *live* | today's KPIs, open alerts banner, zone cards, today's detections, alert log |
+| Alerts | *live* (rules: *alert rules*) | alert history, alert rules, regions per camera |
+| Detection Log | *logs* | every saved image, filters, charts, export |
+| Visits | *logs* | each presence of a class at a camera |
+| Whitelist | *manage alerts* | classes / detector labels that never fire a rule |
+| Users / Admin Accounts | admins / Trinetra team | accounts and permissions |
+| Activity Logs, Settings, DeepStream | Trinetra team | audit trail; settings; cameras, model, engine, pipeline |
+
+## Run it on a laptop (development)
+
+See RUN.md. Tests: TESTING.md.

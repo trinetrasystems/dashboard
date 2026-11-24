@@ -5,9 +5,9 @@
 .ds .card { padding: 0; overflow: hidden; }
 .ds .card > .card-head { padding: 14px 18px; margin: 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .ds .details { min-width: 0; }
-.ds .ds-input { height: 42px; padding: 0 12px; border: 1px solid var(--border-bright); border-radius: 8px; background: var(--surface);
+.ds-input { height: 42px; padding: 0 12px; border: 1px solid var(--border-bright); border-radius: 8px; background: var(--surface);
   color: var(--text); font: inherit; font-size: 15px; }
-.ds .ds-input:focus { outline: 2px solid var(--primary-bg); border-color: var(--primary); }
+.ds-input:focus { outline: 2px solid var(--primary-bg); border-color: var(--primary); }
 .ds .btn.sm { height: 34px; }
 .ds .seg { height: 40px; }
 .ds .seg button { font-size: 15px; }
@@ -78,3 +78,7 @@
   .ds-form { grid-template-columns: 1fr; }
   .live-grid { grid-template-columns: 1fr; }
 }
+
+/* the zone editor card (DeepStream → Perimeter zones, Alerts → Regions) */
+.ze-card { padding: 0; overflow: hidden; }
+.zone-bar .ds-input { height: 34px; }
