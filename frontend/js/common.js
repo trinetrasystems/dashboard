@@ -6,7 +6,6 @@ const LOITER_MIN = 15;   // loitering threshold (minutes)
 const WARN_MIN = 5;      // approaching threshold (minutes)
 
 /* ─── Formatters ─── */
-function pad(n) { return String(n).padStart(2, '0'); }
 
 function fmtTime(d) {
   d = (d instanceof Date) ? d : new Date(d);
@@ -34,78 +33,10 @@ function fmtRelative(d) {
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
   return `${Math.floor(sec / 86400)}d ago`;
 }
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
-
-/* ─── Brand logo — full lockup, one file per theme ─── */
-const LOGO_SRC = {
-  dark: 'assets/Trinetra-Logo-Full-Dark.png',
-  light: 'assets/Trinetra-Logo-Full-Light.png',
-};
-
-function savedTheme() {
-  return localStorage.getItem('trinetra-theme') === 'light' ? 'light' : 'dark';
-}
-
-/* ─── Topbar HTML — injected by each page ─── */
-function renderTopbar(activeTab) {
-  const tab = (id, label, href) => `
-    <a href="${href}" class="tab ${id === activeTab ? 'active' : ''}">${label}</a>`;
-  return `
-<div class="topbar">
-  <div class="brand">
-    <img id="brand-logo" class="logo" src="${LOGO_SRC[savedTheme()]}" alt="Trinetra Systems">
-    <div class="brand-tag">perimeter</div>
-  </div>
-  <div class="tabs">
-    ${tab('live', 'Live', 'index.html')}
-    ${tab('logs', 'Logs & Charts', 'logs.html')}
-  </div>
-  <div class="status-cluster">
-    <div class="status-pill"><span class="dot"></span><span>0 BREACHES TODAY</span></div>
-    <div class="status-pill"><span class="dot"></span><span>0 OUTSIDE PERIMETER</span></div>
-  </div>
-  <div class="topbar-right">
-    <div class="time-stamp"><b id="clock">${fmtDate(NOW)} · ${fmtTime(NOW)}</b></div>
-    <span class="time-stamp" id="signed-in-user" title="Signed in"></span>
-    <a href="admin.html" class="icon-btn" id="admin-link" title="Admin Panel" style="text-decoration:none;font-size:15px;display:none;">⚙</a>
-    <button class="icon-btn" id="sign-out-btn" title="Sign out">⏻</button>
-    <button class="icon-btn" id="theme-toggle" title="Toggle theme">☾</button>
-    <button class="icon-btn" onclick="location.reload()" title="Refresh">↻</button>
-  </div>
-</div>`;
-}
-
-/* ─── Clock — ticks every second ─── */
+/* ─── Clock in the page header (#clock) ─── */
 function startClock() {
-  setInterval(() => {
-    const el = document.getElementById('clock');
-    if (el) {
-      const d = new Date();
-      el.textContent = `${fmtDate(d)} · ${fmtTime(d)}`;
-    }
-  }, 1000);
-}
-
-/* ─── Theme toggle — persisted in localStorage ─── */
-function applyTheme(theme) {
-  document.body.setAttribute('data-theme', theme);
-  localStorage.setItem('trinetra-theme', theme);
-  const btn = document.getElementById('theme-toggle');
-  if (btn) btn.textContent = theme === 'dark' ? '☾' : '☀';
-  const logo = document.getElementById('brand-logo');
-  if (logo) logo.src = LOGO_SRC[theme] || LOGO_SRC.dark;
-}
-function initTheme() {
-  const saved = savedTheme();
-  applyTheme(saved);
-  const btn = document.getElementById('theme-toggle');
-  if (btn) btn.addEventListener('click', () => {
-    applyTheme(document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-  });
+  const tick = () => { const el = document.getElementById('clock'); if (el) el.textContent = `${fmtDate(new Date())} · ${fmtTime(new Date())}`; };
+  tick(); setInterval(tick, 1000);
 }
 
 /* ─── Image modal ─── */
@@ -388,45 +319,30 @@ function statusForSession(session) {
   return { cls: 'ok', label: 'OK' };
 }
 
-/* ─── Topbar status pills — real perimeter numbers, shared by all pages ─── */
+/* ─── Header pills — breaches today / outside now (as WA's "At desk now"), shared by the perimeter pages ─── */
 function updateTopbarPills(stats) {
-  const pills = document.querySelectorAll('.status-pill');
-  if (pills.length < 2 || !stats) return;
-
-  const breaches = stats.breaches_today || 0;
-  pills[0].className = `status-pill ${breaches ? 'alert' : ''}`;
-  pills[0].innerHTML =
-    `<span class="dot ${breaches ? 'red' : ''}"></span><span>${breaches} BREACH${breaches === 1 ? '' : 'ES'} TODAY</span>`;
-
-  const watching = stats.watching_outside || 0;
-  pills[1].innerHTML =
-    `<span class="dot"></span><span>${watching} OUTSIDE PERIMETER</span>`;
+  if (!stats) return;
+  const b = stats.breaches_today || 0, w = stats.watching_outside || 0;
+  const pb = document.getElementById('pill-breaches'), po = document.getElementById('pill-outside');
+  const pill = (el, cls, label, n) => { if (!el) return; el.className = `live-now ${n ? cls : ''}`; el.hidden = false;
+    el.innerHTML = `<span class="dot"></span><span class="ln-text"><span class="ln-label">${label}</span><b>${n}</b></span>`; };
+  pill(pb, 'bad', 'Breaches today:', b);
+  pill(po, 'warn', 'Outside now:', w);
 }
 window.updateTopbarPills = updateTopbarPills;
 
-/* ─── Bootstrap (call from each page) ─── */
-function bootstrap(activeTab) {
-  document.body.insertAdjacentHTML('afterbegin', renderTopbar(activeTab));
-  ensureModal();
-  startClock();
-  initTheme();
-
-  // Every page gets live pill numbers, not placeholders. The Live page
-  // refreshes them again on its own 5s cycle.
-  if (typeof getStats === 'function') {
-    getStats().then(updateTopbarPills).catch(() => { /* offline — keep placeholders */ });
-  }
-
-  // Signed-in account: show who it is; the admin link only for administrators.
-  const outBtn = document.getElementById('sign-out-btn');
-  if (outBtn && typeof signOut === 'function') outBtn.addEventListener('click', signOut);
-  if (typeof getMe === 'function') {
-    getMe().then(me => {
-      const who = document.getElementById('signed-in-user');
-      if (who) who.textContent = me.user_id;
-      const adm = document.getElementById('admin-link');
-      if (adm && me.role === 'admin') adm.style.display = '';
-      document.body.dataset.role = me.role;
-    }).catch(() => { /* apiGet already redirects on 401 */ });
-  }
+/* ─── Bootstrap (each perimeter page): the Workplace Analytics shell (shell.js), the image viewer, header pills ─── */
+function bootstrap() {
+  accessReady.then(ok => {
+    if (!ok) return;
+    renderShell();
+    ensureModal();
+    startClock();
+    if (document.getElementById('pill-breaches')) {
+      const refresh = () => getStats().then(updateTopbarPills).catch(() => { });
+      refresh(); setInterval(refresh, 15000);
+    }
+  });
 }
+
+const copyText = copyToClipboard;                    // shell.js (Workplace Analytics)

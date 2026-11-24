@@ -1,254 +1,25 @@
-/* ─── THEME VARIABLES ─── */
-:root,
-[data-theme="dark"] {
-  --bg: #0a0e17;
-  --surface: #131a2a;
-  --surface-2: #1a2236;
-  --surface-3: #222c44;
-  --border: #243049;
-  --border-bright: #324363;
-  --text: #e8edf5;
-  --text-muted: #8a96b3;
-  --text-dim: #5d6987;
-  --amber: #ffa940;
-  --amber-bg: rgba(255, 169, 64, 0.12);
-  --amber-border: rgba(255, 169, 64, 0.45);
-  --green: #3ddc97;
-  --green-bg: rgba(61, 220, 151, 0.12);
-  --green-border: rgba(61, 220, 151, 0.45);
-  --red: #ff5470;
-  --red-bg: rgba(255, 84, 112, 0.12);
-  --red-bg-strong: rgba(255, 84, 112, 0.18);
-  --red-border: rgba(255, 84, 112, 0.45);
-  --red-bright: #ff3355;
-  --cyan: #4ecdc4;
-  --violet: #9b8aff;
-  --shadow: 0 0 24px rgba(0, 0, 0, 0.4);
-  --bg-pattern:
-    radial-gradient(ellipse at top left, rgba(78, 205, 196, 0.04), transparent 50%),
-    radial-gradient(ellipse at bottom right, rgba(155, 138, 255, 0.04), transparent 50%);
-}
+/* ────────────────────────────────────────────────────────────────────────────
+ * PERIMETER — the perimeter pages' own parts (alert banner, zone cards, detections, charts, image viewer, filters)
+ * on the Workplace Analytics design (wa.css: theme, fonts, cards, tables, buttons). Generated from the earlier
+ * perimeter stylesheet: its colours are WA's theme variables, its text Open Sans.
+ * ──────────────────────────────────────────────────────────────────────────── */
 
-[data-theme="light"] {
-  --bg: #f5f7fb;
-  --surface: #ffffff;
-  --surface-2: #f0f3f9;
-  --surface-3: #e8edf5;
-  --border: #e0e5ee;
-  --border-bright: #c5cfde;
-  --text: #0a0e17;
-  --text-muted: #5d6987;
-  --text-dim: #8a96b3;
-  --amber: #d97706;
-  --amber-bg: #fef3c7;
-  --amber-border: #fbbf24;
-  --green: #059669;
-  --green-bg: #d1fae5;
-  --green-border: #6ee7b7;
-  --red: #dc2626;
-  --red-bg: #fee2e2;
-  --red-bg-strong: #fecaca;
-  --red-border: #f87171;
+/* tokens the perimeter parts use that wa.css does not define (both themes) */
+:root, [data-theme="light"] {
+  --cyan: var(--primary);
+  --red-border: rgba(239, 68, 68, 0.45);
+  --green-border: rgba(34, 197, 94, 0.45);
+  --amber-border: rgba(245, 158, 11, 0.5);
   --red-bright: #dc2626;
-  --cyan: #0891b2;
-  --violet: #7c3aed;
-  --shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --red-bg-strong: rgba(239, 68, 68, 0.16);
   --bg-pattern: none;
 }
-
-/* ─── RESET ─── */
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
-  background: var(--bg);
-  background-image: var(--bg-pattern);
-  color: var(--text);
-  min-height: 100vh;
-  /* Bumped for legibility on the control-room screen */
-  font-size: 17px;
-  line-height: 1.55;
-}
-
-.mono {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-}
-
-button {
-  font-family: inherit;
-  cursor: pointer;
-}
-
-input,
-select {
-  font-family: inherit;
-}
-
-/* ─── TOPBAR ─── */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 14px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.logo {
-  height: 40px;
-  width: auto;
-  display: block;
-  flex-shrink: 0;
-}
-
-.brand-tag {
-  color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  font-weight: 400;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.tabs {
-  display: flex;
-  gap: 4px;
-}
-
-.tab {
-  padding: 8px 14px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  text-decoration: none;
-}
-
-.tab:hover {
-  color: var(--text);
-}
-
-.tab.active {
-  background: var(--surface-2);
-  border-color: var(--border);
-  color: var(--text);
-}
-
-.status-cluster {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-
-.status-pill {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-}
-
-.status-pill.alert {
-  background: var(--red-bg);
-  border-color: var(--red-border);
-  color: var(--red);
-  font-weight: 600;
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 8px var(--green);
-}
-
-.dot.red {
-  background: var(--red);
-  box-shadow: 0 0 8px var(--red);
-  animation: pulse 1.2s infinite;
-}
-
-.dot.amber {
-  background: var(--amber);
-  box-shadow: 0 0 6px var(--amber);
-}
-
-@keyframes pulse {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.4;
-  }
-}
-
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.icon-btn {
-  width: 36px;
-  height: 36px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
-  text-decoration: none;
-  font-size: 15px;
-}
-
-.icon-btn:hover {
-  color: var(--text);
-  border-color: var(--border-bright);
-}
-
-.time-stamp {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-  color: var(--text-muted);
-  padding: 6px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.time-stamp b {
-  color: var(--text);
-  font-weight: 500;
+[data-theme="dark"] {
+  --red-border: rgba(248, 113, 113, 0.45);
+  --green-border: rgba(52, 211, 153, 0.45);
+  --amber-border: rgba(251, 191, 36, 0.5);
+  --red-bright: #f87171;
+  --red-bg-strong: rgba(248, 113, 113, 0.2);
 }
 
 /* ─── LOITERING BANNER ─── */
@@ -324,20 +95,20 @@ select {
 }
 
 .loiter-item .label {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
 
 .loiter-item .meta {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
 }
 
 .loiter-item .duration {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 700;
   color: var(--red);
@@ -350,16 +121,14 @@ select {
   border: 1px solid var(--border-bright);
   color: var(--text);
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .ack-btn:hover {
-  border-color: var(--cyan);
-  color: var(--cyan);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .loiter-item.acked {
@@ -374,166 +143,52 @@ select {
   display: none;
 }
 
-/* ─── CONTAINER ─── */
-.container {
-  /* Full-bleed: the dashboard fills the whole screen width, with the side
-     padding kept so nothing touches the edges. */
-  padding: 20px 24px;
-  width: 100%;
-  margin: 0;
-}
-
-/* ─── KPI CARDS ─── */
-.kpi-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin-bottom: 16px;
-}
-
-.kpi-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  position: relative;
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-
-.kpi-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 3px;
-  height: 100%;
-  background: var(--cyan);
-}
-
-.kpi-card.green::before {
-  background: var(--green);
-}
-
-.kpi-card.red::before {
-  background: var(--red);
-}
-
-.kpi-card.red {
-  background: linear-gradient(135deg, var(--surface) 0%, var(--red-bg) 100%);
-  border-color: var(--red-border);
-}
-
-.kpi-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 10px;
-}
-
-.kpi-value {
-  font-size: 34px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  font-family: 'JetBrains Mono', monospace;
-  line-height: 1;
-  margin-bottom: 6px;
-}
-
-.kpi-card.red .kpi-value {
-  color: var(--red);
-}
-
-.kpi-delta {
-  font-size: 14px;
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--text-muted);
-}
-
-.kpi-delta.red {
-  color: var(--red);
-}
-
-/* ─── CARD ─── */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-
-.card-header {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.card-sub {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
 /* ─── TABLES ─── */
-table {
+.perimeter table {
   width: 100%;
   border-collapse: collapse;
 }
 
-thead th {
+.perimeter thead th {
   text-align: left;
   padding: 9px 18px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
   font-weight: 500;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
 }
 
-tbody td {
+.perimeter tbody td {
   padding: 10px 18px;
   font-size: 15px;
   vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
 
-tbody tr:last-child td {
+.perimeter tbody tr:last-child td {
   border-bottom: none;
 }
 
-tbody tr.alert-row td {
+.perimeter tbody tr.alert-row td {
   background: var(--red-bg);
 }
 
-tbody tr.warn-row td {
+.perimeter tbody tr.warn-row td {
   background: var(--amber-bg);
 }
 
-tbody tr.clickable {
+.perimeter tbody tr.clickable {
   cursor: pointer;
 }
 
-tbody tr.clickable:hover td {
+.perimeter tbody tr.clickable:hover td {
   background: var(--surface-2);
 }
 
 tbody td.mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
 }
 
@@ -544,7 +199,7 @@ tbody td.mono {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 600;
 }
@@ -570,11 +225,9 @@ tbody td.mono {
   gap: 4px;
   padding: 3px 8px;
   border-radius: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .status-tag.alert {
@@ -605,11 +258,9 @@ tbody td.mono {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .tag-entry {
@@ -666,14 +317,14 @@ tbody td.mono {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
 }
 
 .filter-input:focus,
 .filter-select:focus {
   outline: none;
-  border-color: var(--cyan);
+  border-color: var(--primary);
 }
 
 .filter-input.search {
@@ -684,25 +335,21 @@ tbody td.mono {
 }
 
 .filter-label {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .export-btn {
   margin-left: auto;
   padding: 8px 14px;
-  background: var(--cyan);
+  background: var(--primary);
   color: #fff;
   border: none;
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .export-btn:hover {
@@ -737,7 +384,7 @@ tbody td.mono {
   display: flex;
 }
 
-.modal {
+.modal-overlay .modal {
   background: var(--surface);
   border: 1px solid var(--border-bright);
   border-radius: 16px;
@@ -747,7 +394,7 @@ tbody td.mono {
   overflow: hidden;
 }
 
-.modal-header {
+.modal-overlay .modal-header {
   padding: 18px 24px;
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -755,35 +402,35 @@ tbody td.mono {
   gap: 16px;
 }
 
-.modal-header h2 {
+.modal-overlay .modal-header h2 {
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
-.modal-header .sub {
-  font-family: 'JetBrains Mono', monospace;
+.modal-overlay .modal-header .sub {
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
   color: var(--text-muted);
 }
 
-.modal-close {
+.modal-overlay .modal-close {
   margin-left: auto;
   padding: 6px 14px;
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
 }
 
-.modal-body {
+.modal-overlay .modal-body {
   padding: 16px 24px;
   text-align: center;
 }
 
-.modal-img {
+.modal-overlay .modal-img {
   max-width: 100%;
   max-height: 60vh;
   border-radius: 8px;
@@ -791,10 +438,10 @@ tbody td.mono {
   margin: 0 auto;
 }
 
-.modal-no-image {
+.modal-overlay .modal-no-image {
   padding: 60px 20px;
   color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
 }
 
@@ -826,26 +473,24 @@ tbody td.mono {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
 }
 
 .admin-input input:focus {
   outline: none;
-  border-color: var(--cyan);
+  border-color: var(--primary);
 }
 
 .admin-input button {
   padding: 10px 18px;
-  background: var(--cyan);
+  background: var(--primary);
   color: #fff;
   border: none;
   border-radius: 6px;
   font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .wl-row {
@@ -860,20 +505,20 @@ tbody td.mono {
 }
 
 .wl-row .label {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 600;
 }
 
 .wl-row .reason {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: var(--text-muted);
   margin-left: 16px;
 }
 
 .wl-row .added {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
   margin-right: 12px;
@@ -885,11 +530,9 @@ tbody td.mono {
   color: var(--red);
   border: 1px solid var(--red-border);
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .notice {
@@ -904,10 +547,8 @@ tbody td.mono {
 
 .notice b {
   color: var(--amber);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 /* ─── MAIN GRID (premises + notifications side by side) ───────────────── */
@@ -968,21 +609,21 @@ tbody td.mono {
 }
 
 .notif-item .title {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
 
 .notif-item .meta {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
 }
 
 .notif-time {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
   flex-shrink: 0;
@@ -992,7 +633,7 @@ tbody td.mono {
   padding: 24px;
   text-align: center;
   color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
 }
 
@@ -1003,11 +644,9 @@ tbody td.mono {
 
 .modal-log-list-header {
   padding: 10px 24px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   border-top: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -1037,7 +676,7 @@ tbody td.mono {
 
 .modal-log-item.active {
   background: var(--surface);
-  border-left: 3px solid var(--cyan);
+  border-left: 3px solid var(--primary);
   padding-left: 21px;
 }
 
@@ -1053,14 +692,14 @@ tbody td.mono {
 }
 
 .modal-log-item .time {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
   color: var(--text);
   font-weight: 600;
 }
 
 .modal-log-item .meta {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: var(--text-muted);
   margin-top: 2px;
@@ -1073,7 +712,7 @@ tbody td.mono {
   margin: 2px 4px 2px 0;
   border-radius: 4px;
   background: var(--surface-3);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
   border: 1px solid var(--border);
@@ -1084,7 +723,7 @@ tbody td.mono {
   padding: 0 4px;
   margin-left: 4px;
   border-radius: 3px;
-  background: var(--cyan);
+  background: var(--primary);
   color: var(--bg);
   font-weight: 600;
   min-width: 14px;
@@ -1178,7 +817,7 @@ tbody td.mono {
   border-radius: 6px;
   background: var(--surface-3);
   color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 700;
   display: flex;
@@ -1211,7 +850,7 @@ tbody td.mono {
 }
 
 .zone-count {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 22px;
   font-weight: 600;
   line-height: 1;
@@ -1222,7 +861,7 @@ tbody td.mono {
 .zone-inside .zone-count { color: var(--green); }
 
 .zone-unit {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: var(--text-dim);
   margin-right: auto;
@@ -1234,11 +873,9 @@ tbody td.mono {
   align-items: center;
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   vertical-align: middle;
   white-space: nowrap;
 }
@@ -1268,7 +905,6 @@ tbody td.mono {
 
 /* ─── BREACH BANNER — sharper than the generic alert banner ─── */
 .breach-banner .loiter-title {
-  letter-spacing: 0.06em;
 }
 
 /* ─── LIVE FEED — breach rows stand out ─── */
@@ -1371,7 +1007,6 @@ tbody td.mono {
 .alert-banner-head {
   font-weight: 800;
   font-size: 17px;
-  letter-spacing: 0.08em;
   color: var(--amber);
 }
 
@@ -1380,10 +1015,9 @@ tbody td.mono {
 }
 
 .alert-banner-sub {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
-  letter-spacing: 0.03em;
 }
 
 /* ─── One chip per unacknowledged BADGE (grouped, capped) ─── */
@@ -1470,10 +1104,9 @@ tbody td.mono {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.06em;
   color: var(--amber);
   white-space: nowrap;
 }
@@ -1498,7 +1131,7 @@ tbody td.mono {
 }
 
 .alert-chip-badge {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.01em;
@@ -1509,7 +1142,7 @@ tbody td.mono {
 }
 
 .alert-chip-meta {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
@@ -1523,10 +1156,9 @@ tbody td.mono {
   background: var(--green-bg);
   border: 1px solid var(--green-border);
   color: var(--green);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 800;
-  letter-spacing: 0.04em;
   white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, transform 0.08s ease;
 }
@@ -1545,10 +1177,9 @@ tbody td.mono {
   background: var(--red);
   color: #fff;
   border: none;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 800;
-  letter-spacing: 0.05em;
   white-space: nowrap;
   transition: transform 0.08s ease, filter 0.15s ease;
 }
@@ -1566,7 +1197,7 @@ tbody td.mono {
   border-radius: 5px;
   background: var(--surface-3);
   border: 1px solid var(--border-bright);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -1583,10 +1214,8 @@ tbody td.mono {
 }
 
 .count-panel-head {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--text-dim);
   margin-bottom: 12px;
 }
@@ -1606,7 +1235,7 @@ tbody td.mono {
 }
 
 .count-box-value {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 30px;
   font-weight: 700;
   line-height: 1;
@@ -1614,7 +1243,7 @@ tbody td.mono {
 }
 
 .count-box-label {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 6px;
@@ -1662,7 +1291,7 @@ tbody td.mono {
   background: var(--surface-2);
   border: 1px solid var(--border-bright);
   color: var(--text);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 600;
   transition: background 0.15s ease, border-color 0.15s ease;
@@ -1670,8 +1299,8 @@ tbody td.mono {
 
 .pager-btn:hover:not(:disabled) {
   background: var(--surface-3);
-  border-color: var(--cyan);
-  color: var(--cyan);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .pager-btn:disabled {
@@ -1680,7 +1309,7 @@ tbody td.mono {
 }
 
 .pager-status {
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-muted);
@@ -1717,7 +1346,7 @@ tbody td.mono {
 
 .acked-meta {
   margin-top: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -1730,10 +1359,9 @@ tbody td.mono {
   background: var(--green-bg);
   border: 1px solid var(--green-border);
   color: var(--green);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
   white-space: nowrap;
   vertical-align: middle;
   transition: background 0.15s ease, color 0.15s ease;
@@ -1765,7 +1393,7 @@ tbody td.mono {
   background: var(--surface-3);
   border: 1px solid var(--border-bright);
   color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 800;
   display: flex;
@@ -1783,7 +1411,7 @@ tbody td.mono {
 
 .mini-thumb:hover {
   transform: scale(1.08);
-  border-color: var(--cyan);
+  border-color: var(--primary);
 }
 
 .alert-chip.breach .mini-thumb:hover { border-color: var(--red); }
@@ -1827,7 +1455,7 @@ tbody td.mono {
 
 .group-row-meta {
   margin-top: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -1848,10 +1476,94 @@ tbody td.mono {
 
 .status-note {
   margin-top: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-dim);
 }
 
 /* Operators see the whitelist but cannot change it (admin only). */
 #wl-list.read-only .remove { display: none; }
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Workplace Analytics look for the perimeter pages (last, so it wins)
+ * ════════════════════════════════════════════════════════════════════════════ */
+.perimeter .container { display: flex; flex-direction: column; gap: 16px; padding: 0; width: auto; }
+.perimeter .container > * { margin-bottom: 0 !important; }
+.perimeter .card { padding: 16px 18px; margin: 0; overflow: visible; }
+.perimeter .card-header { padding: 0; border: 0; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; min-height: 26px; background: none; }
+.perimeter .card-title { font-size: 18px; font-weight: 600; }
+.perimeter .card-sub { font-size: 14.5px; color: var(--text-dim); }
+.perimeter .table-wrap, .perimeter .card > div:has(> table) { overflow-x: auto; }
+.perimeter table { width: 100%; border-collapse: collapse; font-size: 16px; }
+.perimeter thead th { text-align: left; font-weight: 700; font-size: 14.5px; color: var(--text-muted); background: var(--surface-2);
+  padding: 13px 14px; border-bottom: 1px solid var(--border-bright); }
+.perimeter tbody td { padding: 14px; border-bottom: 1px solid var(--border); font-size: 15.5px; }
+.perimeter tbody tr:hover td { background: var(--surface-2); }
+.perimeter tbody tr.alert-row td, .perimeter tbody tr.alert-row:hover td { background: var(--red-bg); }
+.perimeter tbody tr.warn-row td, .perimeter tbody tr.warn-row:hover td { background: var(--amber-bg); }
+
+/* KPIs: the WA KPI card (icon tile + label + value) */
+.perimeter .kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.perimeter .kpi-value { font-size: 28px; font-weight: 700; line-height: 1.2; margin: 0; letter-spacing: 0; }
+.perimeter .kpi[data-tone="red"] .kpi-value { color: var(--red-ink); }
+.perimeter .kpi[data-tone="amber"] .kpi-value { color: var(--amber-ink); }
+.perimeter .kpi-label { margin: 0; font-size: 14.5px; color: var(--text-muted); font-weight: 500; }
+.perimeter .kpi-delta { font-size: 13.5px; color: var(--text-muted); }
+.perimeter .kpi-delta.red { color: var(--red-ink); }
+
+/* header pills: WA "At desk now" pill, red / amber for breaches / people outside */
+.live-now.bad { background: var(--red-bg); border-color: var(--red); }
+.live-now.bad .dot { background: var(--red); }
+.live-now.bad b { color: var(--red-ink); }
+.live-now.warn { background: var(--amber-bg); border-color: var(--amber); }
+.live-now.warn .dot { background: var(--amber); }
+.live-now.warn b { color: var(--amber-ink); }
+.clock-pill { cursor: default; font-variant-numeric: tabular-nums; font-size: 16px; }
+.clock-pill .ic { color: var(--text-dim); }
+
+/* filters, buttons: WA controls */
+.perimeter .filter-bar { padding: 14px 16px; border-radius: 12px; margin: 0; gap: 10px; }
+.perimeter .filter-input, .perimeter .filter-select { height: 42px; padding: 0 12px; border-radius: 8px; background: var(--surface);
+  border: 1px solid var(--border); font-size: 15px; color: var(--text); }
+.perimeter .filter-input:focus, .perimeter .filter-select:focus { outline: 2px solid var(--primary-bg); border-color: var(--primary); }
+.perimeter .filter-label { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+.perimeter .export-btn { height: 42px; padding: 0 14px; border-radius: 8px; background: var(--primary); font-size: 15px; font-weight: 600; }
+.perimeter .ack-btn, .perimeter .ack-btn-sm, .perimeter .ack-btn-lg, .perimeter .ack-all-btn { border-radius: 8px; font-weight: 600; }
+
+/* image viewer (perimeter detections) — a WA dialog */
+.modal-overlay { background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(4px); z-index: 70; }
+.modal-overlay .modal { max-width: 860px; border-radius: 14px; border: 1px solid var(--border); box-shadow: var(--shadow-lg); padding: 0; gap: 0; display: block; }
+.modal-overlay .modal-header { padding: 16px 20px; }
+.modal-overlay .modal-header h2 { font-size: 18px; font-weight: 600; }
+.modal-overlay .modal-header .sub { font-size: 14px; color: var(--text-dim); }
+.modal-overlay .modal-close { border-radius: 8px; height: 38px; padding: 0 14px; font-weight: 600; font-size: 14px; }
+
+/* the pager of the detection tables: WA pager buttons */
+.perimeter .pager-btn { min-width: 36px; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+  color: var(--text); font-weight: 600; }
+.perimeter .pager-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.perimeter .pager-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* acknowledge buttons only for those who may acknowledge (body[data-can-ack] is set by shell.js) */
+body:not([data-can-ack]) .ack-btn, body:not([data-can-ack]) .ack-btn-lg, body:not([data-can-ack]) .ack-btn-sm,
+body:not([data-can-ack]) .ack-all-btn { display: none !important; }
+
+/* info boxes: one block of text (WA notice) */
+.perimeter .notice { display: block; border-radius: 10px; padding: 12px 14px; line-height: 1.55; }
+.perimeter .notice b { display: inline; }
+.perimeter .admin-wrap { max-width: 860px; margin: 0; padding: 0; width: 100%; }
+.perimeter .admin-card { border-radius: 12px; }
+
+/* phones: banner cards shrink, their actions wrap (the tables scroll inside .table-wrap, as WA) */
+.perimeter .alert-banner-list { max-width: 100%; }
+.perimeter .alert-chip { max-width: 100%; min-width: 0; flex-wrap: wrap; }
+.perimeter .table-wrap { overflow-x: auto; }
+@media (max-width: 640px) {
+  .perimeter .kpi-row { grid-template-columns: 1fr; }
+  .perimeter .alert-banner-title { flex-wrap: wrap; }
+}
+.perimeter .admin-input { flex-wrap: wrap; }
+.perimeter .admin-input > * { min-width: 0; }
+@media (max-width: 640px) { .perimeter .admin-input > * { flex: 1 1 100% !important; } }

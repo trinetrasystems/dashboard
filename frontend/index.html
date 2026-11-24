@@ -4,14 +4,33 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trinetra Systems · Perimeter Security</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css">
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<link rel="stylesheet" href="css/perimeter.css">
 </head>
 <body>
 
-<!-- Topbar (with Trinetra logo) injected by common.js -->
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main perimeter">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <div class="title-row">
+          <h1 class="page-title">Live</h1>
+          <div class="live-now" id="pill-breaches" hidden></div>
+          <div class="live-now" id="pill-outside" hidden></div>
+        </div>
+        <div class="page-sub">Perimeter breaches and people outside the wall — now</div>
+      </div>
+      <div class="head-controls">
+        <span class="date-pill clock-pill" title="Now"><span data-icon="clock"></span><span id="clock">—</span></span>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
 
 <!-- Breach banner — only while an unacknowledged perimeter breach is live -->
 <div id="breach-banner" class="alert-banner" style="display: none;">
@@ -32,21 +51,25 @@
 
   <!-- ═══ KPIs — the two numbers that matter on a perimeter ═══ -->
   <div class="kpi-row">
-    <div class="kpi-card red">
-      <div class="kpi-label">Perimeter Breaches</div>
-      <div class="kpi-value" id="kpi-breach">—</div>
-      <div class="kpi-delta red">⚡ instant · alert region</div>
+    <div class="kpi" data-tone="red">
+      <div class="kpi-icon"><span data-icon="shield"></span></div>
+      <div><div class="kpi-label">Perimeter Breaches</div>
+        <div class="kpi-value" id="kpi-breach">—</div>
+        <div class="kpi-delta red">instant · alert region</div></div>
     </div>
-    <div class="kpi-card amber">
-      <div class="kpi-label">Early Warnings</div>
-      <div class="kpi-value" id="kpi-warning">—</div>
-      <div class="kpi-delta" id="kpi-warning-sub">dwell · outside perimeter</div>
+    <div class="kpi" data-tone="amber">
+      <div class="kpi-icon"><span data-icon="walk"></span></div>
+      <div><div class="kpi-label">Early Warnings</div>
+        <div class="kpi-value" id="kpi-warning">—</div>
+        <div class="kpi-delta" id="kpi-warning-sub">dwell · outside perimeter</div></div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Number of Alerts Today</div>
-      <div class="kpi-value" id="kpi-total">—</div>
-      <div class="kpi-delta">breach + early warning</div>
+    <div class="kpi" data-tone="blue">
+      <div class="kpi-icon"><span data-icon="bell"></span></div>
+      <div><div class="kpi-label">Number of Alerts Today</div>
+        <div class="kpi-value" id="kpi-total">—</div>
+        <div class="kpi-delta">breach + early warning</div></div>
     </div>
+  </div>
   </div>
 
   <!-- ═══ Zone strip — one camera, three zones, three rules ═══ -->
@@ -86,7 +109,7 @@
         </div>
         <div class="card-sub">▼ newest first · today only</div>
       </div>
-      <table>
+      <div class="table-wrap"><table>
         <thead>
           <tr>
             <th>Detection</th><th>Camera</th><th>Time</th>
@@ -96,7 +119,7 @@
         <tbody id="watch-body">
           <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
         </tbody>
-      </table>
+      </table></div>
       <div class="pager" id="watch-pager" style="display:none;"></div>
   </div>
 
@@ -109,7 +132,7 @@
       </div>
       <div class="card-sub" id="alertlog-meta">—</div>
     </div>
-    <table>
+    <div class="table-wrap"><table>
       <thead>
         <tr>
           <th>Snapshot</th><th>Time</th><th>Event</th>
@@ -119,7 +142,7 @@
       <tbody id="alertlog-body">
         <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
       </tbody>
-    </table>
+    </table></div>
     <div class="pager" id="alertlog-pager" style="display:none;"></div>
   </div>
 
@@ -132,7 +155,7 @@
       </div>
       <div class="card-sub" id="ackedlog-meta">—</div>
     </div>
-    <table>
+    <div class="table-wrap"><table>
       <thead>
         <tr>
           <th>Snapshot</th><th>Time</th><th>Event</th>
@@ -142,7 +165,7 @@
       <tbody id="ackedlog-body">
         <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim);">loading…</td></tr>
       </tbody>
-    </table>
+    </table></div>
     <div class="pager" id="ackedlog-pager" style="display:none;"></div>
   </div>
 
@@ -159,8 +182,12 @@
   </div>
 
 </div>
+  </main>
+</div>
 
-<script src="js/dummy-data.js"></script>
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
 <script src="js/common.js"></script>
 <script src="js/api.js"></script>
 <script src="js/live.js"></script>

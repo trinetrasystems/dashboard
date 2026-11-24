@@ -21,8 +21,9 @@ except ImportError:
 BACKEND_DIR  = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
 
-# ─── Load .env from project root if present ──────────────────────────────────
-ENV_FILE = PROJECT_ROOT / ".env"
+# ─── Load the settings file: TRINETRA_ENV_FILE (the Jetson container: data/dashboard.env, outside the
+#     image so it survives upgrades), else .env at the project root ─────────────
+ENV_FILE = Path(os.environ.get("TRINETRA_ENV_FILE", "") or (PROJECT_ROOT / ".env"))
 if _HAS_DOTENV and ENV_FILE.exists():
     load_dotenv(ENV_FILE)
     print(f"[config] loaded .env from {ENV_FILE}")
@@ -71,7 +72,7 @@ PORT = int(os.environ.get("TRINETRA_PORT", "8000"))
 EXPECTED_JETSONS = [
     j.strip() for j in os.environ.get(
         "TRINETRA_JETSONS",
-        "central,edge-1,edge-2,edge-3"
+        ""
     ).split(",") if j.strip()
 ]
 HEARTBEAT_STALE_SECONDS = int(os.environ.get("TRINETRA_HB_STALE", "90"))
@@ -242,27 +243,31 @@ def dwell_minutes_for(badge: str):
 
 
 # ─── IMAGE CLEANUP ────────────────────────────────────────────────────────────
-# Delete archived images older than this many days. 0 = keep forever (disabled).
-IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "0"))
+# Camera images are kept this many days (today counts as one); older days are deleted at night.
+# 0 = keep forever. The detections / alerts stay in the database either way.
+IMAGE_RETENTION_DAYS = int(os.environ.get("TRINETRA_IMAGE_RETENTION_DAYS", "30"))
+# Disk guard: under this much free space the oldest day of images is deleted first (never today), at any hour.
+DISK_MIN_FREE_GB = float(os.environ.get("TRINETRA_DISK_MIN_FREE_GB", "15"))
+# Nightly database backup on this device (HH:MM, empty = off) and how many daily copies are kept.
+BACKUP_AT   = os.environ.get("TRINETRA_BACKUP_AT", "23:50")
+BACKUP_KEEP = int(os.environ.get("TRINETRA_BACKUP_KEEP", "7"))
 
-# ─── ACCOUNTS & SESSIONS ──────────────────────────────────────────────────────
-# Accounts live in the database (dashboard_accounts table) with PBKDF2-hashed passwords.
-# ADMIN_EMAIL / ADMIN_PASSWORD are read ONCE, to create the first administrator
-# when the database has none. There is no built-in default password: if
-# ADMIN_PASSWORD is empty or too weak, a random one is generated and written
-# to <DATA_DIR>/initial-admin-password.txt (readable only by this user).
-# After the first administrator exists, ADMIN_PASSWORD is removed from .env.
-ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL",    "trinetra@admin.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-
-# A session with no request for this many minutes is signed out.
+# ─── ACCOUNTS & SESSIONS (access.py) ──────────────────────────────────────────
+# The Trinetra team: comma-separated user IDs, all signing in with SUPPORT_PASSWORD (empty = team login off).
+# Admin accounts are made by the team on the Admin Accounts page; admins make users on the Users page.
+SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "trinetra")
+SUPPORT_PASSWORD = os.environ.get("SUPPORT_PASSWORD", "")
+# Session lifetime (hours): users + Trinetra team, admin accounts.
+SESSION_HOURS       = int(os.environ.get("TRINETRA_SESSION_HOURS", "12"))
+ADMIN_SESSION_HOURS = int(os.environ.get("TRINETRA_ADMIN_SESSION_HOURS", "24"))
+# A session with no request for this many minutes is signed out (an open Live page keeps it alive).
 IDLE_MINUTES = int(os.environ.get("TRINETRA_IDLE_MINUTES", "60"))
-# Absolute session lifetime, whatever the activity.
-SESSION_HOURS_ADMIN    = int(os.environ.get("TRINETRA_SESSION_HOURS_ADMIN",    "8"))
-SESSION_HOURS_OPERATOR = int(os.environ.get("TRINETRA_SESSION_HOURS_OPERATOR", "12"))
-# Activity log (admin panel → Activity Log): entries older than this are pruned
-# once a day. 0 = keep forever.
-AUDIT_RETENTION_DAYS = int(os.environ.get("TRINETRA_AUDIT_RETENTION_DAYS", "365"))
+# Activity Logs (Trinetra team): rows older than this many days are removed. 0 = keep forever.
+AUDIT_LOG_DAYS = int(os.environ.get("TRINETRA_AUDIT_RETENTION_DAYS", "365"))
+# The client's address of this dashboard (sign-in links on Admin Accounts), e.g. https://<device>.ts.net:8443
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip()
+# One line per web request in the log (off: the Live page polls every few seconds).
+ACCESS_LOG = os.environ.get("TRINETRA_ACCESS_LOG", "0") == "1"
 
 # ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -308,6 +313,9 @@ def print_summary():
     print(f"[config] INSIDE_BADGES = {sorted(INSIDE_BADGES) or '(none)'} (tracked, no alarm)")
     print(f"[config] BREACH_COOL   = {BREACH_COOLDOWN_SECONDS}s")
     print(f"[config] PERIM_GAP     = {PERIMETER_GAP_MINUTES} min (continuous-presence window)")
-    print(f"[config] IMAGE_CLEANUP = {'disabled' if IMAGE_RETENTION_DAYS == 0 else f'{IMAGE_RETENTION_DAYS} days'}")
-    print(f"[config] SESSIONS      = idle {IDLE_MINUTES} min · admin {SESSION_HOURS_ADMIN} h · operator {SESSION_HOURS_OPERATOR} h")
-    print(f"[config] ACTIVITY LOG  = keep {AUDIT_RETENTION_DAYS or 'forever'} days")
+    print(f"[config] ENV_FILE      = {ENV_FILE}")
+    print(f"[config] IMAGES KEPT   = {'forever' if IMAGE_RETENTION_DAYS <= 0 else f'{IMAGE_RETENTION_DAYS} days'} · disk guard under {DISK_MIN_FREE_GB:g} GB free")
+    print(f"[config] BACKUP        = {BACKUP_AT or 'off'} (keep {BACKUP_KEEP})")
+    print(f"[config] TEAM LOGIN    = {'on' if SUPPORT_PASSWORD else 'OFF (no SUPPORT_PASSWORD)'} · {len([u for u in SUPPORT_USERNAME.split(',') if u.strip()])} ID(s)")
+    print(f"[config] SESSIONS      = idle {IDLE_MINUTES} min · users {SESSION_HOURS} h · admins {ADMIN_SESSION_HOURS} h")
+    print(f"[config] ACTIVITY LOG  = keep {AUDIT_LOG_DAYS or 'forever'} days")

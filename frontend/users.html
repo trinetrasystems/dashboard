@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · Users</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">Users</h1>
+        <div class="page-sub">Create logins for other people and choose what they can see</div>
+      </div>
+      <div class="head-controls">
+        <button class="btn primary" id="new-user-btn"><span data-icon="plus"></span>New User</button>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
+
+
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Users <span class="count-pill" id="user-count">0</span></h2>
+        <span class="card-hint">Changes apply at the user's next click — no need to sign them out</span>
+      </div>
+      <div class="table-wrap">
+        <table class="details users-table">
+          <thead><tr><th>User</th><th>Can see</th><th>Status</th><th>Last sign-in</th><th aria-label="Actions"></th></tr></thead>
+          <tbody id="user-body"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager" id="user-pager"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ─── Create / edit user ─── -->
+<div class="modal-backdrop" id="user-modal" hidden>
+  <form class="modal form wide" id="user-form" autocomplete="off">
+    <div class="card-head">
+      <h2 class="card-title" id="user-modal-title">New User</h2>
+      <button type="button" class="icon-btn" id="user-close" aria-label="Close" data-icon="x"></button>
+    </div>
+    <div class="form-2">
+      <label>User ID <input name="username" required pattern="[A-Za-z0-9._\-]{3,32}" title="3–32 letters, numbers, dots, dashes or underscores" placeholder="e.g. rahul.v" autocomplete="off"></label>
+      <label>Full name <input name="name" maxlength="60" placeholder="e.g. Rahul Verma"></label>
+    </div>
+    <div class="form-2">
+      <label><span id="pw-label">Password</span> <input name="password" type="password" minlength="12" maxlength="128" placeholder="At least 12 characters" autocomplete="new-password"></label>
+      <label>Confirm password <input name="password2" type="password" minlength="12" maxlength="128" autocomplete="new-password"></label>
+    </div>
+    <div class="field">
+      <div class="perm-head"><span class="field-label">Permissions — what this user can see and do</span>
+        <span><button type="button" class="link-btn" id="perm-all">Select all</button> · <button type="button" class="link-btn" id="perm-none">None</button></span></div>
+      <div class="perm-grid" id="perm-grid"></div>
+    </div>
+    <label class="radio"><input type="checkbox" name="active" checked> Active (can sign in)</label>
+    <div class="form-result" id="user-result"></div>
+    <div class="pop-actions">
+      <button type="button" class="btn ghost" id="user-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="user-save">Create user</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script src="js/users.js"></script>
+</body>
+</html>

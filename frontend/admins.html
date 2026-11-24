@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · Admin Accounts</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">Admin Accounts</h1>
+        <div class="page-sub">Admin logins for the client — hand over the credentials; admins then create their own users</div>
+      </div>
+      <div class="head-controls">
+        <button class="btn primary" id="new-admin-btn"><span data-icon="plus"></span>New Admin</button>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Admin accounts <span class="count-pill" id="admin-count">0</span></h2>
+        <span class="card-hint">An admin sees every client page and manages users — not DeepStream, Settings, this page or Activity Logs</span>
+      </div>
+      <div class="table-wrap">
+        <table class="details admins-table">
+          <thead><tr><th>Admin</th><th>Status</th><th>Created</th><th>Last sign-in</th><th aria-label="Actions"></th></tr></thead>
+          <tbody id="admin-body"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager" id="admin-pager"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ─── New admin ─── -->
+<div class="modal-backdrop" id="admin-modal" hidden>
+  <form class="modal form wide" id="admin-form" autocomplete="off">
+    <div class="card-head">
+      <h2 class="card-title">New Admin</h2>
+      <button type="button" class="icon-btn" id="admin-close" aria-label="Close" data-icon="x"></button>
+    </div>
+    <div class="form-2">
+      <label>User ID <input name="username" required pattern="[A-Za-z0-9._\-]{3,32}" title="3–32 letters, numbers, dots, dashes or underscores" placeholder="e.g. acme.admin" autocomplete="off"></label>
+      <label>Full name <input name="name" maxlength="60" placeholder="e.g. Priya Sharma (Acme IT)"></label>
+    </div>
+    <label>Password <input name="password" type="text" minlength="12" maxlength="128" placeholder="Leave blank to generate a strong password" autocomplete="off" spellcheck="false"></label>
+    <div class="form-result" id="admin-result"></div>
+    <div class="pop-actions">
+      <button type="button" class="btn ghost" id="admin-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="admin-save">Create admin</button>
+    </div>
+  </form>
+</div>
+
+<!-- ─── Set an admin's password (typed by the Trinetra team) ─── -->
+<div class="modal-backdrop" id="pw-modal" hidden>
+  <form class="modal form" id="pw-form" autocomplete="off">
+    <div class="card-head">
+      <h2 class="card-title" id="pw-title">Set password</h2>
+      <button type="button" class="icon-btn" id="pw-close" aria-label="Close" data-icon="x"></button>
+    </div>
+    <label>New password <input name="password" type="text" minlength="12" maxlength="128" autocomplete="off" placeholder="At least 12 characters — blank: generate one"></label>
+    <label>Repeat it <input name="password2" type="text" minlength="12" maxlength="128" autocomplete="off"></label>
+    <div class="form-result" id="pw-result"></div>
+    <div class="pop-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" id="pw-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="pw-save">Set password</button>
+    </div>
+  </form>
+</div>
+
+<!-- ─── Credentials (after create / reset password, and on clicking an admin) ─── -->
+<div class="modal-backdrop" id="cred-modal" hidden>
+  <div class="modal wide" role="dialog" aria-labelledby="cred-title">
+    <div class="card-head">
+      <h2 class="card-title" id="cred-title">Admin credentials</h2>
+    </div>
+    <dl class="cred-box" id="cred-box">
+      <dt>Sign-in page</dt><dd><code id="cred-url"></code></dd>
+      <dt>User ID</dt><dd><code id="cred-user"></code></dd>
+      <dt>Password</dt><dd><code id="cred-pass"></code></dd>
+    </dl>
+    <div class="pop-actions">
+      <span class="form-result" id="cred-result"></span>
+      <button type="button" class="btn" id="cred-copy"><span data-icon="copy"></span>Copy credentials</button>
+      <button type="button" class="btn primary" id="cred-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script src="js/admins.js"></script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · DeepStream</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<link rel="stylesheet" href="css/deepstream.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main ds">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">DeepStream</h1>
+        <div class="page-sub">The perimeter pipeline on this Jetson: cameras, the perimeter line and alert regions, start / stop, live view</div>
+      </div>
+      <div class="head-controls">
+        <div class="seg ds-tabs" id="ds-tabs">
+      <button data-tab="pipeline" class="active">Pipeline</button>
+      <button data-tab="cameras">Cameras</button>
+      <button data-tab="zones">Perimeter zones</button>
+      <button data-tab="live">Live view</button>
+    </div>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
+  <div class="ds-note bad" id="ds-unavailable" hidden>DeepStream is not installed where this dashboard runs: the settings can be edited, the pipeline only runs on the Jetson.</div>
+
+  <!-- ═══ Pipeline ═══ -->
+  <section class="ds-panel" id="tab-pipeline">
+    <div class="ds-grid">
+      <div class="card">
+        <div class="card-head"><div class="card-title">Pipeline</div><span class="card-hint" id="ds-updated"></span></div>
+        <div class="ds-body">
+          <div class="ds-state"><span class="ds-dot" id="ds-dot"></span>
+            <div><div class="ds-state-text" id="ds-state">…</div><div class="ds-state-sub" id="ds-state-sub"></div></div></div>
+          <div class="ds-actions">
+            <button class="btn primary" id="ds-start">▶ Start</button>
+            <button class="btn danger-ghost" id="ds-stop">■ Stop</button>
+            <button class="btn" id="ds-build" title="Build the TensorRT engine now (Start builds it too when missing)">Build engine</button>
+          </div>
+          <div class="ds-note" id="ds-engine-note"></div>
+          <div class="table-wrap">
+            <table class="details"><thead><tr><th>Camera</th><th>Status</th><th>FPS</th><th>Images this run</th></tr></thead>
+              <tbody id="ds-streams"><tr><td colspan="4" class="empty">not running</td></tr></tbody></table>
+          </div>
+        </div>
+        <div class="card-head" style="border-top:1px solid var(--border)"><div class="card-title">Progress</div>
+          <span class="card-hint" id="ds-job-title"></span></div>
+        <pre class="ds-log" id="ds-job"></pre>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card">
+          <div class="card-head"><div class="card-title">Settings</div></div>
+          <form class="ds-body" id="ds-settings">
+            <div class="ds-form">
+              <label class="full">Detector model <select class="ds-input" name="model" id="ds-model"></select>
+                <small id="ds-model-help"></small></label>
+              <label>Detection threshold <input class="ds-input" name="threshold" type="number" min="0.05" max="0.95" step="0.05">
+                <small>0.05–0.95; higher = fewer, surer detections</small></label>
+              <label>One image every (s) <input class="ds-input" name="save_every_s" type="number" min="1" max="300">
+                <small>per camera and class while something is there</small></label>
+              <label>Frames skipped <input class="ds-input" name="frame_skip" type="number" min="0" max="10">
+                <small>0 = every frame; 2 = every 3rd (less GPU)</small></label>
+              <label class="check"><input type="checkbox" name="loop_files"> Loop video files (testing)</label>
+            </div>
+            <div class="pop-actions"><span class="form-result" id="ds-settings-msg"></span><span class="spacer"></span>
+              <button class="btn primary" type="submit">Save settings</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">Jetson</div></div>
+          <dl class="ds-body ds-kv" id="ds-health"></dl>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">Log <span class="card-hint" id="ds-log-file"></span></div>
+        <div class="seg" id="ds-log-kind"><button data-kind="pipeline" class="active">Pipeline</button><button data-kind="engine">Engine build</button></div></div>
+      <pre class="ds-log" id="ds-log"></pre>
+    </div>
+  </section>
+
+  <!-- ═══ Cameras ═══ -->
+  <section class="ds-panel" id="tab-cameras" hidden>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Cameras <span class="count-pill" id="cam-count">0</span></div>
+        <div class="head-controls"><span class="card-hint">Names become part of the image file names: letters, numbers, dashes</span>
+          <button class="btn primary" id="cam-add">+ Add camera</button></div>
+      </div>
+      <div class="table-wrap">
+        <table class="details"><thead><tr><th>Camera</th><th>Stream address</th><th>Transport</th><th>On</th><th>Zones</th><th></th></tr></thead>
+          <tbody id="cam-body"><tr><td colspan="6" class="empty">loading…</td></tr></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Perimeter zones ═══ -->
+  <section class="ds-panel" id="tab-zones" hidden>
+    <div class="card">
+      <div class="zone-bar">
+        <select class="ds-input" id="zone-cam" aria-label="Camera"></select>
+        <button class="btn sm" id="zone-refresh" title="Take a new picture from the camera">↻ New picture</button>
+        <div class="seg zone-tools" id="zone-tools">
+          <button data-tool="line" title="Click along the wall / fence; double-click or Enter to finish">Perimeter line</button>
+          <button data-tool="outside" title="Click once on the outside of the line">Outside side</button>
+          <button data-tool="alert" title="Click the corners of the wall top / concertina wire; click the first point or double-click to close">Alert region</button>
+          <button data-tool="ignore" title="Click the corners of an area to ignore (a road, a moving tree)">Ignore region</button>
+        </div>
+        <button class="btn sm" id="zone-undo" title="Remove the last point (Ctrl+Z)">Undo</button>
+        <button class="btn sm danger-ghost" id="zone-clear">Clear all</button>
+        <span class="spacer" style="flex:1"></span>
+        <span class="form-result" id="zone-msg"></span>
+        <button class="btn primary" id="zone-save">Save zones</button>
+      </div>
+      <div class="zone-help"><div id="zone-help">Pick a tool, then click on the picture.</div>
+        <div class="zone-pointer mono" id="zone-pointer">&nbsp;</div></div>
+      <div class="zone-wrap">
+        <div class="zone-stage" id="zone-stage">
+          <img id="zone-img" alt="Camera picture">
+          <canvas id="zone-canvas"></canvas>
+          <div class="zone-empty" id="zone-empty" hidden></div>
+        </div>
+        <div class="zone-side">
+          <b>What is drawn</b>
+          <div class="zone-list" id="zone-list"></div>
+          <b>What a detection means</b>
+          <div class="legend">
+            <div><span class="sw" style="background:#ff4d5e"></span>In an <b>alert region</b> → <span class="mono">Boundry-object</span>: breach, alert at once</div>
+            <div><span class="sw" style="background:#ffb020"></span><b>Outside the line</b> → <span class="mono">outside-person</span> / <span class="mono">outside-object</span>: warning after the dwell time</div>
+            <div><span class="sw" style="background:#3ddc97"></span>Inside → not reported</div>
+            <div><span class="sw" style="background:#777"></span>In an <b>ignore region</b> → never reported</div>
+            <div>The point that counts is the bottom centre of each box (where the person stands).</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Live view ═══ -->
+  <section class="ds-panel" id="tab-live" hidden>
+    <div class="card">
+      <div class="card-head"><div class="card-title">Live view</div>
+        <span class="card-hint">The pipeline's frames every 2 s, with the zones and what it detects</span></div>
+      <div class="live-grid" id="live-grid"></div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<!-- ─── camera dialog ─── -->
+<div class="modal-backdrop" id="cam-modal" hidden>
+  <form class="modal form wide" id="cam-form" autocomplete="off">
+    <div class="card-head"><h2 class="card-title" id="cam-title">Add camera</h2><button type="button" class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <div class="row2">
+      <label>Name <input name="name" required pattern="[A-Za-z0-9\-]{1,40}" maxlength="40" placeholder="e.g. north-wall"
+        title="1–40 letters, numbers or dashes"></label>
+      <label>Transport <select class="ds-input" name="transport"><option value="tcp">TCP (recommended)</option><option value="udp">UDP</option></select></label>
+    </div>
+    <label>Stream address <input name="uri" required maxlength="500" placeholder="rtsp://user:password@192.168.1.64:554/Streaming/Channels/101"></label>
+    <label>…or a video on the Jetson (testing) <select class="ds-input" id="cam-sample"><option value="">—</option></select></label>
+    <label class="check"><input type="checkbox" name="enabled" checked> On (used by the pipeline)</label>
+    <div class="form-result" id="cam-msg"></div>
+    <div class="pop-actions"><button type="button" class="btn" id="cam-test">Test connection</button><span class="spacer"></span>
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary" id="cam-save">Save camera</button></div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script src="js/deepstream.js"></script>
+</body>
+</html>

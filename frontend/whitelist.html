@@ -4,12 +4,33 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trinetra Systems · Badge Whitelist</title>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css">
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<link rel="stylesheet" href="css/perimeter.css">
 </head>
 <body>
 
-<!-- Topbar injected by common.js -->
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main perimeter">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <div class="title-row">
+          <h1 class="page-title">Whitelist</h1>
+          <div class="live-now" id="pill-breaches" hidden></div>
+          <div class="live-now" id="pill-outside" hidden></div>
+        </div>
+        <div class="page-sub">Classes exempt from alerts</div>
+      </div>
+      <div class="head-controls">
+        <span class="date-pill clock-pill" title="Now"><span data-icon="clock"></span><span id="clock">—</span></span>
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
 
 <div class="admin-wrap">
   <div class="admin-card">
@@ -37,8 +58,12 @@
     </div>
   </div>
 </div>
+  </main>
+</div>
 
-<script src="js/dummy-data.js"></script>
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
 <script src="js/common.js"></script>
 <script src="js/api.js"></script>
 <script src="js/whitelist.js"></script>

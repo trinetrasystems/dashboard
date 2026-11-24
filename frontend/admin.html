@@ -1,807 +1,86 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trinetra Systems · Admin</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-    rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0a0e17;
-      --surface: #111827;
-      --card: rgba(255, 255, 255, 0.03);
-      --border: rgba(255, 255, 255, 0.07);
-      --border-hover: rgba(255, 255, 255, 0.15);
-      --cyan: #00d4ff;
-      --cyan-dim: rgba(0, 212, 255, 0.12);
-      --green: #00e676;
-      --red: #ff4444;
-      --amber: #ffaa00;
-      --text: #e8edf5;
-      --text-dim: #6b7a90;
-      --text-muted: #3d4f6a;
-      --radius: 12px;
-      --font: 'Bricolage Grotesque', sans-serif;
-      --mono: 'JetBrains Mono', monospace;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      min-height: 100vh;
-    }
-
-    /* ── Login page ── */
-    #login-page {
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background:
-        radial-gradient(ellipse 80% 60% at 50% -20%, rgba(0, 212, 255, 0.08) 0%, transparent 70%),
-        var(--bg);
-    }
-
-    .login-card {
-      width: 400px;
-      padding: 48px 40px;
-      background: rgba(17, 24, 39, 0.9);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      backdrop-filter: blur(20px);
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 212, 255, 0.05);
-    }
-
-    .login-logo {
-      display: flex;
-      align-items: center;
-      margin-bottom: 36px;
-    }
-
-    .login-logo img {
-      height: 46px;
-      width: auto;
-      display: block;
-    }
-
-    .login-title {
-      font-size: 26px;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }
-
-    .login-sub {
-      color: var(--text-dim);
-      font-size: 14px;
-      margin-bottom: 32px;
-    }
-
-    .field {
-      margin-bottom: 18px;
-    }
-
-    .field label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      margin-bottom: 8px;
-    }
-
-    .field input {
-      width: 100%;
-      padding: 12px 16px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-family: var(--mono);
-      font-size: 14px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .field input:focus {
-      border-color: var(--cyan);
-      background: rgba(0, 212, 255, 0.04);
-    }
-
-    .btn-login {
-      width: 100%;
-      padding: 14px;
-      background: linear-gradient(135deg, #00b4d8, #0077b6);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-family: var(--font);
-      font-size: 15px;
-      font-weight: 700;
-      cursor: pointer;
-      letter-spacing: 0.05em;
-      transition: all 0.2s;
-      margin-top: 8px;
-    }
-
-    .btn-login:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 8px 24px rgba(0, 180, 216, 0.35);
-    }
-
-    .btn-login:active {
-      transform: translateY(0);
-    }
-
-    .login-error {
-      margin-top: 14px;
-      padding: 10px 14px;
-      background: rgba(255, 68, 68, 0.1);
-      border: 1px solid rgba(255, 68, 68, 0.3);
-      border-radius: 8px;
-      color: #ff8080;
-      font-size: 13px;
-      display: none;
-    }
-
-    /* ── Admin settings page ── */
-    #admin-page {
-      display: none;
-    }
-
-    .admin-topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 32px;
-      height: 60px;
-      background: rgba(255, 255, 255, 0.02);
-      border-bottom: 1px solid var(--border);
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      backdrop-filter: blur(12px);
-    }
-
-    .admin-brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      font-size: 15px;
-      letter-spacing: 0.04em;
-    }
-
-    .admin-brand a {
-      color: var(--text-dim);
-      text-decoration: none;
-      font-size: 13px;
-      margin-left: 16px;
-    }
-
-    .admin-brand a:hover {
-      color: var(--cyan);
-    }
-
-    .btn-logout {
-      padding: 7px 16px;
-      background: rgba(255, 68, 68, 0.1);
-      border: 1px solid rgba(255, 68, 68, 0.3);
-      border-radius: 6px;
-      color: #ff8080;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      font-family: var(--font);
-    }
-
-    .btn-logout:hover {
-      background: rgba(255, 68, 68, 0.2);
-    }
-
-    .admin-body {
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 40px 24px 80px;
-    }
-
-    .admin-section {
-      margin-bottom: 32px;
-    }
-
-    .section-title {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--cyan);
-      margin-bottom: 14px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .section-title::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--border);
-    }
-
-    .settings-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-
-    .setting-row {
-      display: grid;
-      grid-template-columns: 260px 1fr;
-      align-items: center;
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-      gap: 20px;
-    }
-
-    .setting-row:last-child {
-      border-bottom: none;
-    }
-
-    .setting-label {
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    .setting-hint {
-      font-size: 12px;
-      color: var(--text-dim);
-      margin-top: 3px;
-      font-family: var(--mono);
-    }
-
-    .setting-input {
-      width: 100%;
-      padding: 9px 13px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      color: var(--text);
-      font-family: var(--mono);
-      font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .setting-input:focus {
-      border-color: var(--cyan);
-      background: rgba(0, 212, 255, 0.04);
-    }
-
-    .setting-input[type="password"] {
-      letter-spacing: 0.1em;
-    }
-
-    .save-bar {
-      position: sticky;
-      bottom: 0;
-      background: rgba(10, 14, 23, 0.95);
-      border-top: 1px solid var(--border);
-      padding: 16px 32px;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      backdrop-filter: blur(12px);
-    }
-
-    .btn-save {
-      padding: 11px 28px;
-      background: linear-gradient(135deg, #00b4d8, #0077b6);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-family: var(--font);
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.04em;
-    }
-
-    .btn-save:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(0, 180, 216, 0.3);
-    }
-
-    .btn-save:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .save-msg {
-      font-size: 13px;
-      padding: 8px 14px;
-      border-radius: 7px;
-      display: none;
-    }
-
-    .save-msg.ok {
-      background: rgba(0, 230, 118, 0.12);
-      border: 1px solid rgba(0, 230, 118, 0.3);
-      color: #00e676;
-    }
-
-    .save-msg.warn {
-      background: rgba(255, 170, 0, 0.12);
-      border: 1px solid rgba(255, 170, 0, 0.3);
-      color: var(--amber);
-    }
-
-    .save-msg.err {
-      background: rgba(255, 68, 68, 0.12);
-      border: 1px solid rgba(255, 68, 68, 0.3);
-      color: var(--red);
-    }
-
-    /* ── Danger Zone ── */
-    .danger-zone {
-      border: 1px solid rgba(255, 68, 68, 0.35);
-      border-radius: var(--radius);
-      background: rgba(255, 68, 68, 0.04);
-      padding: 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 20px;
-    }
-
-    .danger-info h3 {
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--red);
-      margin-bottom: 6px;
-    }
-
-    .danger-info p {
-      font-size: 13px;
-      color: var(--text-dim);
-      line-height: 1.5;
-    }
-
-    .btn-danger {
-      padding: 11px 24px;
-      white-space: nowrap;
-      background: rgba(255, 68, 68, 0.15);
-      border: 1px solid rgba(255, 68, 68, 0.5);
-      border-radius: 8px;
-      color: var(--red);
-      font-family: var(--font);
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.03em;
-    }
-
-    .btn-danger:hover {
-      background: rgba(255, 68, 68, 0.3);
-      border-color: var(--red);
-      transform: translateY(-1px);
-    }
-
-    .btn-danger:active {
-      transform: translateY(0);
-    }
-
-    /* ── Confirm modal ── */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(6px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 999;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s;
-    }
-
-    .modal-overlay.open {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .modal-box {
-      background: #111827;
-      border: 1px solid rgba(255, 68, 68, 0.4);
-      border-radius: 16px;
-      padding: 36px;
-      max-width: 440px;
-      width: 90%;
-      box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
-    }
-
-    .modal-icon {
-      font-size: 40px;
-      margin-bottom: 16px;
-    }
-
-    .modal-title {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--red);
-      margin-bottom: 10px;
-    }
-
-    .modal-body {
-      font-size: 14px;
-      color: var(--text-dim);
-      line-height: 1.6;
-      margin-bottom: 20px;
-    }
-
-    .modal-code {
-      font-family: var(--mono);
-      font-size: 28px;
-      font-weight: 700;
-      color: var(--red);
-      letter-spacing: 0.2em;
-      background: rgba(255, 68, 68, 0.08);
-      border: 1px solid rgba(255, 68, 68, 0.2);
-      border-radius: 8px;
-      padding: 12px 20px;
-      text-align: center;
-      margin-bottom: 20px;
-    }
-
-    .modal-input {
-      width: 100%;
-      padding: 12px 16px;
-      margin-bottom: 16px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-family: var(--mono);
-      font-size: 18px;
-      text-align: center;
-      letter-spacing: 0.15em;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .modal-input:focus {
-      border-color: var(--red);
-    }
-
-    .modal-actions {
-      display: flex;
-      gap: 12px;
-    }
-
-    .btn-modal-cancel {
-      flex: 1;
-      padding: 11px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text-dim);
-      font-family: var(--font);
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .btn-modal-cancel:hover {
-      background: rgba(255, 255, 255, 0.1);
-      color: var(--text);
-    }
-
-    .btn-modal-confirm {
-      flex: 1;
-      padding: 11px;
-      background: var(--red);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-family: var(--font);
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.2s;
-      opacity: 0.4;
-      pointer-events: none;
-    }
-
-    .btn-modal-confirm.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .btn-modal-confirm.active:hover {
-      background: #ff2222;
-    }
-
-    /* ── Test Data Generator ── */
-    .sim-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0;
-    }
-
-    .sim-grid .setting-row {
-      border-bottom: 1px solid var(--border);
-    }
-
-    .sim-grid .setting-row:nth-child(odd):last-child {
-      grid-column: span 2;
-    }
-
-    .scenario-cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 10px;
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .scenario-card {
-      border: 1.5px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 14px 12px;
-      cursor: pointer;
-      transition: all 0.18s;
-      background: var(--card);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .scenario-card:hover {
-      border-color: var(--cyan);
-      background: var(--cyan-dim);
-    }
-
-    .scenario-card.selected {
-      border-color: var(--cyan);
-      background: var(--cyan-dim);
-      box-shadow: 0 0 0 1px var(--cyan);
-    }
-
-    .scenario-card .sc-icon {
-      font-size: 22px;
-    }
-
-    .scenario-card .sc-name {
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    .scenario-card .sc-desc {
-      font-size: 11px;
-      color: var(--text-dim);
-      line-height: 1.4;
-    }
-
-    .sim-log {
-      padding: 12px 20px;
-      max-height: 150px;
-      overflow-y: auto;
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border);
-      background: rgba(0, 0, 0, 0.2);
-    }
-
-    .sim-log-entry {
-      padding: 2px 0;
-    }
-
-    .sim-log-entry.ok {
-      color: var(--green);
-    }
-
-    .sim-log-entry.err {
-      color: var(--red);
-    }
-
-    /* ─── Scheduled demo alerts ─── */
-    .sched-intro {
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--text-dim);
-    }
-    .sched-intro b { color: var(--text); }
-    .sched-intro ul { margin: 8px 0 0 18px; }
-
-    .sched-block-title {
-      padding: 14px 20px 10px;
-      font-family: var(--mono);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--cyan);
-      border-bottom: 1px solid var(--border);
-      background: var(--card);
-    }
-    .sched-actions {
-      padding: 14px 20px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      flex-wrap: wrap;
-      border-bottom: 1px solid var(--border);
-    }
-    .sched-msg { font-family: var(--mono); font-size: 13px; color: var(--text-dim); }
-    .sched-msg.ok { color: var(--green); }
-    .sched-msg.err { color: var(--red); }
-
-    .sched-chip-btn {
-      padding: 6px 12px;
-      border-radius: 7px;
-      background: var(--cyan-dim);
-      border: 1px solid rgba(0, 212, 255, 0.35);
-      color: var(--cyan);
-      font-family: var(--mono);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .sched-chip-btn:hover { background: rgba(0, 212, 255, 0.22); }
-    .sched-chip-btn.danger {
-      background: rgba(255, 68, 68, 0.1);
-      border-color: rgba(255, 68, 68, 0.35);
-      color: var(--red);
-    }
-
-    .sched-targets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .sched-target {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 6px 4px 10px;
-      border-radius: 6px;
-      background: var(--card);
-      border: 1px solid var(--border-hover);
-      font-family: var(--mono);
-      font-size: 12px;
-    }
-    .sched-target button {
-      background: none; border: none; color: var(--text-dim);
-      cursor: pointer; font-size: 14px; line-height: 1;
-    }
-    .sched-target button:hover { color: var(--red); }
-    .sched-empty { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
-
-    .sched-list { max-height: 460px; overflow-y: auto; }
-    .sched-day {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 20px;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-    .sched-day-name { font-weight: 700; font-size: 14px; }
-    .sched-day-meta { font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-left: 10px; }
-    .sched-row {
-      display: grid;
-      grid-template-columns: 90px 110px 1fr 160px 96px 80px;
-      gap: 12px;
-      align-items: center;
-      padding: 9px 20px;
-      border-bottom: 1px solid var(--border);
-      font-family: var(--mono);
-      font-size: 13px;
-    }
-    .sched-row .dim { color: var(--text-dim); }
-    .sched-status {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      text-align: center;
-    }
-    .sched-status.pending   { background: var(--cyan-dim); color: var(--cyan); }
-    .sched-status.released  { background: rgba(0, 230, 118, 0.12); color: var(--green); }
-    .sched-status.cancelled { background: var(--card); color: var(--text-muted); text-decoration: line-through; }
-    .sched-status.missed    { background: rgba(255, 170, 0, 0.12); color: var(--amber); }
-    .sched-zone-breach  { color: var(--red); }
-    .sched-zone-outside { color: var(--amber); }
-
-    .btn-simulate {
-      padding: 11px 28px;
-      background: linear-gradient(135deg, #7c3aed, #4f46e5);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-family: var(--font);
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.04em;
-    }
-
-    .btn-simulate:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(124, 58, 237, 0.4);
-    }
-
-    .btn-simulate:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · Settings</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<style>
+    /* Settings (Trinetra team) on the Workplace Analytics design: each section a card, labelled inputs, sticky save bar */
+    .admin-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+    .admin-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+      box-shadow: var(--shadow); min-width: 0; }
+    .admin-section.wide { grid-column: 1 / -1; }
+    .section-title { font-size: 18px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+    .settings-card { display: flex; flex-direction: column; gap: 14px; }
+    .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 6px 16px; align-items: center; }
+    .setting-label { font-size: 14.5px; font-weight: 600; color: var(--text-muted); }
+    .setting-hint { font-size: 13px; color: var(--text-dim); margin-top: 2px; overflow-wrap: anywhere; }
+    .setting-input { height: 42px; padding: 0 12px; border: 1px solid var(--border-bright); border-radius: 8px; background: var(--surface);
+      color: var(--text); font: inherit; font-size: 15px; width: 100%; }
+    .setting-input:focus { outline: 2px solid var(--primary-bg); border-color: var(--primary); }
+    .save-bar { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; box-shadow: var(--shadow-lg); }
+    .btn-save { height: 46px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--primary); background: var(--primary); color: #fff;
+      font-weight: 600; font-size: 16px; cursor: pointer; }
+    .btn-save:disabled { opacity: 0.5; cursor: default; }
+    .save-msg { font-size: 14px; font-weight: 500; color: var(--text-muted); }
+    .save-msg.ok { color: var(--green-ink); } .save-msg.warn { color: var(--amber-ink); } .save-msg.err { color: var(--red-ink); }
+    .btn-logout, .btn-danger { height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--red); background: var(--surface);
+      color: var(--red-ink); font-weight: 600; cursor: pointer; }
+    .btn-danger { background: var(--red); color: #fff; }
+    .danger-zone { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+      border: 1px solid var(--red); background: var(--red-bg); border-radius: 10px; padding: 14px 16px; }
+    .danger-info h3 { font-size: 16px; font-weight: 600; color: var(--red-ink); margin-bottom: 4px; }
+    .danger-info p { font-size: 14px; color: var(--text-muted); }
+    .admin-section table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+    .admin-section th { text-align: left; font-weight: 700; font-size: 13.5px; color: var(--text-muted); background: var(--surface-2);
+      padding: 10px 12px; border-bottom: 1px solid var(--border-bright); }
+    .admin-section td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .admin-section select, .admin-section .db-select { height: 40px; border: 1px solid var(--border-bright); border-radius: 8px;
+      background: var(--surface); color: var(--text); padding: 0 10px; font: inherit; }
+    /* reset dialog */
+    .modal-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(15, 23, 42, 0.45); display: none; place-items: center; padding: 16px; }
+    .modal-overlay.open { display: grid; }
+    .modal-box { width: 100%; max-width: 440px; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 20px;
+      display: flex; flex-direction: column; gap: 12px; text-align: center; }
+    .modal-icon { font-size: 34px; } .modal-title { font-size: 18px; font-weight: 700; } .modal-body { color: var(--text-muted); font-size: 14.5px; }
+    .modal-code { font-size: 28px; font-weight: 700; letter-spacing: 6px; color: var(--red-ink); font-variant-numeric: tabular-nums; }
+    .modal-input { height: 44px; border: 1px solid var(--border-bright); border-radius: 8px; background: var(--surface); color: var(--text);
+      text-align: center; font-size: 20px; letter-spacing: 6px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: center; }
+    .btn-modal-cancel, .btn-modal-confirm { height: 42px; padding: 0 16px; border-radius: 8px; font-weight: 600; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+    .btn-modal-confirm { border-color: var(--red); color: var(--red-ink); opacity: 0.5; cursor: not-allowed; }
+    .btn-modal-confirm.active { background: var(--red); color: #fff; opacity: 1; cursor: pointer; }
+    @media (max-width: 1100px) { .admin-body { grid-template-columns: 1fr; } .setting-row { grid-template-columns: 1fr; } }
   </style>
 </head>
-
 <body>
 
-  <!-- ════════════ LOGIN PAGE ════════════ -->
-  <div id="login-page">
-    <div class="login-card">
-      <div class="login-logo">
-        <img src="assets/Trinetra-Logo-Full-Dark.png" alt="Trinetra Systems">
-      </div>
-      <div class="login-title">Admin Panel</div>
-      <div class="login-sub">Sign in to manage system configuration</div>
-      <div class="field">
-        <label>Administrator user ID</label>
-        <input id="login-email" type="text" placeholder="admin user ID" autocomplete="username" maxlength="64">
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password">
-      </div>
-      <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In →</button>
-      <div class="login-error" id="login-error">Invalid email or password.</div>
-    </div>
-  </div>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 
-  <!-- ════════════ ADMIN SETTINGS PAGE ════════════ -->
-  <div id="admin-page">
-    <div class="admin-topbar">
-      <div class="admin-brand">
-        TRINETRA · ADMIN
-        <a href="/index.html">← Back to Dashboard</a>
-        <a href="/activity.html">📋 Activity Log</a>
+  <main class="main" id="admin-page">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">Settings</h1>
+        <div class="page-sub">Trinetra team only · detection, images, notifications and data — applied as soon as you save</div>
       </div>
-      <button class="btn-logout" onclick="doLogout()">Sign Out</button>
-    </div>
+      <div class="head-controls">
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
 
     <div class="admin-body">
 
       <!-- Detection & Sessions -->
       <div class="admin-section">
-        <div class="section-title">🔍 Detection &amp; Session Settings</div>
+        <div class="section-title">Detection &amp; Session Settings</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
@@ -829,35 +108,43 @@
               <div class="setting-label">Exit Cameras</div>
               <div class="setting-hint">TRINETRA_EXIT_CAMERAS · comma-separated</div>
             </div>
-            <input class="setting-input" type="text" id="TRINETRA_EXIT_CAMERAS" placeholder="cam-gate,cam-exit">
+            <input class="setting-input" type="text" id="TRINETRA_EXIT_CAMERAS" placeholder="e.g. gate-exit">
           </div>
         </div>
       </div>
 
       <!-- Image Cleanup -->
       <div class="admin-section">
-        <div class="section-title">🖼️ Image Cleanup</div>
+        <div class="section-title">Camera Images</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
-              <div class="setting-label">Image Retention</div>
-              <div class="setting-hint">TRINETRA_IMAGE_RETENTION_DAYS · days (0 = keep forever)</div>
+              <div class="setting-label">Days images are kept</div>
+              <div class="setting-hint">TRINETRA_IMAGE_RETENTION_DAYS · today counts as one · older days are deleted at night (0 = forever) ·
+                detections and alerts stay in the database</div>
             </div>
             <input class="setting-input" type="number" id="TRINETRA_IMAGE_RETENTION_DAYS" min="0">
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Storage</div>
+              <div class="setting-hint" id="storage-hint">Disk guard: when free space runs low, the oldest day of images goes first (never today)</div>
+            </div>
+            <div class="setting-hint" id="storage-now" style="text-align:right;max-width:340px">…</div>
           </div>
         </div>
       </div>
 
       <!-- Jetson Registry -->
       <div class="admin-section">
-        <div class="section-title">📡 Jetson Registry</div>
+        <div class="section-title">Jetson Registry</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
               <div class="setting-label">Expected Jetsons</div>
               <div class="setting-hint">TRINETRA_JETSONS · comma-separated names</div>
             </div>
-            <input class="setting-input" type="text" id="TRINETRA_JETSONS" placeholder="central,edge-1,edge-2">
+            <input class="setting-input" type="text" id="TRINETRA_JETSONS" placeholder="e.g. jetson-gate">
           </div>
           <div class="setting-row">
             <div>
@@ -871,7 +158,7 @@
 
       <!-- Telegram -->
       <div class="admin-section">
-        <div class="section-title">💬 Telegram Alerts</div>
+        <div class="section-title">Telegram Alerts</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
@@ -892,7 +179,7 @@
 
       <!-- Email -->
       <div class="admin-section">
-        <div class="section-title">📧 Email Alerts</div>
+        <div class="section-title">Email Alerts</div>
         <div class="settings-card">
           <div class="setting-row">
             <div>
@@ -926,8 +213,8 @@
       </div>
 
       <!-- Database Management -->
-      <div class="admin-section">
-        <div class="section-title">🗄️ Database Management</div>
+      <div class="admin-section wide">
+        <div class="section-title">Database Management</div>
         <div class="settings-card">
           <div
             style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
@@ -963,211 +250,9 @@
         </div>
       </div>
 
-      <!-- Accounts -->
-      <div class="admin-section">
-        <div class="section-title">🔐 Accounts</div>
-        <div class="settings-card">
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Signed in as <span id="acc-me">—</span></div>
-              <div class="setting-hint">Passwords: 12–128 characters, not a common password, not containing the user ID</div>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Change my password</div>
-              <div class="setting-hint">Current password required · other sessions of this account are signed out</div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <input class="setting-input" type="password" id="acc-cur" placeholder="current password" autocomplete="current-password">
-              <input class="setting-input" type="password" id="acc-new" placeholder="new password" autocomplete="new-password">
-              <button class="sched-chip-btn" id="acc-change-btn" type="button">Change</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Add account</div>
-              <div class="setting-hint">Operators view the dashboard and acknowledge alerts · administrators also change settings and the whitelist</div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <input class="setting-input" type="text" id="acc-uid" placeholder="user ID" maxlength="64" autocomplete="off">
-              <input class="setting-input" type="password" id="acc-pw" placeholder="password" autocomplete="new-password">
-              <select class="setting-input" id="acc-role"><option value="operator">operator</option><option value="admin">admin</option></select>
-              <button class="sched-chip-btn" id="acc-add-btn" type="button">Add</button>
-            </div>
-          </div>
-          <div class="setting-row" style="display:block;">
-            <div id="acc-msg" class="setting-hint" style="margin-bottom:8px;"></div>
-            <div id="acc-list"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ─── TEST DATA GENERATOR ────────────────────────────── -->
-      <div class="admin-section">
-        <div class="section-title">🧪 Drop Test Detection</div>
-        <div class="settings-card">
-
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Badge Name</div>
-              <div class="setting-hint">Letters, numbers and hyphens only · e.g. GOLI, TEST-1</div>
-            </div>
-            <input class="setting-input" type="text" id="sim-badge" value="TEST-BADGE" placeholder="TEST-BADGE">
-          </div>
-
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Camera Name</div>
-              <div class="setting-hint">Must match your camera IDs · e.g. cam-entrance, cam-gate</div>
-            </div>
-            <input class="setting-input" type="text" id="sim-camera" value="cam-entrance" placeholder="cam-entrance">
-          </div>
-
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Date &amp; Time</div>
-              <div class="setting-hint">Leave blank to use current date and time</div>
-            </div>
-            <div style="display: flex; gap: 10px;">
-              <input class="setting-input" type="date" id="sim-date" style="flex: 1;">
-              <input class="setting-input" type="time" id="sim-time" style="flex: 1;">
-            </div>
-          </div>
-
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Test Image (optional)</div>
-              <div class="setting-hint">Choose an image file from your computer. If none selected, a random test image
-                will be used.</div>
-            </div>
-            <input class="setting-input" type="file" id="sim-file" accept="image/*" />
-          </div>
-
-          <!-- Action row -->
-          <div
-            style="padding:16px 20px; display:flex; align-items:center; gap:16px; border-top: 1px solid var(--border);">
-            <button class="btn-simulate" id="sim-btn" onclick="runSimulation()">📥&nbsp; Drop Detection</button>
-            <button onclick="clearSimLog()"
-              style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:4px 8px;">Clear
-              log</button>
-          </div>
-
-          <!-- Activity log -->
-          <div class="sim-log" id="sim-log">
-            <div class="sim-log-entry" style="color:var(--text-muted);">Dropped files will appear here…</div>
-          </div>
-
-        </div>
-      </div>
-
-
-      <!-- ─── SCHEDULED DEMO ALERTS ─────────────────────────────── -->
-      <div class="admin-section">
-        <div class="section-title">📅 Scheduled Demo Alerts</div>
-        <div class="settings-card">
-
-          <div class="sched-intro">
-            Set up a demo once and share the dashboard link. Each entry is held here and dropped in
-            <b>at its scheduled time</b>, so it appears live for whoever has the dashboard open.
-            <ul>
-              <li><b>Boundry-object</b> flashes the moment its time arrives.</li>
-              <li><b>Outside classes</b> appear at their time and flash <b>after the dwell rule</b> (10 min).</li>
-              <li>The server must be running at those times. Real Telegram alerts are sent as normal.</li>
-            </ul>
-          </div>
-
-          <!-- A · schedule one alert -->
-          <div class="sched-block-title">Schedule an alert</div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Class</div>
-              <div class="setting-hint">Pick one or type a class · counted form: Outside-person-2-object-1</div>
-            </div>
-            <input class="setting-input" type="text" id="sch-badge" list="sch-classes" value="BOUNDRY-OBJECT"
-                   oninput="updateFlashPreview()">
-            <datalist id="sch-classes">
-              <option value="BOUNDRY-OBJECT">
-              <option value="OUTSIDE-PERSON">
-              <option value="OUTSIDE-OBJECT">
-              <option value="OUTSIDE-PERSON-2-OBJECT-1">
-            </datalist>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Camera</div>
-              <div class="setting-hint">Use a camera nothing real reports from, e.g. cam-demo-1</div>
-            </div>
-            <input class="setting-input" type="text" id="sch-camera" value="cam-demo-1">
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Date &amp; time it appears</div>
-              <div class="setting-hint" id="sch-flash-hint">—</div>
-            </div>
-            <div style="display:flex; gap:10px;">
-              <input class="setting-input" type="date" id="sch-date" style="flex:1;" onchange="updateFlashPreview()">
-              <input class="setting-input" type="time" id="sch-time" style="flex:1;" onchange="updateFlashPreview()">
-            </div>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Snapshot (optional)</div>
-              <div class="setting-hint">Leave empty to use a test image</div>
-            </div>
-            <input class="setting-input" type="file" id="sch-file" accept="image/*">
-          </div>
-          <div class="sched-actions">
-            <button class="btn-simulate" id="sch-btn" onclick="scheduleAlert()">📅&nbsp; Schedule Alert</button>
-            <span class="sched-msg" id="sch-msg"></span>
-          </div>
-
-          <!-- B · copy a whole day -->
-          <div class="sched-block-title">Copy a day's demo to other dates</div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Copy from</div>
-              <div class="setting-hint" id="copy-source-hint">Everything on that day — shown and still scheduled</div>
-            </div>
-            <input class="setting-input" type="date" id="copy-source" onchange="previewCopySource()">
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Copy to</div>
-              <div class="setting-hint">Same times, same snapshots · past times and duplicates are skipped</div>
-            </div>
-            <div>
-              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                <button class="sched-chip-btn" onclick="quickTargets(1)">Next day</button>
-                <button class="sched-chip-btn" onclick="quickTargets(2)">Next 2 days</button>
-                <button class="sched-chip-btn" onclick="quickTargets(7)">Next 7 days</button>
-                <input class="setting-input" type="date" id="copy-add-date" style="width:auto;">
-                <button class="sched-chip-btn" onclick="addCopyTarget()">+ Add date</button>
-              </div>
-              <div class="sched-targets" id="copy-targets"><span class="sched-empty">No dates chosen</span></div>
-            </div>
-          </div>
-          <div class="sched-actions">
-            <button class="btn-simulate" id="copy-btn" onclick="copyDay()">📋&nbsp; Copy Demo</button>
-            <span class="sched-msg" id="copy-msg"></span>
-          </div>
-
-          <!-- C · what is scheduled -->
-          <div class="sched-block-title" style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Schedule</span>
-            <button class="sched-chip-btn" onclick="loadSchedule()">↻ Refresh</button>
-          </div>
-          <div id="sched-list" class="sched-list">
-            <div class="sched-empty" style="padding:18px 20px;">Loading…</div>
-          </div>
-
-        </div>
-      </div>
-
-
       <!-- ─── DANGER ZONE ──────────────────────────────────────── -->
-      <div class="admin-section">
-        <div class="section-title" style="color: var(--red);">☢️ Danger Zone</div>
+      <div class="admin-section wide">
+        <div class="section-title" style="color: var(--red);">Danger Zone</div>
         <div class="danger-zone">
           <div class="danger-info">
             <h3>Reset Entire Database &amp; Images</h3>
@@ -1181,7 +266,8 @@
         </div>
       </div>
 
-    </div><!-- /admin-body -->
+    </div>
+
 
     <!-- ─── RESET CONFIRM MODAL ─── -->
     <div class="modal-overlay" id="reset-modal">
@@ -1204,12 +290,18 @@
     </div>
 
     <div class="save-bar">
-      <button class="btn-save" id="save-btn" onclick="saveConfig()">💾 Save All Changes</button>
+      <button class="btn-save" id="save-btn" onclick="saveConfig()">Save all changes</button>
       <div class="save-msg" id="save-msg"></div>
     </div>
   </div>
+  </main>
+</div>
 
-  <script>
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script>
     /* Every value from the server is escaped before it is placed in the page. */
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, c => (
@@ -1217,55 +309,23 @@
       ));
     }
 
-    /* ── Auth ── */
-    async function doLogin() {
-      const btn = document.getElementById('login-btn');
-      const err = document.getElementById('login-error');
-      const email = document.getElementById('login-email').value.trim();
-      const pass = document.getElementById('login-pass').value;
-      btn.textContent = 'Signing in…';
-      btn.disabled = true;
-      err.style.display = 'none';
-      try {
-        const r = await fetch('/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password: pass }),
-          credentials: 'same-origin',
-        });
-        if (!r.ok) {
-          const d = await r.json().catch(() => ({}));
-          throw new Error(r.status === 429 ? (d.detail || 'Too many failed sign-ins — try again in 15 minutes')
-                                           : 'Invalid user ID or password.');
-        }
-        showAdmin();
-      } catch (e) {
-        err.textContent = e.message || 'Invalid user ID or password.';
-        err.style.display = 'block';
-        btn.textContent = 'Sign In →';
-        btn.disabled = false;
-      }
-    }
-
+    /* ── Sign out (the page itself needs the Trinetra team: the server sends others to the sign-in page) ── */
     async function doLogout() {
-      await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' });
-      document.getElementById('admin-page').style.display = 'none';
-      document.getElementById('login-page').style.display = 'flex';
+      await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.replace('login.html?team=1');
     }
 
     /* ── Load settings ── */
     async function showAdmin() {
-      document.getElementById('login-page').style.display = 'none';
-      document.getElementById('admin-page').style.display = 'block';
       await loadConfig();
-      initSchedule();
+      loadStorage();
     }
 
 
     async function loadConfig() {
       try {
         const r = await fetch('/api/admin/config', { credentials: 'same-origin' });
-        if (r.status === 401) { doLogout(); return; }
+        if (r.status === 401 || r.status === 403) { location.replace('login.html?team=1&next=admin.html'); return; }
         const cfg = await r.json();
         const FIELDS = [
           'TRINETRA_LOITER_MINUTES', 'TRINETRA_SESSION_GAP_MINUTES',
@@ -1281,7 +341,6 @@
         // The bot token is a secret: the server only says whether one is set.
         document.getElementById('TELEGRAM_TOKEN').placeholder =
           cfg.TELEGRAM_TOKEN_SET ? 'set — leave blank to keep current' : '123456:ABC-DEF…';
-        await loadAccounts();
 
         // Also load the database records
         await loadDatabase();
@@ -1290,65 +349,18 @@
       }
     }
 
-    /* ── Accounts ── */
-    async function _accFetch(url, opts = {}) {
-      const r = await fetch(url, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts });
-      const data = await r.json().catch(() => ({}));
-      if (r.status === 401) { doLogout(); throw new Error('Signed out'); }
-      if (!r.ok) throw new Error(data.detail || `Server error (${r.status})`);
-      return data;
-    }
-    function _accMsg(text, ok) {
-      const el = document.getElementById('acc-msg');
-      el.textContent = text;
-      el.style.color = ok ? 'var(--green)' : 'var(--red)';
-    }
-    async function loadAccounts() {
+    /* ── Storage (Camera Images) ── */
+    async function loadStorage() {
+      const el = document.getElementById('storage-now');
       try {
-        const me = await _accFetch('/api/me');
-        document.getElementById('acc-me').textContent = me.user_id;
-        const users = await _accFetch('/api/admin/users');
-        const list = document.getElementById('acc-list');
-        list.innerHTML = users.map(u => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:13px;">
-            <span>${escapeHtml(u.user_id)} <span style="color:var(--text-dim)">· ${escapeHtml(u.role)}</span></span>
-            ${u.user_id === me.user_id ? '<span style="color:var(--text-dim)">you</span>'
-              : `<button class="sched-chip-btn danger" data-del-user="${escapeHtml(u.user_id)}" type="button">Delete</button>`}
-          </div>`).join('');
-      } catch (e) {
-        _accMsg('Could not load accounts: ' + e.message, false);
-      }
+        const r = await fetch('/api/admin/storage', { credentials: 'same-origin' });
+        const st = await r.json();
+        const parts = [`${st.images_gb} GB of images over ${st.days} day${st.days === 1 ? '' : 's'}`,
+                       `${st.free_gb} GB free (disk guard under ${st.min_free_gb} GB)`];
+        if (st.avg_gb_day) parts.push(`~${st.avg_gb_day} GB a day · room for ${st.room_days} more days`);
+        el.textContent = parts.join(' · ');
+      } catch (e) { el.textContent = 'Storage numbers not available'; }
     }
-    document.getElementById('acc-list').addEventListener('click', async e => {
-      const b = e.target.closest('button[data-del-user]');
-      if (!b) return;
-      const uid = b.dataset.delUser;
-      if (!confirm(`Delete account ${uid}?`)) return;
-      try { await _accFetch(`/api/admin/users/${encodeURIComponent(uid)}`, { method: 'DELETE' }); _accMsg(`✓ ${uid} deleted`, true); loadAccounts(); }
-      catch (err) { _accMsg(err.message, false); }
-    });
-    document.getElementById('acc-add-btn').addEventListener('click', async () => {
-      const user_id = document.getElementById('acc-uid').value.trim();
-      const password = document.getElementById('acc-pw').value;
-      const role = document.getElementById('acc-role').value;
-      try {
-        await _accFetch('/api/admin/users', { method: 'POST', body: JSON.stringify({ user_id, password, role }) });
-        document.getElementById('acc-uid').value = '';
-        document.getElementById('acc-pw').value = '';
-        _accMsg(`✓ ${user_id} added (${role})`, true);
-        loadAccounts();
-      } catch (err) { _accMsg(err.message, false); }
-    });
-    document.getElementById('acc-change-btn').addEventListener('click', async () => {
-      const current_password = document.getElementById('acc-cur').value;
-      const new_password = document.getElementById('acc-new').value;
-      try {
-        await _accFetch('/api/password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) });
-        document.getElementById('acc-cur').value = '';
-        document.getElementById('acc-new').value = '';
-        _accMsg('✓ Password changed', true);
-      } catch (err) { _accMsg(err.message, false); }
-    });
 
     /* ── Database Management ── */
     async function loadDatabase() {
@@ -1431,326 +443,6 @@
       }
     }
 
-    /* ── Test Data Generator ── */
-    let _selectedScenario = 'single';
-
-    function selectScenario(el) {
-      document.querySelectorAll('.scenario-card').forEach(c => c.classList.remove('selected'));
-      el.classList.add('selected');
-      _selectedScenario = el.dataset.scenario;
-      // Hide minutes row for scenarios that manage their own timing
-      const hideMinutes = ['multi_badge', 'loitering_resight'];
-      document.getElementById('sim-minutes-row').style.display =
-        hideMinutes.includes(_selectedScenario) ? 'none' : '';
-    }
-
-    function simLog(msg, type = 'info') {
-      const log = document.getElementById('sim-log');
-      const entry = document.createElement('div');
-      entry.className = 'sim-log-entry' + (type === 'ok' ? ' ok' : type === 'err' ? ' err' : '');
-      const ts = new Date().toLocaleTimeString();
-      entry.textContent = `[${ts}] ${msg}`;
-      log.appendChild(entry);
-      log.scrollTop = log.scrollHeight;
-    }
-
-    function clearSimLog() {
-      document.getElementById('sim-log').innerHTML =
-        '<div class="sim-log-entry" style="color:var(--text-muted);">Log cleared.</div>';
-    }
-
-    async function runSimulation() {
-      const btn = document.getElementById('sim-btn');
-      const badge = document.getElementById('sim-badge').value.trim().toUpperCase() || 'TEST-BADGE';
-      const camera = document.getElementById('sim-camera').value.trim().toLowerCase() || 'cam-entrance';
-      const date = document.getElementById('sim-date').value;
-      const time = document.getElementById('sim-time').value;
-
-      btn.disabled = true;
-      btn.textContent = 'Dropping…';
-
-      const fileInput = document.getElementById('sim-file');
-      const file = fileInput.files[0];
-      const imgName = file ? file.name : 'random';
-
-      simLog(`Dropping: badge=${badge} camera=${camera} date=${date || 'now'} time=${time || 'now'} img=${imgName}`);
-
-      const sendSimulation = async (base64Img = null) => {
-        const r = await fetch('/api/admin/simulate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ badge, camera, date, time, image_base64: base64Img }),
-        });
-        if (!r.ok) {
-          const e = await r.json().catch(() => ({}));
-          throw new Error(e.detail || 'Server error');
-        }
-        const result = await r.json();
-        simLog(`  ✓ ${result.filename}`, 'ok');
-      };
-
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = async function () {
-          const base64Img = reader.result.split(',')[1];
-          try {
-            await sendSimulation(base64Img);
-          } catch (e) {
-            simLog(`Error: ${e.message}`, 'err');
-          } finally {
-            btn.disabled = false;
-            btn.textContent = '📥\u00a0 Drop Detection';
-          }
-        };
-        reader.onerror = function () {
-          simLog('Error reading file', 'err');
-          btn.disabled = false;
-          btn.textContent = '📥\u00a0 Drop Detection';
-        };
-        reader.readAsDataURL(file);
-      } else {
-        try {
-          await sendSimulation();
-        } catch (e) {
-          simLog(`Error: ${e.message}`, 'err');
-        } finally {
-          btn.disabled = false;
-          btn.textContent = '📥\u00a0 Drop Detection';
-        }
-      }
-    }
-
-    /* ── Scheduled demo alerts ── */
-    let _schedRules = null;
-    let _copyTargets = [];
-
-    function _isoDate(d) {
-      const p = n => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    }
-    function _normClass(b) {
-      return String(b || '').trim().toLowerCase().replace(/_/g, '-').replace('boundary', 'boundry');
-    }
-    function _fmtDay(iso) {
-      const d = new Date(iso + 'T00:00:00');
-      const today = _isoDate(new Date());
-      const tmr = _isoDate(new Date(Date.now() + 86400000));
-      const label = d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
-      return iso === today ? `Today · ${label}` : iso === tmr ? `Tomorrow · ${label}` : label;
-    }
-    function _schedMsg(id, text, cls) {
-      const el = document.getElementById(id);
-      el.textContent = text;
-      el.className = 'sched-msg' + (cls ? ' ' + cls : '');
-    }
-    async function _schedFetch(url, opts = {}) {
-      const r = await fetch(url, { credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }, ...opts });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || `Server error (${r.status})`);
-      return data;
-    }
-
-    /* When will this entry actually flash on the dashboard? */
-    function _flashDescription(badge) {
-      const k = _normClass(badge);
-      if (!_schedRules) return '';
-      if ((_schedRules.breach_badges || []).includes(k)) return { mins: 0, text: 'flashes instantly' };
-      const rules = _schedRules.dwell_rules || {};
-      let mins = null;
-      if (Object.prototype.hasOwnProperty.call(rules, k)) mins = rules[k];
-      else if (/^outside-person-\d+-object-\d+$/.test(k)) mins = rules['outside-person'] || 10;
-      else if ((_schedRules.inside_badges || []).includes(k)) return { mins: null, text: 'never alerts (inside class)' };
-      else mins = _schedRules.default_dwell_minutes;
-      return { mins, text: `flashes ${mins} min after it appears` };
-    }
-
-    function updateFlashPreview() {
-      const hint = document.getElementById('sch-flash-hint');
-      const badge = document.getElementById('sch-badge').value;
-      const date = document.getElementById('sch-date').value;
-      const time = document.getElementById('sch-time').value;
-      const f = _flashDescription(badge);
-      if (!f) { hint.textContent = '—'; return; }
-      if (!date || !time || f.mins == null) { hint.textContent = f.text; return; }
-      const at = new Date(`${date}T${time}:00`);
-      at.setMinutes(at.getMinutes() + f.mins);
-      const hhmm = at.toTimeString().slice(0, 5);
-      hint.textContent = `${f.text} · on the dashboard at ${hhmm}`;
-    }
-
-    async function initSchedule() {
-      try { _schedRules = await (await fetch('/api/perimeter/rules')).json(); } catch (e) { }
-      const now = new Date(Date.now() + 5 * 60000);
-      document.getElementById('sch-date').value = _isoDate(now);
-      document.getElementById('sch-time').value = now.toTimeString().slice(0, 5);
-      document.getElementById('copy-source').value = _isoDate(new Date());
-      updateFlashPreview();
-      previewCopySource();
-      renderCopyTargets();
-      loadSchedule();
-    }
-
-    async function scheduleAlert() {
-      const btn = document.getElementById('sch-btn');
-      const payload = {
-        badge: document.getElementById('sch-badge').value.trim().toUpperCase(),
-        camera: document.getElementById('sch-camera').value.trim().toLowerCase(),
-        date: document.getElementById('sch-date').value,
-        time: document.getElementById('sch-time').value,
-      };
-      const file = document.getElementById('sch-file').files[0];
-      btn.disabled = true;
-      _schedMsg('sch-msg', 'Scheduling…');
-      try {
-        if (file) {
-          payload.image_base64 = await new Promise((res, rej) => {
-            const rd = new FileReader();
-            rd.onload = () => res(rd.result.split(',')[1]);
-            rd.onerror = rej;
-            rd.readAsDataURL(file);
-          });
-        }
-        const out = await _schedFetch('/api/admin/schedule', { method: 'POST', body: JSON.stringify(payload) });
-        const alertAt = out.item.alert_at ? new Date(out.item.alert_at).toTimeString().slice(0, 5) : '—';
-        _schedMsg('sch-msg', `✓ ${out.item.badge} scheduled · flashes ${_fmtDay(out.item.date)} at ${alertAt}`, 'ok');
-        loadSchedule();
-      } catch (e) {
-        _schedMsg('sch-msg', `✗ ${e.message}`, 'err');
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    async function previewCopySource() {
-      const hint = document.getElementById('copy-source-hint');
-      const date = document.getElementById('copy-source').value;
-      if (!date) { hint.textContent = 'Pick a day to copy'; return; }
-      try {
-        const [dets, sched] = await Promise.all([
-          fetch(`/api/detections?date=${date}&limit=1000`).then(r => r.json()),
-          _schedFetch('/api/admin/schedule?days=366'),
-        ]);
-        const keys = new Set();
-        const pad = n => String(n).padStart(2, '0');
-        for (const d of dets) {
-          const t = new Date(d.timestamp.endsWith('Z') ? d.timestamp : d.timestamp + 'Z');
-          keys.add(`${d.badge}|${d.camera}|${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`);
-        }
-        for (const s of sched.items) {
-          if (s.date === date && (s.status === 'pending' || s.status === 'released')) keys.add(`${s.badge}|${s.camera}|${s.time}`);
-        }
-        hint.textContent = keys.size
-          ? `${keys.size} entr${keys.size === 1 ? 'y' : 'ies'} on ${_fmtDay(date)} will be copied`
-          : `Nothing on ${_fmtDay(date)} to copy`;
-      } catch (e) {
-        hint.textContent = 'Could not preview that day';
-      }
-    }
-
-    function renderCopyTargets() {
-      const box = document.getElementById('copy-targets');
-      if (!_copyTargets.length) { box.innerHTML = '<span class="sched-empty">No dates chosen</span>'; return; }
-      box.innerHTML = _copyTargets.map(d =>
-        `<span class="sched-target">${_fmtDay(d)}<button title="Remove" onclick="removeCopyTarget('${d}')">×</button></span>`
-      ).join('');
-    }
-    function addCopyTarget(date) {
-      const d = date || document.getElementById('copy-add-date').value;
-      if (!d) return;
-      if (d === document.getElementById('copy-source').value) { _schedMsg('copy-msg', '✗ That is the source day', 'err'); return; }
-      if (!_copyTargets.includes(d)) _copyTargets.push(d);
-      _copyTargets.sort();
-      renderCopyTargets();
-    }
-    function removeCopyTarget(d) {
-      _copyTargets = _copyTargets.filter(x => x !== d);
-      renderCopyTargets();
-    }
-    function quickTargets(n) {
-      const src = document.getElementById('copy-source').value || _isoDate(new Date());
-      const base = new Date(src + 'T00:00:00');
-      _copyTargets = [];
-      for (let i = 1; i <= n; i++) _copyTargets.push(_isoDate(new Date(base.getTime() + i * 86400000)));
-      renderCopyTargets();
-    }
-
-    async function copyDay() {
-      const source = document.getElementById('copy-source').value;
-      const btn = document.getElementById('copy-btn');
-      if (!source) { _schedMsg('copy-msg', '✗ Pick a day to copy from', 'err'); return; }
-      if (!_copyTargets.length) { _schedMsg('copy-msg', '✗ Choose at least one date to copy to', 'err'); return; }
-      btn.disabled = true;
-      _schedMsg('copy-msg', 'Copying…');
-      try {
-        const out = await _schedFetch('/api/admin/schedule/copy', {
-          method: 'POST', body: JSON.stringify({ source_date: source, target_dates: _copyTargets }),
-        });
-        const skipped = [];
-        if (out.skipped_duplicate) skipped.push(`${out.skipped_duplicate} already scheduled`);
-        if (out.skipped_past) skipped.push(`${out.skipped_past} already past`);
-        _schedMsg('copy-msg',
-          `✓ ${out.created} alert${out.created === 1 ? '' : 's'} scheduled across ${_copyTargets.length} day${_copyTargets.length === 1 ? '' : 's'}` +
-          (skipped.length ? ` · skipped ${skipped.join(', ')}` : ''), 'ok');
-        loadSchedule();
-      } catch (e) {
-        _schedMsg('copy-msg', `✗ ${e.message}`, 'err');
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    async function loadSchedule() {
-      const list = document.getElementById('sched-list');
-      try {
-        const data = await _schedFetch('/api/admin/schedule?days=60');
-        if (!data.items.length) {
-          list.innerHTML = '<div class="sched-empty" style="padding:18px 20px;">Nothing scheduled yet</div>';
-          return;
-        }
-        const byDay = {};
-        for (const it of data.items) (byDay[it.date] = byDay[it.date] || []).push(it);
-        list.innerHTML = Object.keys(byDay).sort().map(day => {
-          const items = byDay[day];
-          const pending = items.filter(i => i.status === 'pending').length;
-          const head = `
-            <div class="sched-day">
-              <div><span class="sched-day-name">${_fmtDay(day)}</span>
-                   <span class="sched-day-meta">${items.length} entr${items.length === 1 ? 'y' : 'ies'} · ${pending} pending</span></div>
-              ${pending ? `<button class="sched-chip-btn danger" onclick="cancelScheduledDay('${day}')">Cancel ${pending} pending</button>` : ''}
-            </div>`;
-          const rows = items.map(it => {
-            const flash = it.alert_at ? new Date(it.alert_at).toTimeString().slice(0, 8) : '—';
-            const zoneCls = it.zone === 'breach' ? 'sched-zone-breach' : it.zone === 'outside' ? 'sched-zone-outside' : '';
-            return `
-              <div class="sched-row">
-                <span title="Appears on the dashboard">${it.time}</span>
-                <span class="dim" title="Flashes on the dashboard">⚡ ${flash}</span>
-                <span><b class="${zoneCls}">${it.badge}</b></span>
-                <span class="dim">${it.camera}</span>
-                <span class="sched-status ${it.status}">${it.status}</span>
-                <span>${it.status === 'pending'
-                  ? `<button class="sched-chip-btn danger" onclick="cancelScheduled(${it.id})">Cancel</button>` : ''}</span>
-              </div>`;
-          }).join('');
-          return head + rows;
-        }).join('');
-      } catch (e) {
-        list.innerHTML = `<div class="sched-empty" style="padding:18px 20px;color:var(--red);">Could not load schedule: ${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function cancelScheduled(id) {
-      try { await _schedFetch(`/api/admin/schedule/${id}`, { method: 'DELETE' }); loadSchedule(); }
-      catch (e) { alert(e.message); }
-    }
-    async function cancelScheduledDay(day) {
-      if (!confirm(`Cancel every pending alert on ${_fmtDay(day)}?`)) return;
-      try { await _schedFetch('/api/admin/schedule/cancel-date', { method: 'POST', body: JSON.stringify({ date: day }) }); loadSchedule(); }
-      catch (e) { alert(e.message); }
-    }
-
     /* ── Reset Everything ── */
     let _resetCode = '';
 
@@ -1828,7 +520,7 @@
           body: JSON.stringify(updates),
           credentials: 'same-origin',
         });
-        if (r.status === 401) { doLogout(); return; }
+        if (r.status === 401 || r.status === 403) { location.replace('login.html?team=1&next=admin.html'); return; }
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
           throw new Error(e.detail || 'Save failed');
@@ -1846,27 +538,14 @@
         msg.style.display = 'block';
       } finally {
         btn.disabled = false;
-        btn.textContent = '💾 Save All Changes';
+        btn.textContent = 'Save all changes';
         setTimeout(() => { msg.style.display = 'none'; }, 5000);
       }
     }
 
-    /* ── Enter key on login ── */
-    document.getElementById('login-pass').addEventListener('keydown', e => {
-      if (e.key === 'Enter') doLogin();
-    });
-    document.getElementById('login-email').addEventListener('keydown', e => {
-      if (e.key === 'Enter') document.getElementById('login-pass').focus();
-    });
-
-    /* ── Check if already logged in on load ── */
-    (async () => {
-      try {
-        const r = await fetch('/api/admin/config', { credentials: 'same-origin' });
-        if (r.ok) { showAdmin(); }
-      } catch (_) { }
-    })();
+    /* ── Load on open ── */
+    showAdmin();
   </script>
+<script>onReady(() => {});</script>
 </body>
-
 </html>

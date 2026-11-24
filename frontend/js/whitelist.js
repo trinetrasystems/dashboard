@@ -40,7 +40,7 @@ function renderDropdown() {
 function renderList() {
   const container = document.getElementById('wl-list');
   if (whitelist.length === 0) {
-    container.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:30px;font-family:JetBrains Mono;font-size:12px;">no whitelisted badges</div>`;
+    container.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:30px;font-size:14px;">no whitelisted badges</div>`;
     return;
   }
   container.innerHTML = whitelist.map(w => {
@@ -97,9 +97,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btn = e.target.closest('button.remove[data-badge]');
     if (btn) onRemove(btn.dataset.badge);
   });
-  // Whitelisting silences alerts, so only administrators may change the list.
+  // Whitelisting silences alerts: only those who may acknowledge alerts change the list.
   getMe().then(me => {
-    if (me.role !== 'admin') {
+    if (!canSee(me, 'manage_alerts')) {
       document.querySelector('.admin-input').style.display = 'none';
       document.getElementById('wl-list').classList.add('read-only');
     }

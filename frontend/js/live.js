@@ -768,7 +768,7 @@ function renderTodayChart() {
     const x = x0 + i * (barW + gap);
     bars += `<rect x="${x}" y="${chartH - h}" width="${barW}" height="${h}" rx="3" fill="var(--cyan)" opacity="0.85"/>`;
     if (i % 4 === 0) {
-      labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${pad(i)}:00</text>`;
+      labels += `<text x="${x + barW / 2}" y="${chartH + 18}" text-anchor="middle" font-size="12" fill="var(--text-dim)">${pad(i)}:00</text>`;
     }
   }
   const peakHr = data.indexOf(max);
@@ -779,9 +779,9 @@ function renderTodayChart() {
       <line x1="${x0}" y1="${chartH}" x2="${chartW - 20}" y2="${chartH}" stroke="var(--border)"/>
       <line x1="${x0}" y1="${chartH * 0.5}" x2="${chartW - 20}" y2="${chartH * 0.5}" stroke="var(--border)" stroke-dasharray="2 4" opacity="0.5"/>
       ${bars}${labels}
-      <text x="40" y="${chartH + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">0</text>
-      <text x="40" y="${chartH * 0.5 + 4}" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
-      <text x="40" y="10" text-anchor="end" font-family="JetBrains Mono" font-size="11" fill="var(--text-dim)">${max}</text>
+      <text x="40" y="${chartH + 4}" text-anchor="end" font-size="12" fill="var(--text-dim)">0</text>
+      <text x="40" y="${chartH * 0.5 + 4}" text-anchor="end" font-size="12" fill="var(--text-dim)">${Math.floor(max / 2)}</text>
+      <text x="40" y="10" text-anchor="end" font-size="12" fill="var(--text-dim)">${max}</text>
     </svg>`;
 }
 
@@ -799,7 +799,6 @@ function tickDurations() {
 }
 
 function connectWS() {
-  if (typeof USE_DUMMY_DATA !== 'undefined' && USE_DUMMY_DATA) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   let ws;
   try { ws = new WebSocket(`${proto}://${location.host}/ws`); }

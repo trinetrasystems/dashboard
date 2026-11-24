@@ -3,72 +3,42 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trinetra Systems · Sign in</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg: #0a0e17; --border: rgba(255,255,255,0.07); --cyan: #00d4ff;
-    --text: #e8edf5; --text-dim: #6b7a90;
-    --font: 'Bricolage Grotesque', sans-serif; --mono: 'JetBrains Mono', monospace;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    padding: 16px; color: var(--text); font-family: var(--font);
-    background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(0,212,255,0.08) 0%, transparent 70%), var(--bg);
-  }
-  .login-card {
-    width: 100%; max-width: 400px; padding: 48px 40px;
-    background: rgba(17,24,39,0.9); border: 1px solid var(--border); border-radius: 20px;
-    box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,212,255,0.05);
-  }
-  .login-logo img { height: 46px; width: auto; display: block; margin-bottom: 36px; }
-  .login-title { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
-  .login-sub { color: var(--text-dim); font-size: 14px; margin-bottom: 32px; }
-  .field { margin-bottom: 18px; }
-  .field label {
-    display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
-    color: var(--text-dim); text-transform: uppercase; margin-bottom: 8px;
-  }
-  .field input {
-    width: 100%; padding: 12px 16px; background: rgba(255,255,255,0.04);
-    border: 1px solid var(--border); border-radius: 8px; color: var(--text);
-    font-family: var(--mono); font-size: 14px; outline: none;
-  }
-  .field input:focus { border-color: var(--cyan); background: rgba(0,212,255,0.04); }
-  .btn-login {
-    width: 100%; padding: 14px; margin-top: 8px; border: none; border-radius: 8px;
-    background: linear-gradient(135deg, #00b4d8, #0077b6); color: #fff;
-    font-family: var(--font); font-size: 15px; font-weight: 700; letter-spacing: 0.05em; cursor: pointer;
-  }
-  .btn-login:disabled { opacity: 0.7; cursor: default; }
-  .login-error {
-    margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none;
-    background: rgba(255,68,68,0.1); border: 1px solid rgba(255,68,68,0.3); color: #ff8080;
-  }
-  .admin-link { display: block; margin-top: 22px; text-align: center; font-size: 13px; color: var(--text-dim); }
-  .admin-link a { color: var(--cyan); text-decoration: none; }
-</style>
+<title>Perimeter Security · Sign in</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
 </head>
-<body>
-  <form class="login-card" id="login-form" autocomplete="on">
-    <div class="login-logo"><img src="assets/Trinetra-Logo-Full-Dark.png" alt="Trinetra Systems"></div>
-    <div class="login-title">Perimeter Dashboard</div>
-    <div class="login-sub">Sign in to view live alerts and logs</div>
-    <div class="field">
-      <label for="login-user">User ID</label>
-      <input id="login-user" type="text" autocomplete="username" required maxlength="64">
+<body class="login-body">
+
+<main class="login-wrap">
+  <div class="login-brand">
+    <img class="brand-img logo-light" src="img/trinetra-logo-light.png" alt="Trinetra Systems">
+    <img class="brand-img logo-dark" src="img/trinetra-logo-dark.png" alt="Trinetra Systems">
+    <div class="brand-name">Perimeter Security</div>
+  </div>
+
+  <section class="card login-panel">
+    <h1 class="login-title" id="login-title">Sign in</h1>
+    <p class="help" id="login-sub">Use the user ID and password your administrator gave you.</p>
+
+    <div id="signed-in" class="signed-in" hidden>
+      <p>Signed in as <b id="signed-in-name"></b>.</p>
+      <div class="pop-actions">
+        <button class="btn ghost" id="switch-btn">Sign out</button>
+        <a class="btn primary" id="continue-btn" href="index.html">Continue</a>
+      </div>
     </div>
-    <div class="field">
-      <label for="login-pass">Password</label>
-      <input id="login-pass" type="password" autocomplete="current-password" required maxlength="128">
-    </div>
-    <button class="btn-login" id="login-btn" type="submit">Sign In →</button>
-    <div class="login-error" id="login-error" role="alert"></div>
-    <div class="admin-link">Administrator? <a href="admin.html">Admin panel</a></div>
-  </form>
-  <script src="js/login.js"></script>
+
+    <form class="form" id="login-form">
+      <label>User ID <input name="username" id="login-user" autocomplete="username" required autofocus maxlength="64"></label>
+      <label>Password <input name="password" id="login-pass" type="password" autocomplete="current-password" required maxlength="128"></label>
+      <div class="form-error" id="login-error" role="alert" hidden></div>
+      <button type="submit" class="btn primary" id="login-btn">Sign in</button>
+    </form>
+    <a class="login-team" id="team-link" href="login.html?team=1" hidden>Trinetra team login</a>
+  </section>
+</main>
+
+<script src="js/login.js"></script>
 </body>
 </html>

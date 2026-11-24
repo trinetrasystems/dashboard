@@ -15,13 +15,12 @@ Run locally:
 """
 import asyncio
 import csv
+import hmac
 import uuid
 import io
 import json
-import random
 import os
 import re
-import secrets
 import shutil
 import smtplib
 import sqlite3
@@ -40,31 +39,16 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+import access
 import config
+import ds_control
+import housekeeping
 import security
-
-# ─── Minimal valid 1×1 white JPEG (used by the test data generator) ──────────
-# This is a real, parseable JPEG so Telegram and browsers accept it.
-MINIMAL_JPEG = bytes([
-    0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,
-    0x00,0x01,0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,
-    0x07,0x06,0x05,0x08,0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,
-    0x0C,0x0B,0x0B,0x0C,0x19,0x12,0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,
-    0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,0x22,0x2C,0x23,0x1C,0x1C,0x28,
-    0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,0x39,0x3D,0x38,0x32,
-    0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,0x00,0x01,
-    0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x1F,0x00,0x00,0x01,0x05,0x01,0x01,
-    0x01,0x01,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x02,
-    0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0xFF,0xC4,0x00,0x35,0x10,
-    0x00,0x02,0x01,0x03,0x02,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x01,0x02,0x03,0x11,0x00,0x04,0x12,0x21,0x31,0x41,0x05,0x13,
-    0x51,0x61,0x22,0x71,0x81,0x91,0xA1,0xB1,0xC1,0xD1,0xFF,0xDA,0x00,0x08,
-    0x01,0x01,0x00,0x00,0x3F,0x00,0xF5,0x57,0xFF,0xD9,
-])
 
 # ════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -83,6 +67,10 @@ def db() -> sqlite3.Connection:
     return conn
 
 
+ACCESS = access.Access(lambda: db(), _db_lock)
+_DB_KEEPER: Optional[sqlite3.Connection] = None   # one connection stays open (see lifespan)
+
+
 def init_db():
     """Apply schema.sql once. Idempotent. Also migrates older DBs."""
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -96,24 +84,6 @@ def init_db():
             print("[migrate] adding session_id column to detections")
             conn.execute("ALTER TABLE detections ADD COLUMN session_id INTEGER REFERENCES sessions(id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_det_session ON detections(session_id)")
-        # Scheduled detections — released into incoming/ when their time comes.
-        # detect_at is LOCAL time, matching the filename convention and the
-        # admin panel's date/time inputs.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS scheduled_detections (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                badge        TEXT NOT NULL,
-                camera       TEXT NOT NULL,
-                detect_at    TEXT NOT NULL,
-                image_source TEXT,
-                image_b64    TEXT,
-                label        TEXT,
-                status       TEXT NOT NULL DEFAULT 'pending',
-                created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-                released_at  TEXT,
-                filename     TEXT
-            )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_detections(status, detect_at)")
         # MIGRATION: classify alerts by perimeter zone (breach vs early warning)
         acols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
         if "kind" not in acols:
@@ -123,31 +93,8 @@ def init_db():
             conn.execute("ALTER TABLE alerts ADD COLUMN zone TEXT")
             conn.execute("ALTER TABLE alerts ADD COLUMN image TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_kind ON alerts(kind, triggered_at DESC)")
-        # Dashboard sign-in accounts — PBKDF2 password hashes, never plain text.
-        # (Separate from the mobile-app "users" table, which has its own schema.)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS dashboard_accounts (
-                user_id       TEXT PRIMARY KEY COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                role          TEXT NOT NULL CHECK (role IN ('admin','operator')),
-                created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
-                created_by    TEXT,
-                password_changed_at TEXT
-            )""")
-        # Activity log — sign-ins, lockouts and every change. Append-only from the API.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                at      TEXT DEFAULT CURRENT_TIMESTAMP,
-                actor   TEXT,
-                action  TEXT NOT NULL,
-                detail  TEXT,
-                ip      TEXT
-            )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC)")
-        if "user_agent" not in {r[1] for r in conn.execute("PRAGMA table_info(audit_log)")}:
-            conn.execute("ALTER TABLE audit_log ADD COLUMN user_agent TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor COLLATE NOCASE, id DESC)")
+        # Sign-in accounts, sessions and the Activity Logs (access.py)
+        ACCESS.init_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -659,8 +606,27 @@ def scan_existing():
         handle_new_file(f)
 
 
+def incoming_sweeper():
+    """Safety net: a file that arrives without a close / move event — moved in from another folder on the same disk
+    (`mv /tmp/x.jpg incoming/`) shows up only as 'created' — is picked up within ~10 s. 3 s old at least, so a file
+    still being written is never read half-way; a file already ingested is ignored by the database (same name)."""
+    while True:
+        time.sleep(10)
+        try:
+            now = time.time()
+            for f in sorted(Path(config.INCOMING_DIR).glob("*.jpg")):
+                try:
+                    if now - f.stat().st_mtime >= 3:
+                        handle_new_file(f)
+                except FileNotFoundError:
+                    pass
+        except Exception as e:
+            print(f"[ingest] sweep: {e!r}")
+
+
 def start_watcher() -> Observer:
     Path(config.INCOMING_DIR).mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=incoming_sweeper, daemon=True, name="incoming-sweeper").start()
     obs = Observer()
     obs.schedule(IncomingHandler(), config.INCOMING_DIR, recursive=False)
     obs.start()
@@ -1109,137 +1075,61 @@ def jetson_status() -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# IMAGE CLEANUP LOOP
+# HOUSEKEEPING — image retention, disk guard, Activity Logs pruning, nightly DB backup (housekeeping.py)
 # ════════════════════════════════════════════════════════════════════════════
 
-def _delete_old_images():
-    """Delete .jpg files from archive older than IMAGE_RETENTION_DAYS.
-    DB records (detections/sessions/alerts) are intentionally NOT touched —
-    has_image is computed live, so the dashboard shows NO IMAGE AVAILABLE."""
-    if config.IMAGE_RETENTION_DAYS <= 0:
-        return
-    archive = Path(config.ARCHIVE_DIR)
-    if not archive.exists():
-        return
-    cutoff = time.time() - config.IMAGE_RETENTION_DAYS * 86400  # days → seconds
-    deleted = 0
-    for f in archive.glob("*.jpg"):
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-                deleted += 1
-        except FileNotFoundError:
-            pass  # already gone
-    if deleted:
-        print(f"[cleanup] deleted {deleted} image(s) older than {config.IMAGE_RETENTION_DAYS} days")
-    else:
-        print(f"[cleanup] ran — no images older than {config.IMAGE_RETENTION_DAYS} days found")
-
-
-async def image_cleanup_loop():
-    """Run image cleanup once at startup (after 60s grace) then every 24 hours."""
-    if config.IMAGE_RETENTION_DAYS <= 0:
-        print("[cleanup] image cleanup disabled (TRINETRA_IMAGE_RETENTION_DAYS=0)")
-        return
-    print(f"[cleanup] image retention = {config.IMAGE_RETENTION_DAYS} days · first run in 60s")
-    await asyncio.sleep(60)          # give server time to finish startup
-    _delete_old_images()             # clean up any backlog from while server was down
-    while True:
-        await asyncio.sleep(86400)   # then repeat every 24 hours
-        _delete_old_images()
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# FASTAPI APP
-# ════════════════════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════════════════════
-# SCHEDULED DETECTIONS — demo alerts that play out at a chosen date & time
-#
-# A scheduled entry is held in the database and only dropped into incoming/
-# when its time arrives. Releasing on time (rather than writing a future-dated
-# file up front) is what makes a Boundry-object breach flash on schedule — a
-# breach fires the moment its file is ingested — and stops a future outside
-# entry from merging with real detections before its time.
-# ════════════════════════════════════════════════════════════════════════════
-
-# An entry more overdue than this when the server gets to it (e.g. the server
-# was off) is marked "missed" instead of firing stale alerts all at once.
-SCHEDULE_MISSED_GRACE = timedelta(minutes=30)
-
-
-def _image_bytes_for(image_b64: Optional[str], image_source: Optional[str]) -> bytes:
-    """Uploaded image → the archived snapshot being reused → a test image."""
-    import base64
-    if image_b64:
-        try:
-            return base64.b64decode(image_b64)
-        except Exception:
-            pass
-    if image_source:
-        src_path = Path(config.ARCHIVE_DIR) / Path(image_source).name
-        if src_path.exists() and src_path.stat().st_size > 0:
-            return src_path.read_bytes()
-    test_dir = Path(__file__).parent / "test_images"
-    images = sorted(test_dir.glob("*.jpg")) if test_dir.exists() else []
-    return random.choice(images).read_bytes() if images else MINIMAL_JPEG
-
-
-def _release_due_schedules():
-    """Drop every due entry into incoming/. Runs in a worker thread."""
-    now = datetime.now()
-    with _db_lock:
-        conn = db()
-        try:
-            due = conn.execute(
-                "SELECT * FROM scheduled_detections WHERE status='pending' AND detect_at <= ? "
-                "ORDER BY detect_at", (now.isoformat(),)
-            ).fetchall()
-            for r in due:
-                at = datetime.fromisoformat(r["detect_at"])
-                with conn:
-                    if now - at > SCHEDULE_MISSED_GRACE:
-                        conn.execute(
-                            "UPDATE scheduled_detections SET status='missed', released_at=? WHERE id=?",
-                            (now.isoformat(), r["id"]))
-                        print(f"[schedule] missed (server was not running): {r['badge']} @ {r['camera']} {at}")
-                        continue
-                    filename = f"{r['camera']}_{r['badge']}_{at:%Y%m%d-%H%M%S}.jpg"
-                    incoming = Path(config.INCOMING_DIR)
-                    incoming.mkdir(parents=True, exist_ok=True)
-                    (incoming / filename).write_bytes(_image_bytes_for(r["image_b64"], r["image_source"]))
-                    conn.execute(
-                        "UPDATE scheduled_detections SET status='released', released_at=?, filename=? WHERE id=?",
-                        (now.isoformat(), filename, r["id"]))
-                    print(f"[schedule] released {filename}")
-        finally:
-            conn.close()
-
-
-async def schedule_loop():
+async def housekeeping_loop():
+    """every 10 min: the disk guard; hourly: the days of images kept (night only) and the Activity Logs"""
+    await asyncio.sleep(60)                          # let the server finish starting
+    n = 0
     while True:
         try:
-            await asyncio.get_event_loop().run_in_executor(None, _release_due_schedules)
+            await asyncio.to_thread(housekeeping.disk_guard)
+            if n % 6 == 0:
+                await asyncio.to_thread(housekeeping.retention)
+                await asyncio.to_thread(ACCESS.prune)
         except Exception as e:
-            print(f"[schedule] error: {e}")
-        await asyncio.sleep(10)
+            print(f"[housekeeping] {e!r}")
+        n += 1
+        await asyncio.sleep(600)
+
+
+async def backup_loop():
+    last = None
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        if not housekeeping.backup_due(now, last):
+            continue
+        last = now.date()
+        try:
+            await asyncio.to_thread(housekeeping.db_backup, db, now)
+        except Exception as e:
+            print(f"[backup] {e!r}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _main_loop
+    global _main_loop, _DB_KEEPER
     _main_loop = asyncio.get_event_loop()
 
     config.print_summary()
     init_db()
-    _bootstrap_admin()
-    _scrub_env_password()
+    # One connection stays open: otherwise the last short-lived connection to close checkpoints and deletes the
+    # -wal / -shm files every time — many small disk writes per poll while the dashboard is idle.
+    _DB_KEEPER = db()
     threading.Thread(target=scan_existing, daemon=True).start()
     observer = start_watcher()
-    loiter_task   = asyncio.create_task(loitering_loop())
-    cleanup_task  = asyncio.create_task(image_cleanup_loop())
-    schedule_task = asyncio.create_task(schedule_loop())
-    audit_task    = asyncio.create_task(audit_retention_loop())
+    loiter_task = asyncio.create_task(loitering_loop())
+    house_task  = asyncio.create_task(housekeeping_loop())
+    backup_task = asyncio.create_task(backup_loop())
+    if ds_control.available():
+        ds_control.start()                           # DeepStream page: supervisor (keeps the pipeline running when wanted)
+        print("[ds] DeepStream control on (pipeline restarted automatically when it was running)")
+    else:
+        print("[ds] DeepStream not installed here — the DeepStream page shows the settings only")
+    if not config.SUPPORT_PASSWORD:
+        print("[access] WARNING: SUPPORT_PASSWORD is empty — nobody can sign in until it is set in the settings file")
     print("[trinetra] startup complete · http://%s:%d" % (config.HOST, config.PORT))
     try:
         yield
@@ -1247,10 +1137,10 @@ async def lifespan(app: FastAPI):
         print("[trinetra] shutting down")
         observer.stop()
         observer.join(timeout=2)
-        loiter_task.cancel()
-        cleanup_task.cancel()
-        schedule_task.cancel()
-        audit_task.cancel()
+        for t in (loiter_task, house_task, backup_task):
+            t.cancel()
+        if _DB_KEEPER is not None:
+            _DB_KEEPER.close()
 
 
 # API docs (/docs, /redoc, /openapi.json) are off: they publish every route
@@ -1260,19 +1150,9 @@ app = FastAPI(title="Trinetra Systems Monitor", lifespan=lifespan,
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SECURITY — one central check on every request (deny by default)
+# SECURITY — one central check on every request (deny by default). Who may open what: access.py
 # ════════════════════════════════════════════════════════════════════════════
-SESSION_COOKIE = "trn_session"
-_sessions = security.SessionStore(
-    lambda: config.IDLE_MINUTES,
-    lambda role: config.SESSION_HOURS_ADMIN if role == "admin" else config.SESSION_HOURS_OPERATOR,
-)
-_limiter = security.LoginLimiter()
-
-# Reachable without signing in: the two sign-in pages and what they load.
-PUBLIC_PATHS = {"/login.html", "/admin.html", "/js/login.js", "/favicon.ico",
-                "/api/login", "/api/logout", "/api/admin/login", "/api/admin/logout"}
-PUBLIC_PREFIXES = ("/css/", "/assets/")
+SESSION_COOKIE = access.SESSION_COOKIE
 # Extra browser origins allowed to send changes (e.g. a reverse proxy that
 # rewrites the Host header). Comma-separated, e.g. https://site.example.ts.net
 ALLOWED_ORIGINS = {o.strip().rstrip("/").lower()
@@ -1280,11 +1160,16 @@ ALLOWED_ORIGINS = {o.strip().rstrip("/").lower()
 
 
 def _is_https(request) -> bool:
-    return request.url.scheme in ("https", "wss")
+    return request.url.scheme in ("https", "wss") or request.headers.get("x-forwarded-proto") == "https"
 
 
 def _client_ip(request) -> str:
-    return request.client.host if request.client else "?"
+    """the caller's address; behind the local Tailscale Funnel / serve proxy (127.0.0.1) the forwarded one"""
+    host = request.client.host if request.client else "?"
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd and host in ("127.0.0.1", "::1"):
+        return fwd.split(",")[0].strip()[:64]
+    return host
 
 
 def _origin_ok(origin: str, headers) -> bool:
@@ -1296,64 +1181,90 @@ def _origin_ok(origin: str, headers) -> bool:
     return bool(netloc) and netloc in hosts
 
 
-# Pages only administrators may open (others are sent elsewhere, not shown an error).
-ADMIN_PAGES = {"/activity.html"}
-
-_PAGE_NAMES = {"/": "Live dashboard", "/index.html": "Live dashboard", "/logs.html": "Detection logs",
-               "/visits.html": "Visits", "/whitelist.html": "Whitelist", "/admin.html": "Admin panel",
-               "/activity.html": "Activity log"}
-_last_view: dict = {}
+def audit(request: Request, category: str, action: str, target: str = "", ok: bool = True):
+    """one Activity Logs row for the person making this request (never raises)"""
+    i = getattr(request.state, "ident", None) or {"username": "", "role": "anonymous"}
+    ACCESS.audit(i.get("username") or "", i["role"], category, action, target, _client_ip(request), ok)
 
 
-def _log_page_view(request: Request, sess: dict, path: str):
-    """One 'page_view' entry per user and page per minute (reloads are not repeated)."""
-    key, now = (sess["user_id"].lower(), path), time.time()
-    if now - _last_view.get(key, 0) < 60:
-        return
-    if len(_last_view) > 5000:
-        _last_view.clear()
-    _last_view[key] = now
-    audit(request, "page_view", _PAGE_NAMES.get(path, path[:100]), actor=sess["user_id"])
+def _audit_target(path: str, key: str) -> str:
+    """the name of what a change is about, read before the change (a deleted row is gone after)"""
+    if key.isdigit() and path.startswith(("/api/users/", "/api/admins/")):
+        conn = db()
+        try:
+            r = conn.execute("SELECT username FROM users WHERE id=?", (int(key),)).fetchone()
+            return r["username"] if r else f"#{key}"
+        finally:
+            conn.close()
+    if key.isdigit() and path.startswith("/api/alerts/"):
+        return f"alert #{key}"
+    return urllib.parse.unquote(key)
 
 
-def _admin_only(path: str, method: str) -> bool:
-    if path.startswith("/api/admin/") or path == "/js/activity.js":
-        return True
-    # Whitelisting a class silences its alerts — an administrator decision.
-    if path.startswith("/api/whitelist") and method != "GET":
-        return True
-    return False
+def _no_cache(path: str, response):
+    if path.startswith("/images/"):
+        response.headers["Cache-Control"] = "public, max-age=604800"      # an archived image never changes
+    elif path.endswith((".html", ".js", ".css")) or path == "/":
+        # every device checks for a new version on each load; unchanged = a short 304 (ETag)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
 
 
-async def _guard(request: Request):
+@app.middleware("http")
+async def security_guard(request: Request, call_next):
     path, method = request.url.path, request.method
+    response = None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
         origin = request.headers.get("origin")
         if origin and not _origin_ok(origin, request.headers):
-            return JSONResponse({"detail": "Cross-site request refused"}, 403)
+            response = JSONResponse({"detail": "Cross-site request refused"}, 403)
         ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
-        if ctype and ctype != "application/json":
-            return JSONResponse({"detail": "Requests must be JSON"}, 415)
+        if response is None and ctype and ctype != "application/json":
+            response = JSONResponse({"detail": "Requests must be JSON"}, 415)
+    ident = await asyncio.to_thread(ACCESS.identity, request.cookies.get(SESSION_COOKIE))
+    request.state.ident = ident
+    need = ACCESS.route_permission(method, path)
     is_page = method == "GET" and (path == "/" or path.endswith(".html"))
-    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
-        if is_page and path == "/admin.html":
-            s = _sessions.get(request.cookies.get(SESSION_COOKIE))
-            if s:
-                _log_page_view(request, s, path)
-        return None
-    sess = _sessions.get(request.cookies.get(SESSION_COOKIE))
-    if not sess:
+    if response is None and not ACCESS.allowed(ident, need):
         if is_page:
-            return RedirectResponse("/admin.html" if path in ADMIN_PAGES else "/login.html", 303)
-        return JSONResponse({"detail": "Sign in required"}, 401)
-    request.state.user = sess
-    if path in ADMIN_PAGES and sess["role"] != "admin":
-        return RedirectResponse("/index.html", 303)
-    if _admin_only(path, method) and sess["role"] != "admin":
-        return JSONResponse({"detail": "Administrator only"}, 403)
-    if is_page:
-        _log_page_view(request, sess, path)
-    return None
+            if ident["role"] == "anonymous":
+                nxt = "" if path in ("/", "/index.html", "/login.html") else "?next=" + urllib.parse.quote(path.lstrip("/"))
+                response = RedirectResponse(f"/login.html{nxt}", 303)
+            else:                                     # signed in, not this page: the first page they may open
+                response = RedirectResponse(ACCESS.first_page(ident) or "/login.html", 303)
+        elif ident["role"] == "anonymous":
+            response = JSONResponse({"detail": "Please sign in"}, 401)
+        else:
+            response = JSONResponse({"detail": "You don't have permission for this"}, 403)
+    rule = None
+    if response is None:
+        rule = access.audit_rule(method, path) if path.startswith("/api/") and ident["role"] != "anonymous" else None
+        before = await asyncio.to_thread(_audit_target, path, rule[2]) if rule else ""
+        response = await call_next(request)
+        if ident["role"] != "anonymous" and response.status_code < 400:
+            if is_page and path in access.PAGE_LABELS and ACCESS.page_opened(ident, path):
+                await asyncio.to_thread(audit, request, "pages", "Opened page", access.PAGE_LABELS[path])
+            elif method == "GET" and path == "/api/detections/export":
+                await asyncio.to_thread(audit, request, "reports", "Downloaded", "detections CSV")
+            elif rule:
+                cat, act, _ = rule
+                await asyncio.to_thread(audit, request, cat, act, getattr(request.state, "audit_target", "") or before)
+    _no_cache(path, response)
+    for k, v in security.security_headers(_is_https(request)).items():
+        response.headers.setdefault(k, v)
+    return response
+
+
+class TextGZip(GZipMiddleware):
+    """gzip for pages / JSON / JS / CSS only: JPEGs are compressed already (gzip on them only costs CPU)"""
+    async def __call__(self, scope, receive, send):
+        p = scope.get("path", "") if scope["type"] == "http" else ""
+        if not p or p.startswith(("/images/", "/assets/")) or p.endswith((".jpg", ".jpeg", ".png", ".ico", ".mp4")):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app.add_middleware(TextGZip, minimum_size=1000, compresslevel=6)   # outermost: the guard's answers are compressed too
 
 
 @app.exception_handler(RequestValidationError)
@@ -1371,7 +1282,7 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(Exception)
 async def _server_error(request: Request, exc: Exception):
-    print(f"[error] {request.method} {request.url.path}: {type(exc).__name__}")
+    print(f"[error] {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
     return JSONResponse({"detail": "Internal error"}, 500)
 
 
@@ -1396,102 +1307,6 @@ def _str(body: dict, key: str, default: str = "", maxlen: int = 256) -> str:
     if not isinstance(v, str) or len(v) > maxlen or security.has_control_chars(v):
         raise HTTPException(422, "Invalid request")
     return v
-
-
-def audit(request: Optional[Request], action: str, detail: str = "", actor: Optional[str] = None):
-    """Append one line to the activity log. Never raises."""
-    try:
-        if actor is None and request is not None:
-            u = getattr(request.state, "user", None)
-            actor = u["user_id"] if u else None
-        ip = _client_ip(request) if request is not None else None
-        ua = request.headers.get("user-agent", "")[:300] if request is not None else ""
-        conn = db()
-        try:
-            with conn:
-                conn.execute("INSERT INTO audit_log(actor, action, detail, ip, user_agent) VALUES (?,?,?,?,?)",
-                             (actor, action, (detail or "")[:500], ip, ua or None))
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"[audit] could not record {action}: {e}")
-
-
-def _scrub_env_password():
-    """Remove a plain-text ADMIN_PASSWORD from .env once accounts are in the DB."""
-    config.ADMIN_PASSWORD = ""
-    env_path = Path(config.PROJECT_ROOT) / ".env"
-    if not env_path.exists():
-        return
-    lines = env_path.read_text().splitlines()
-    kept = [l for l in lines if not l.strip().startswith("ADMIN_PASSWORD=")]
-    if len(kept) != len(lines):
-        env_path.write_text("\n".join(kept) + "\n")
-        print("[security] removed plain-text ADMIN_PASSWORD from .env (accounts are stored hashed)")
-
-
-def _bootstrap_admin():
-    """Create the first administrator if the database has none.
-
-    Uses ADMIN_EMAIL / ADMIN_PASSWORD only if the password meets the policy.
-    Otherwise a random password is generated and written to a file readable
-    only by this user — there is no built-in default password.
-    """
-    conn = db()
-    try:
-        if conn.execute("SELECT 1 FROM dashboard_accounts WHERE role='admin'").fetchone():
-            return
-        uid = (config.ADMIN_EMAIL or "admin").strip().lower()
-        if not security.USER_ID_RE.match(uid):
-            uid = "admin"
-        pw = config.ADMIN_PASSWORD or ""
-        generated = not pw or bool(security.password_problem(pw, uid))
-        while generated:
-            pw = secrets.token_urlsafe(15)
-            if not security.password_problem(pw, uid):
-                break
-        with conn:
-            conn.execute("INSERT INTO dashboard_accounts(user_id, password_hash, role, created_by) VALUES (?,?,?,?)",
-                         (uid, security.hash_password(pw), "admin", "bootstrap"))
-    finally:
-        conn.close()
-    if generated:
-        path = Path(config.DATA_DIR) / "initial-admin-password.txt"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(f"Trinetra Perimeter — first administrator\nuser ID : {uid}\npassword: {pw}\n"
-                    "Sign in at /admin.html, change this password, then delete this file.\n")
-        print(f"[security] first administrator '{uid}' created; ADMIN_PASSWORD was empty or too weak, "
-              f"so a random password was written to {path} (mode 600)")
-    else:
-        print(f"[security] first administrator '{uid}' created from ADMIN_EMAIL / ADMIN_PASSWORD")
-    audit(None, "user_created", f"{uid} (admin, bootstrap)", actor="system")
-
-
-@app.middleware("http")
-async def security_guard(request: Request, call_next):
-    response = await _guard(request)
-    if response is None:
-        response = await call_next(request)
-    for k, v in security.security_headers(_is_https(request)).items():
-        response.headers.setdefault(k, v)
-    return response
-
-
-# ─── Never serve a stale dashboard ───────────────────────────────────────────
-# The HTML/JS/CSS are edited in place on the Jetson, so a browser holding an
-# old copy silently shows an out-of-date dashboard. Archived snapshots keep
-# their long cache: those files never change once written.
-@app.middleware("http")
-async def no_cache_frontend(request: Request, call_next):
-    response = await call_next(request)
-    path = request.url.path
-    if path.startswith("/images/") or path.startswith("/video/"):
-        response.headers["Cache-Control"] = "public, max-age=604800"
-    elif path.endswith((".html", ".js", ".css")) or path == "/":
-        response.headers["Cache-Control"] = "no-cache, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-    return response
 
 
 # ─── /api/stats — KPIs + chart data ───────────────────────────────────────
@@ -2086,9 +1901,6 @@ def api_detections_export(request: Request, date: Optional[str] = None, month: O
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    scope = ", ".join(f"{k}={v}" for k, v in (("date", date), ("month", month), ("class", badge), ("camera", camera),
-                                               ("search", search), ("zone", zone)) if v) or ("all time" if all_time else "default")
-    audit(request, "detections_export", f"{len(rows)} rows · {scope}"[:500])
     writer.writerow(["id", "timestamp", "detection", "zone", "camera", "type", "filename"])
     for r in rows:
         writer.writerow([r["id"], r["timestamp"], r["badge"],
@@ -2143,7 +1955,7 @@ async def api_whitelist_add(request: Request):
             )
     finally:
         conn.close()
-    audit(request, "whitelist_add", f"{badge}: {reason}")
+    audit(request, "whitelist", "Added to whitelist", f"{badge}: {reason}"[:200])
     return {"ok": True}
 
 
@@ -2155,8 +1967,8 @@ def api_whitelist_remove(badge: str, request: Request):
             cur = conn.execute("DELETE FROM whitelist WHERE badge=?", (badge,))
     finally:
         conn.close()
-    if cur.rowcount:
-        audit(request, "whitelist_remove", badge[:64])
+    if not cur.rowcount:
+        raise HTTPException(404, "Not on the whitelist")
     return {"ok": True}
 
 
@@ -2248,7 +2060,7 @@ def api_alerts_recent(limit: int = 50, kind: Optional[str] = None,
 @app.post("/api/alerts/{alert_id}/ack")
 async def api_alert_ack(alert_id: int, request: Request):
     # Who acknowledged is the signed-in account — never a name the client sends.
-    acked_by = request.state.user["user_id"]
+    acked_by = request.state.ident["username"]
     now = datetime.utcnow()
     conn = db()
     try:
@@ -2278,7 +2090,6 @@ async def api_alert_ack(alert_id: int, request: Request):
                 )
     finally:
         conn.close()
-    audit(request, "alert_ack", f"alert {alert_id}")
     return {"ok": True}
 
 
@@ -2299,372 +2110,399 @@ def get_image(filename: str):
     raise HTTPException(404, "no image available")
 
 # ════════════════════════════════════════════════════════════════════════════
-# ADMIN — login, config read/write
+# SIGN-IN — the Trinetra team, admin accounts (made by the team), users (made by admins)
 # ════════════════════════════════════════════════════════════════════════════
-
-def _check_admin(request: Request) -> bool:
-    """Defence in depth: the central guard already enforces this."""
-    u = getattr(request.state, "user", None)
-    return bool(u and u["role"] == "admin")
-
 
 def _set_session_cookie(resp, request: Request, token: str, max_age: int):
     resp.set_cookie(SESSION_COOKIE, token, max_age=max_age, httponly=True, samesite="lax",
                     secure=_is_https(request), path="/")
 
 
-async def _do_login(request: Request, require_admin: bool):
+@app.post("/api/login")
+async def api_login(request: Request):
     body = await read_json(request)
-    uid = (_str(body, "email", maxlen=128) or _str(body, "user_id", maxlen=128)).strip().lower()
+    username = _str(body, "username", maxlen=64).strip()
     password = body.get("password")
     if not isinstance(password, str) or len(password) > security.PASSWORD_MAX:
         password = ""
     ip = _client_ip(request)
-    if _limiter.locked(uid, ip):
-        audit(request, "login_refused_locked", uid[:64], actor=uid[:64] or None)
-        raise HTTPException(429, "Too many failed sign-ins — try again in 15 minutes")
-
-    conn = db()
-    try:
-        row = conn.execute("SELECT user_id, password_hash, role FROM dashboard_accounts WHERE user_id=?",
-                           (uid,)).fetchone()
-    finally:
-        conn.close()
-    ok = await asyncio.to_thread(security.verify_password, password, row["password_hash"] if row else None)
-    if ok and require_admin and row["role"] != "admin":
-        ok = False
-    if not ok:
-        locked_now = _limiter.fail(uid, ip)
-        audit(request, "login_failed", uid[:64], actor=uid[:64] or None)
+    if not username or _limiter_locked(username, ip):
+        if username:
+            ACCESS.audit(username, "anonymous", "sign-in", "Sign-in refused (locked: too many wrong passwords)", "", ip, False)
+        raise HTTPException(429 if username else 401,
+                            "Too many failed sign-ins — try again in 15 minutes" if username else "Wrong user ID or password")
+    role, user_id, keep_pw, name = None, None, False, username
+    team = ACCESS.team_member(username)
+    if team and config.SUPPORT_PASSWORD and hmac.compare_digest(password.encode(), config.SUPPORT_PASSWORD.encode()):
+        role, name = "support", team
+    elif not team:
+        conn = db()
+        try:
+            u = conn.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
+        finally:
+            conn.close()
+        ok = await asyncio.to_thread(security.verify_password, password, u["password_hash"] if u else None)
+        if u and ok:
+            role, user_id, name = u["role"], u["id"], u["username"]
+            # admin accounts: the Trinetra team sees the password in use (changed by the admin since)
+            keep_pw = u["role"] == "admin" and ACCESS.unseal(u["password_enc"]) != password
+    if not role:
+        locked_now = ACCESS.limiter.fail(username.lower(), ip)
+        ACCESS.audit(username, "anonymous", "sign-in", "Sign-in refused (wrong user ID or password)", "", ip, False)
         if locked_now:
-            audit(request, "login_lockout", f"{uid[:64]} locked for 15 minutes", actor=uid[:64] or None)
-        await asyncio.sleep(0.5)
+            ACCESS.audit(username, "anonymous", "sign-in", "Sign-in locked for 15 minutes (too many wrong passwords)", "", ip, False)
+        await asyncio.sleep(0.6)                      # slow down password guessing
         raise HTTPException(401, "Wrong user ID or password")
-
-    _limiter.success(uid)
-    _sessions.delete(request.cookies.get(SESSION_COOKIE))     # no session fixation
-    token, max_age = _sessions.create(row["user_id"], row["role"], ip, request.headers.get("user-agent", ""))
-    resp = JSONResponse({"ok": True, "user_id": row["user_id"], "role": row["role"]})
+    ACCESS.limiter.success(username.lower())
+    ACCESS.delete_session(request.cookies.get(SESSION_COOKIE))   # no session fixation
+    token, max_age = await asyncio.to_thread(ACCESS.create_session, role, user_id, name, ip)
+    if keep_pw:
+        conn = db()
+        try:
+            with _db_lock, conn:
+                conn.execute("UPDATE users SET password_enc=? WHERE id=?", (ACCESS.seal(password), user_id))
+        finally:
+            conn.close()
+    ACCESS.audit(name, role, "sign-in", "Signed in", "", ip)
+    resp = JSONResponse({"ok": True, "role": role, "session_hours": max_age // 3600})
     _set_session_cookie(resp, request, token, max_age)
-    audit(request, "login", f"{row['role']} · {'admin panel' if require_admin else 'dashboard'}",
-          actor=row["user_id"])
     return resp
 
 
-def _do_logout(request: Request):
+def _limiter_locked(username: str, ip: str) -> bool:
+    return ACCESS.limiter.locked(username.lower(), ip)
+
+
+@app.post("/api/logout")
+async def api_logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
-    sess = _sessions.get(token)
-    _sessions.delete(token)
-    if sess:
-        audit(request, "logout", actor=sess["user_id"])
+    if token and request.state.ident["role"] != "anonymous":
+        audit(request, "sign-in", "Signed out")
+    ACCESS.delete_session(token)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
 
 
-@app.post("/api/login")
-async def api_login(request: Request):
-    return await _do_login(request, require_admin=False)
-
-
-@app.post("/api/logout")
-async def api_logout(request: Request):
-    return _do_logout(request)
-
-
-@app.post("/api/admin/login")
-async def admin_login(request: Request):
-    return await _do_login(request, require_admin=True)
-
-
-@app.post("/api/admin/logout")
-async def admin_logout(request: Request):
-    return _do_logout(request)
-
-
 @app.get("/api/me")
 def api_me(request: Request):
-    u = request.state.user
-    return {"user_id": u["user_id"], "role": u["role"], "idle_minutes": config.IDLE_MINUTES}
+    ident = request.state.ident
+    return {**{k: ident.get(k) for k in ("role", "name", "username", "permissions")},
+            "signed_in": ident["role"] != "anonymous",
+            "expired": bool(ident.get("expired")),
+            "own_password": bool(ident.get("user_id")),   # the team's password is in the settings file
+            "support_enabled": bool(config.SUPPORT_PASSWORD),
+            "first_page": ACCESS.first_page(ident) if ident["role"] != "anonymous" else None,
+            "idle_minutes": config.IDLE_MINUTES,
+            "all_permissions": [{"key": k, "label": l, "help": h} for k, l, h in access.PERMISSIONS]}
 
 
-@app.post("/api/password")
+@app.post("/api/me/password")
 async def api_change_own_password(request: Request):
-    """Change your own password — the current password is required."""
-    u = request.state.user
+    """An admin account or user changes their own password (the current one is needed). The Trinetra team's
+    password is in the settings file."""
+    ident = request.state.ident
+    if not ident.get("user_id"):
+        raise HTTPException(400, "This sign-in is set in the server's settings file, not here")
     body = await read_json(request)
-    current = body.get("current_password")
-    new = body.get("new_password")
+    current, new = body.get("current"), body.get("new")
     if not isinstance(current, str) or not isinstance(new, str):
         raise HTTPException(422, "Invalid request")
     conn = db()
     try:
-        row = conn.execute("SELECT password_hash FROM dashboard_accounts WHERE user_id=?", (u["user_id"],)).fetchone()
-        if not row or not await asyncio.to_thread(security.verify_password, current, row["password_hash"]):
-            audit(request, "password_change_failed")
-            raise HTTPException(403, "Current password is wrong")
-        problem = security.password_problem(new, u["user_id"])
+        u = conn.execute("SELECT * FROM users WHERE id=?", (ident["user_id"],)).fetchone()
+        if not u or not await asyncio.to_thread(security.verify_password, current, u["password_hash"]):
+            audit(request, "account", "Password change refused (wrong current password)", "", False)
+            await asyncio.sleep(0.6)
+            raise HTTPException(400, "The current password is wrong")
+        if new == current:
+            raise HTTPException(400, "The new password is the same as the current one")
+        problem = security.password_problem(new, u["username"])
         if problem:
             raise HTTPException(400, problem)
-        with conn:
-            conn.execute("UPDATE dashboard_accounts SET password_hash=?, password_changed_at=? WHERE user_id=?",
-                         (security.hash_password(new), datetime.utcnow().isoformat(), u["user_id"]))
+        with _db_lock, conn:
+            conn.execute("UPDATE users SET password_hash=?, password_enc=? WHERE id=?",
+                         (security.hash_password(new), ACCESS.seal(new) if u["role"] == "admin" else None, u["id"]))
+            ACCESS.delete_user_sessions(conn, u["id"], keep_token=request.cookies.get(SESSION_COOKIE))   # other devices out
     finally:
         conn.close()
-    _sessions.delete_user(u["user_id"], keep_token=request.cookies.get(SESSION_COOKIE))
-    audit(request, "password_changed")
+    audit(request, "account", "Changed own password")
     return {"ok": True}
 
 
-# ─── Accounts (administrators only) ───────────────────────────────────────
-@app.get("/api/admin/users")
-def admin_users_list(request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
+# ─── Users (admins) ──────────────────────────────────────────────────────────
+def _user_out(r) -> dict:
+    return {"id": r["id"], "username": r["username"], "name": r["name"], "active": bool(r["active"]),
+            "permissions": [p for p in json.loads(r["permissions"] or "[]") if p in access.PERMISSION_KEYS],
+            "created_at": r["created_at"], "created_by": r["created_by"], "last_login": r["last_login"]}
+
+
+def _check_username(username: str):
+    if not access.USERNAME_RE.match(username):
+        raise HTTPException(400, "User ID must be 3–32 letters, numbers, dots, dashes or underscores")
+    if username.lower() in access.RESERVED_IDS or ACCESS.team_member(username):
+        raise HTTPException(400, "That user ID is reserved")
+
+
+def _user_fields(body: dict, creating: bool) -> dict:
+    out = {"name": _str(body, "name", maxlen=60).strip()}
+    if creating:
+        out["username"] = _str(body, "username", maxlen=32).strip()
+        _check_username(out["username"])
+    pw = body.get("password")
+    if pw not in (None, ""):
+        if not isinstance(pw, str):
+            raise HTTPException(422, "Invalid request")
+        problem = security.password_problem(pw, out.get("username") or body.get("username") or "")
+        if problem:
+            raise HTTPException(400, problem)
+        out["password"] = pw
+    perms = body.get("permissions", [])
+    if not isinstance(perms, list) or any(p not in access.PERMISSION_KEYS for p in perms):
+        raise HTTPException(400, "Unknown permission")
+    out["permissions"] = list(dict.fromkeys(perms))
+    act = body.get("active", True)
+    if not isinstance(act, bool):
+        raise HTTPException(422, "Invalid request")
+    out["active"] = act
+    return out
+
+
+@app.get("/api/users")
+def api_users():
     conn = db()
     try:
-        rows = conn.execute("SELECT user_id, role, created_at, created_by, password_changed_at "
-                            "FROM dashboard_accounts ORDER BY role, user_id").fetchall()
-        return [dict(r) for r in rows]
+        return [_user_out(r) for r in conn.execute("SELECT * FROM users WHERE role='user' ORDER BY username COLLATE NOCASE")]
     finally:
         conn.close()
 
 
-@app.post("/api/admin/users")
-async def admin_users_create(request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
+@app.post("/api/users")
+async def api_create_user(request: Request):
+    f = _user_fields(await read_json(request), creating=True)
+    if "password" not in f:
+        raise HTTPException(400, "Password is required")
+    conn = db()
+    try:
+        if conn.execute("SELECT 1 FROM users WHERE username=?", (f["username"],)).fetchone():
+            raise HTTPException(400, f"User ID {f['username']} already exists")
+        with _db_lock, conn:
+            cur = conn.execute("INSERT INTO users(username,name,password_hash,permissions,active,role,created_by) "
+                               "VALUES(?,?,?,?,?,'user',?)",
+                               (f["username"], f["name"], security.hash_password(f["password"]), json.dumps(f["permissions"]),
+                                int(f["active"]), request.state.ident.get("username") or None))
+        request.state.audit_target = f["username"]
+        return _user_out(conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone())
+    finally:
+        conn.close()
+
+
+@app.put("/api/users/{user_id}")
+async def api_update_user(user_id: int, request: Request):
     body = await read_json(request)
-    uid = _str(body, "user_id", maxlen=64).strip().lower()
-    role = _str(body, "role", "operator", maxlen=16).strip().lower()
-    password = body.get("password")
-    if not security.USER_ID_RE.match(uid):
-        raise HTTPException(400, "User ID: 3–64 letters, numbers, dot, dash, underscore or @")
-    if role not in security.ROLES:
-        raise HTTPException(400, "Role must be admin or operator")
-    problem = security.password_problem(password, uid)
+    conn = db()
+    try:
+        u = conn.execute("SELECT * FROM users WHERE id=? AND role='user'", (user_id,)).fetchone()
+        if not u:
+            raise HTTPException(404, "User not found")
+        f = _user_fields({**body, "username": u["username"]}, creating=False)
+        with _db_lock, conn:
+            conn.execute("UPDATE users SET name=?, permissions=?, active=? WHERE id=?",
+                         (f["name"], json.dumps(f["permissions"]), int(f["active"]), user_id))
+            if "password" in f:
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?", (security.hash_password(f["password"]), user_id))
+            if "password" in f or not f["active"]:
+                ACCESS.delete_user_sessions(conn, user_id)          # signed out everywhere
+        return _user_out(conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+@app.delete("/api/users/{user_id}")
+def api_delete_user(user_id: int):
+    conn = db()
+    try:
+        with _db_lock, conn:
+            if not conn.execute("SELECT 1 FROM users WHERE id=? AND role='user'", (user_id,)).fetchone():
+                raise HTTPException(404, "User not found")
+            ACCESS.delete_user_sessions(conn, user_id)
+            conn.execute("DELETE FROM users WHERE id=? AND role='user'", (user_id,))
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+# ─── Admin accounts (Trinetra team only) ─────────────────────────────────────
+def _admin_out(r) -> dict:
+    return {"id": r["id"], "username": r["username"], "name": r["name"], "active": bool(r["active"]), "role": "admin",
+            "created_at": r["created_at"], "created_by": r["created_by"], "last_login": r["last_login"]}
+
+
+def _admin_row(conn, admin_id: int):
+    r = conn.execute("SELECT * FROM users WHERE id=? AND role='admin'", (admin_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Admin account not found")
+    return r
+
+
+def _login_url() -> str:
+    return f"{config.PUBLIC_URL.rstrip('/')}/login.html" if config.PUBLIC_URL else ""
+
+
+def _admin_password(pw) -> str:
+    if pw in (None, ""):
+        return ACCESS.generate_password()
+    if not isinstance(pw, str):
+        raise HTTPException(422, "Invalid request")
+    problem = security.password_problem(pw)
     if problem:
         raise HTTPException(400, problem)
+    return pw
+
+
+@app.get("/api/admins")
+def api_admins():
     conn = db()
     try:
-        if conn.execute("SELECT 1 FROM dashboard_accounts WHERE user_id=?", (uid,)).fetchone():
-            raise HTTPException(409, "That user ID already exists")
-        with conn:
-            conn.execute("INSERT INTO dashboard_accounts(user_id, password_hash, role, created_by) VALUES (?,?,?,?)",
-                         (uid, security.hash_password(password), role, request.state.user["user_id"]))
+        return [_admin_out(r) for r in conn.execute("SELECT * FROM users WHERE role='admin' ORDER BY username COLLATE NOCASE")]
     finally:
         conn.close()
-    audit(request, "user_created", f"{uid} ({role})")
-    return {"ok": True, "user_id": uid, "role": role}
 
 
-@app.delete("/api/admin/users/{user_id}")
-def admin_users_delete(user_id: str, request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    uid = user_id.strip().lower()
-    if uid == request.state.user["user_id"].lower():
-        raise HTTPException(400, "You cannot delete your own account")
-    conn = db()
-    try:
-        row = conn.execute("SELECT role FROM dashboard_accounts WHERE user_id=?", (uid,)).fetchone()
-        if not row:
-            raise HTTPException(404, "No such user")
-        if row["role"] == "admin" and conn.execute(
-                "SELECT COUNT(*) FROM dashboard_accounts WHERE role='admin'").fetchone()[0] <= 1:
-            raise HTTPException(400, "The last administrator cannot be deleted")
-        with conn:
-            conn.execute("DELETE FROM dashboard_accounts WHERE user_id=?", (uid,))
-    finally:
-        conn.close()
-    _sessions.delete_user(uid)
-    audit(request, "user_deleted", uid)
-    return {"ok": True}
-
-
-@app.post("/api/admin/users/{user_id}/password")
-async def admin_users_reset_password(user_id: str, request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    uid = user_id.strip().lower()
+@app.post("/api/admins")
+async def api_create_admin(request: Request):
     body = await read_json(request)
-    password = body.get("password")
-    problem = security.password_problem(password, uid)
-    if problem:
-        raise HTTPException(400, problem)
+    username, name = _str(body, "username", maxlen=32).strip(), _str(body, "name", maxlen=60).strip()
+    _check_username(username)
+    password = _admin_password(body.get("password"))
+    if security.password_problem(password, username):
+        raise HTTPException(400, security.password_problem(password, username))
     conn = db()
     try:
-        with conn:
-            cur = conn.execute("UPDATE dashboard_accounts SET password_hash=?, password_changed_at=? WHERE user_id=?",
-                               (security.hash_password(password), datetime.utcnow().isoformat(), uid))
-        if cur.rowcount == 0:
-            raise HTTPException(404, "No such user")
+        if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            raise HTTPException(400, f"User ID {username} already exists")
+        with _db_lock, conn:
+            cur = conn.execute("INSERT INTO users(username,name,password_hash,permissions,active,role,created_by,password_enc) "
+                               "VALUES(?,?,?,'[]',1,'admin',?,?)",
+                               (username, name, security.hash_password(password), request.state.ident.get("username"),
+                                ACCESS.seal(password)))
+        print(f"[access] admin account {username} created by {request.state.ident.get('username')}")
+        request.state.audit_target = username
+        return {**_admin_out(_admin_row(conn, cur.lastrowid)), "password": password, "login_url": _login_url()}
     finally:
         conn.close()
-    _sessions.delete_user(uid)
-    audit(request, "password_reset", uid)
+
+
+@app.put("/api/admins/{admin_id}")
+async def api_update_admin(admin_id: int, request: Request):
+    body = await read_json(request)
+    conn = db()
+    try:
+        _admin_row(conn, admin_id)
+        with _db_lock, conn:
+            if "name" in body:
+                conn.execute("UPDATE users SET name=? WHERE id=?", (_str(body, "name", maxlen=60).strip(), admin_id))
+            if "active" in body:
+                if not isinstance(body["active"], bool):
+                    raise HTTPException(422, "Invalid request")
+                conn.execute("UPDATE users SET active=? WHERE id=?", (int(body["active"]), admin_id))
+                if not body["active"]:
+                    ACCESS.delete_user_sessions(conn, admin_id)      # signed out at once
+        return _admin_out(_admin_row(conn, admin_id))
+    finally:
+        conn.close()
+
+
+@app.post("/api/admins/{admin_id}/reset-password")
+async def api_reset_admin_password(admin_id: int, request: Request):
+    body = await read_json(request)
+    conn = db()
+    try:
+        r = _admin_row(conn, admin_id)
+        password = _admin_password(body.get("password"))
+        if security.password_problem(password, r["username"]):
+            raise HTTPException(400, security.password_problem(password, r["username"]))
+        with _db_lock, conn:
+            conn.execute("UPDATE users SET password_hash=?, password_enc=? WHERE id=?",
+                         (security.hash_password(password), ACCESS.seal(password), admin_id))
+            ACCESS.delete_user_sessions(conn, admin_id)              # signed out everywhere
+        return {**_admin_out(_admin_row(conn, admin_id)), "password": password, "login_url": _login_url()}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admins/{admin_id}/credentials")
+def api_admin_credentials(admin_id: int, request: Request):
+    """the admin's sign-in details again (Trinetra team only); password None: the key file changed — set a new one"""
+    conn = db()
+    try:
+        r = _admin_row(conn, admin_id)
+    finally:
+        conn.close()
+    audit(request, "account", "Viewed admin credentials", r["username"])
+    return {**_admin_out(r), "password": ACCESS.unseal(r["password_enc"]), "login_url": _login_url()}
+
+
+@app.delete("/api/admins/{admin_id}")
+def api_delete_admin(admin_id: int):
+    """only a disabled admin can be deleted (an accidental click cannot lock a client out)"""
+    conn = db()
+    try:
+        r = _admin_row(conn, admin_id)
+        if r["active"]:
+            raise HTTPException(400, "Disable this admin account before deleting it")
+        with _db_lock, conn:
+            ACCESS.delete_user_sessions(conn, admin_id)
+            conn.execute("DELETE FROM users WHERE id=? AND role='admin'", (admin_id,))
+    finally:
+        conn.close()
     return {"ok": True}
 
 
-# ─── Activity log (admin only) ────────────────────────────────────────────
-AUDIT_CATEGORIES = {
-    "signin":    ("Sign-in & sign-out", ["login", "logout", "login_failed", "login_lockout", "login_refused_locked"]),
-    "security":  ("Security warnings", ["login_failed", "login_lockout", "login_refused_locked", "password_change_failed"]),
-    "accounts":  ("Accounts & passwords", ["user_created", "user_deleted", "password_changed",
-                                           "password_change_failed", "password_reset"]),
-    "settings":  ("Settings", ["settings_changed"]),
-    "alerts":    ("Alerts", ["alert_ack"]),
-    "whitelist": ("Whitelist", ["whitelist_add", "whitelist_remove"]),
-    "data":      ("Data & exports", ["record_deleted", "table_cleared", "full_reset", "detections_export",
-                                     "activity_export"]),
-    "demo":      ("Test & demo", ["test_detection", "schedule_add", "schedule_cancel", "schedule_cancel_date",
-                                  "schedule_copy"]),
-    "pages":     ("Page views", ["page_view"]),
-}
-_AUDIT_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$")
-_AUDIT_SELECT = ("SELECT l.id, l.at, l.actor, a.role AS role, l.action, l.detail, l.ip, l.user_agent "
-                 "FROM audit_log l LEFT JOIN dashboard_accounts a ON a.user_id = l.actor")
-
-
-def _audit_where(actor: str, category: str, action: str, q: str, since: str, until: str, hide_pages: bool):
-    """WHERE clause for the activity-log filters. Times are UTC 'YYYY-MM-DD HH:MM:SS'."""
-    where, params = [], []
-    if actor:
-        where.append("l.actor = ? COLLATE NOCASE")
-        params.append(actor[:128])
+# ─── Activity Logs (Trinetra team only) ──────────────────────────────────────
+@app.get("/api/audit")
+def api_audit(date_from: Optional[str] = None, date_to: Optional[str] = None, category: str = "", role: str = "",
+              q: str = "", before: Optional[int] = None, limit: int = 100):
+    """newest first, a page at a time (before = the id the last page ended at); counts cover every page"""
+    limit = max(1, min(limit, 500))
+    where, args = [], []
+    try:
+        if date_from:
+            where.append("ts>=?"); args.append(datetime.strptime(date_from, "%Y-%m-%d").date().isoformat())
+        if date_to:
+            where.append("ts<?"); args.append((datetime.strptime(date_to, "%Y-%m-%d").date() + timedelta(days=1)).isoformat())
+    except ValueError:
+        raise HTTPException(400, "Dates are YYYY-MM-DD")
     if category:
-        if category not in AUDIT_CATEGORIES:
-            raise HTTPException(400, "Unknown category")
-        acts = AUDIT_CATEGORIES[category][1]
-        where.append(f"l.action IN ({','.join('?' * len(acts))})")
-        params += acts
-    if action:
-        where.append("l.action = ?")
-        params.append(action[:64])
-    if hide_pages and category != "pages" and action != "page_view":
-        where.append("l.action != 'page_view'")
-    for value, op in ((since, ">="), (until, "<")):
-        if value:
-            if not _AUDIT_TS_RE.match(value):
-                raise HTTPException(400, "Invalid date")
-            where.append(f"l.at {op} ?")
-            params.append(value)
-    if q:
-        like = "%" + q[:100].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        where.append("(l.actor LIKE ? ESCAPE '\\' OR l.action LIKE ? ESCAPE '\\' "
-                     "OR l.detail LIKE ? ESCAPE '\\' OR l.ip LIKE ? ESCAPE '\\')")
-        params += [like] * 4
-    return (" WHERE " + " AND ".join(where)) if where else "", params
-
-
-@app.get("/api/admin/audit")
-def admin_audit(request: Request, limit: int = 50, offset: int = 0, actor: str = "", category: str = "",
-                action: str = "", q: str = "", since: str = "", until: str = "", hide_pages: bool = False):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    where, params = _audit_where(actor, category, action, q, since, until, hide_pages)
+        where.append("category=?"); args.append(category[:32])
+    if role:
+        where.append("actor_role=?"); args.append(role[:16])
+    if q.strip():
+        like = "%" + q.strip()[:100].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where.append("(actor LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\')")
+        args += [like] * 4
+    base = (" WHERE " + " AND ".join(where)) if where else ""
+    page = base + (" AND " if where else " WHERE ") + "id<?" if before else base
     conn = db()
     try:
-        total = conn.execute(f"SELECT COUNT(*) FROM audit_log l{where}", params).fetchone()[0]
-        rows = conn.execute(f"{_AUDIT_SELECT}{where} ORDER BY l.id DESC LIMIT ? OFFSET ?",
-                            params + [max(1, min(limit, 500)), max(0, offset)]).fetchall()
-        return {"total": total, "records": [dict(r) for r in rows]}
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM activity_log{page} ORDER BY id DESC LIMIT ?",
+                                              args + ([before] if before else []) + [limit + 1])]
+        counts = {r[0]: r[1] for r in conn.execute(f"SELECT actor_role, COUNT(*) FROM activity_log{base} GROUP BY actor_role", args)}
     finally:
         conn.close()
+    more = len(rows) > limit
+    rows = rows[:limit]
+    return {"items": rows, "next": rows[-1]["id"] if more else None, "counts": counts}
 
 
-@app.get("/api/admin/audit/summary")
-def admin_audit_summary(request: Request):
-    """Last-24-hour counts, who is signed in now, and the account list for the filters."""
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    since = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-    conn = db()
-    try:
-        counts = {r[0]: r[1] for r in conn.execute(
-            "SELECT action, COUNT(*) FROM audit_log WHERE at >= ? GROUP BY action", (since,))}
-        last_login = {r[0].lower(): r[1] for r in conn.execute(
-            "SELECT actor, MAX(at) FROM audit_log WHERE action='login' AND actor IS NOT NULL "
-            "GROUP BY actor COLLATE NOCASE")}
-        accounts = [{"user_id": r["user_id"], "role": r["role"],
-                     "last_login": last_login.get(r["user_id"].lower())}
-                    for r in conn.execute("SELECT user_id, role FROM dashboard_accounts ORDER BY role, user_id")]
-    finally:
-        conn.close()
-
-    def c(*acts):
-        return sum(counts.get(a, 0) for a in acts)
-    change_acts = [a for k in ("accounts", "settings", "whitelist", "data", "demo")
-                   for a in AUDIT_CATEGORIES[k][1] if a != "password_change_failed"]
-    return {
-        "last_24h": {"sign_ins": c("login"), "failed_sign_ins": c("login_failed", "login_refused_locked"),
-                     "lockouts": c("login_lockout"), "changes": c(*change_acts),
-                     "alerts_acknowledged": c("alert_ack"), "page_views": c("page_view")},
-        "online": _sessions.active(),
-        "accounts": accounts,
-        "categories": {k: v[0] for k, v in AUDIT_CATEGORIES.items()},
-        "retention_days": config.AUDIT_RETENTION_DAYS,
-    }
-
-
-def _csv_cell(v) -> str:
-    """Spreadsheet-safe cell: a leading = + - @ would otherwise run as a formula."""
-    v = "" if v is None else str(v)
-    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
-
-
-@app.get("/api/admin/audit/export")
-def admin_audit_export(request: Request, actor: str = "", category: str = "", action: str = "", q: str = "",
-                       since: str = "", until: str = "", hide_pages: bool = False):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    where, params = _audit_where(actor, category, action, q, since, until, hide_pages)
-    conn = db()
-    try:
-        rows = conn.execute(f"{_AUDIT_SELECT}{where} ORDER BY l.id DESC LIMIT 100000", params).fetchall()
-    finally:
-        conn.close()
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["time_utc", "user", "role", "activity", "details", "ip_address", "browser"])
-    for r in rows:
-        w.writerow([_csv_cell(r[k]) for k in ("at", "actor", "role", "action", "detail", "ip", "user_agent")])
-    audit(request, "activity_export", f"{len(rows)} entries")
-    fname = f"trinetra-activity-{datetime.now():%Y%m%d-%H%M%S}.csv"
-    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
-
-
-def prune_audit_log() -> int:
-    days = config.AUDIT_RETENTION_DAYS
-    if days <= 0:
-        return 0
-    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-    conn = db()
-    try:
-        with conn:
-            n = conn.execute("DELETE FROM audit_log WHERE at < ?", (cutoff,)).rowcount
-    finally:
-        conn.close()
-    if n:
-        print(f"[audit] removed {n} activity-log entries older than {days} days")
-    return n
-
-
-async def audit_retention_loop():
-    """Prune the activity log at startup, then once a day."""
-    while True:
-        try:
-            await asyncio.to_thread(prune_audit_log)
-        except Exception as e:
-            print(f"[audit] prune failed: {type(e).__name__}")
-        await asyncio.sleep(86400)
+# ─── Settings (Trinetra team only) ───────────────────────────────────────────
+@app.get("/api/admin/storage")
+def admin_storage():
+    return housekeeping.storage_stats()
 
 
 @app.get("/api/admin/config")
 def admin_get_config(request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
     return {
         "TRINETRA_LOITER_MINUTES":            config.LOITER_MINUTES,
         "TRINETRA_SESSION_GAP_MINUTES":       config.SESSION_GAP_MINUTES,
@@ -2733,19 +2571,17 @@ def _validate_config(updates: dict) -> dict:
 
 @app.post("/api/admin/config")
 async def admin_update_config(request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
     updates = _validate_config(await read_json(request))
     _write_env(updates)
     _apply_config(updates)
-    audit(request, "settings_changed", ", ".join(sorted(updates)))
+    audit(request, "settings", "Changed settings", ", ".join(sorted(updates)))
     return {"ok": True, "restart_required": False}
 
 
 def _write_env(updates: dict):
     """Rewrite .env preserving comments; append any keys not already present.
     Values are validated by _validate_config (no line breaks can reach here)."""
-    env_path = Path(config.PROJECT_ROOT) / ".env"
+    env_path = Path(config.ENV_FILE)
     existing = env_path.read_text().splitlines() if env_path.exists() else []
     seen = set()
     out = []
@@ -2792,8 +2628,6 @@ def _apply_config(updates: dict):
 
 @app.get("/api/admin/database/{table}")
 def admin_get_database_table(request: Request, table: str, limit: int = 50, offset: int = 0):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
     if table not in ["detections", "sessions", "alerts", "whitelist"]:
         raise HTTPException(400, "Invalid table")
     limit, offset = max(1, min(limit, 500)), max(0, offset)
@@ -2820,8 +2654,6 @@ def admin_get_database_table(request: Request, table: str, limit: int = 50, offs
 
 @app.delete("/api/admin/database/{table}/{record_id}")
 def admin_delete_database_record(request: Request, table: str, record_id: str):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
     if table not in ["detections", "sessions", "alerts", "whitelist"]:
         raise HTTPException(400, "Invalid table")
         
@@ -2843,15 +2675,12 @@ def admin_delete_database_record(request: Request, table: str, record_id: str):
                 conn.execute("DELETE FROM whitelist WHERE badge=?", (record_id,))
             else:
                 conn.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
-        audit(request, "record_deleted", f"{table} {record_id[:64]}")
         return {"ok": True}
     finally:
         conn.close()
 
 @app.delete("/api/admin/database/{table}")
 def admin_clear_database_table(request: Request, table: str):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
     if table not in ["detections", "sessions", "alerts", "whitelist"]:
         raise HTTPException(400, "Invalid table")
         
@@ -2869,299 +2698,7 @@ def admin_clear_database_table(request: Request, table: str):
                         except Exception:
                             pass
             conn.execute(f"DELETE FROM {table}")
-        audit(request, "table_cleared", table)
         return {"ok": True}
-    finally:
-        conn.close()
-
-
-@app.get("/api/admin/test_images")
-def admin_get_test_images(request: Request):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    test_images_dir = Path(__file__).parent / "test_images"
-    if not test_images_dir.exists():
-        return []
-    images = [f.name for f in test_images_dir.glob("*.jpg")]
-    return sorted(images)
-
-@app.post("/api/admin/simulate")
-async def admin_simulate(request: Request):
-    """Drop a single detection file into incoming/ with a specific timestamp."""
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-
-    body = await read_json(request)
-    badge       = (_str(body, "badge", maxlen=64) or "TEST-BADGE").strip().upper()
-    camera      = (_str(body, "camera", maxlen=64) or "cam-entrance").strip().lower()
-
-    date_str     = _str(body, "date", maxlen=10)
-    time_str     = _str(body, "time", maxlen=8)
-    image_base64 = _str(body, "image_base64", maxlen=15_000_000)
-    image_file   = _str(body, "image", maxlen=128)
-
-    if not re.match(r'^[A-Za-z0-9-]+$', badge):
-        raise HTTPException(400, "Badge name may only contain letters, numbers and hyphens")
-    if not re.match(r'^[A-Za-z0-9-]+$', camera):
-        raise HTTPException(400, "Camera name may only contain letters, numbers and hyphens")
-
-    incoming = Path(config.INCOMING_DIR)
-    incoming.mkdir(parents=True, exist_ok=True)
-
-    import base64
-    test_images_dir = Path(__file__).parent / "test_images"
-    image_bytes = MINIMAL_JPEG
-    test_image_used = False
-    
-    if image_base64:
-        try:
-            image_bytes = base64.b64decode(image_base64)
-            test_image_used = True
-        except Exception:
-            pass
-    elif image_file:
-        safe_img = Path(image_file).name
-        img_path = test_images_dir / safe_img
-        if img_path.exists():
-            image_bytes = img_path.read_bytes()
-            test_image_used = True
-    else:
-        # Fallback to random if none provided
-        test_images = sorted(test_images_dir.glob("*.jpg")) if test_images_dir.exists() else []
-        if test_images:
-            image_bytes = random.choice(test_images).read_bytes()
-            test_image_used = True
-
-    now = datetime.now()
-    parsed_date = date_str if (date_str and date_str.strip()) else now.strftime("%Y-%m-%d")
-    parsed_time = time_str if (time_str and time_str.strip()) else now.strftime("%H:%M")
-
-    try:
-        ts = datetime.strptime(f"{parsed_date} {parsed_time}", "%Y-%m-%d %H:%M")
-    except ValueError:
-        ts = now
-        
-    filename = f"{camera}_{badge}_{ts.strftime('%Y%m%d-%H%M%S')}.jpg"
-    (incoming / filename).write_bytes(image_bytes)
-    audit(request, "test_detection", filename)
-    return {"ok": True, "filename": filename, "test_image_used": test_image_used}
-
-
-# ─── /api/admin/schedule — demo alerts for future dates & times ───────────
-_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
-
-
-def _alert_at_for(badge: str, detect_at: datetime) -> Optional[datetime]:
-    """When a scheduled entry will actually flash on the dashboard."""
-    if config.is_breach_badge(badge):
-        return detect_at                                   # breach: instantly
-    mins = config.dwell_minutes_for(badge)
-    return detect_at + timedelta(minutes=mins) if mins is not None else None
-
-
-def _schedule_row(r) -> dict:
-    at = datetime.fromisoformat(r["detect_at"])
-    alert_at = _alert_at_for(r["badge"], at)
-    return {
-        "id": r["id"],
-        "badge": r["badge"],
-        "camera": r["camera"],
-        "detect_at": r["detect_at"],
-        "date": at.strftime("%Y-%m-%d"),
-        "time": at.strftime("%H:%M:%S"),
-        "alert_at": alert_at.isoformat() if alert_at else None,
-        "zone": config.zone_for(r["badge"]),
-        "zone_label": config.zone_label(r["badge"]),
-        "label": r["label"],
-        "status": r["status"],
-        "has_image": bool(r["image_b64"] or r["image_source"]),
-        "released_at": r["released_at"],
-        "filename": r["filename"],
-    }
-
-
-def _schedule_key_exists(conn, badge: str, camera: str, detect_at: datetime) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM scheduled_detections WHERE badge=? AND camera=? AND detect_at=? "
-        "AND status IN ('pending','released')",
-        (badge, camera, detect_at.isoformat())
-    ).fetchone() is not None
-
-
-@app.get("/api/admin/schedule")
-def admin_schedule_list(request: Request, days: int = 30):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    start = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = datetime.now() + timedelta(days=max(1, min(days, 366)))
-    conn = db()
-    try:
-        rows = conn.execute(
-            "SELECT * FROM scheduled_detections WHERE detect_at >= ? AND detect_at <= ? "
-            "ORDER BY detect_at", (start.isoformat(), end.isoformat())
-        ).fetchall()
-        return {"items": [_schedule_row(r) for r in rows], "now": datetime.now().isoformat()}
-    finally:
-        conn.close()
-
-
-@app.post("/api/admin/schedule")
-async def admin_schedule_create(request: Request):
-    """Schedule one detection for a future date & time."""
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    body = await read_json(request)
-    badge = _str(body, "badge", maxlen=64).strip().upper()
-    camera = _str(body, "camera", maxlen=64).strip().lower()
-    if not badge or not _NAME_RE.match(badge):
-        raise HTTPException(400, "Class name may only contain letters, numbers and hyphens")
-    if not camera or not _NAME_RE.match(camera):
-        raise HTTPException(400, "Camera name may only contain letters, numbers and hyphens")
-    try:
-        detect_at = datetime.strptime(f"{_str(body, 'date', maxlen=10)} {_str(body, 'time', maxlen=5)}", "%Y-%m-%d %H:%M")
-    except (TypeError, ValueError):
-        raise HTTPException(400, "Pick a valid date and time")
-    if detect_at < datetime.now() - timedelta(minutes=1):
-        raise HTTPException(400, "That time has already passed — use Drop Test Detection for past or current entries")
-
-    conn = db()
-    try:
-        with conn:
-            if _schedule_key_exists(conn, badge, camera, detect_at):
-                raise HTTPException(409, "An identical entry is already scheduled")
-            cur = conn.execute(
-                "INSERT INTO scheduled_detections(badge, camera, detect_at, image_b64, label) "
-                "VALUES (?,?,?,?,?)",
-                (badge, camera, detect_at.isoformat(), _str(body, "image_base64", maxlen=15_000_000) or None,
-                 _str(body, "label", maxlen=120).strip() or None)
-            )
-            row = conn.execute("SELECT * FROM scheduled_detections WHERE id=?", (cur.lastrowid,)).fetchone()
-        audit(request, "schedule_add", f"{badge} @ {camera} · {detect_at:%Y-%m-%d %H:%M}")
-        return {"ok": True, "item": _schedule_row(row)}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/admin/schedule/{item_id}")
-def admin_schedule_cancel(request: Request, item_id: int):
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    conn = db()
-    try:
-        with conn:
-            cur = conn.execute(
-                "UPDATE scheduled_detections SET status='cancelled' WHERE id=? AND status='pending'",
-                (item_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(404, "Nothing pending with that id")
-        audit(request, "schedule_cancel", f"entry {item_id}")
-        return {"ok": True}
-    finally:
-        conn.close()
-
-
-@app.post("/api/admin/schedule/cancel-date")
-async def admin_schedule_cancel_date(request: Request):
-    """Cancel every still-pending entry on one date."""
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    body = await read_json(request)
-    date = _str(body, "date", maxlen=10).strip()
-    try:
-        day = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Pick a valid date")
-    conn = db()
-    try:
-        with conn:
-            cur = conn.execute(
-                "UPDATE scheduled_detections SET status='cancelled' "
-                "WHERE status='pending' AND detect_at >= ? AND detect_at < ?",
-                (day.isoformat(), (day + timedelta(days=1)).isoformat()))
-        audit(request, "schedule_cancel_date", f"{date} · {cur.rowcount} cancelled")
-        return {"ok": True, "cancelled": cur.rowcount}
-    finally:
-        conn.close()
-
-
-@app.post("/api/admin/schedule/copy")
-async def admin_schedule_copy(request: Request):
-    """Copy one day's demo onto other dates, at the same clock times.
-
-    The source day's entries are everything that day holds: detections
-    already on the dashboard AND entries still scheduled for it. Each copy
-    reuses the original snapshot, so every demo day shows the same images.
-    Times already in the past on a target date are skipped, as are exact
-    duplicates, so copying twice is safe.
-    """
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
-    body = await read_json(request)
-    try:
-        source = datetime.strptime(_str(body, "source_date", maxlen=10).strip(), "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Pick a valid source date")
-    targets = []
-    raw_targets = body.get("target_dates") or []
-    if not isinstance(raw_targets, list) or len(raw_targets) > 366:
-        raise HTTPException(422, "Invalid request")
-    for t in raw_targets:
-        try:
-            targets.append(datetime.strptime(str(t).strip(), "%Y-%m-%d"))
-        except ValueError:
-            raise HTTPException(400, f"Invalid target date: {t}")
-    if not targets:
-        raise HTTPException(400, "Choose at least one date to copy to")
-    if any(t.date() == source.date() for t in targets):
-        raise HTTPException(400, "A target date is the same as the source date")
-
-    day_lo, day_hi = source, source + timedelta(days=1)
-    local_offset = datetime.now() - datetime.utcnow()
-    conn = db()
-    try:
-        # (badge, camera, clock-time) → image to reuse
-        entries = {}
-        for d in conn.execute(
-            "SELECT badge, camera, timestamp, filename FROM detections "
-            "WHERE date(timestamp,'localtime') = ? ORDER BY timestamp",
-            (source.strftime("%Y-%m-%d"),)
-        ).fetchall():
-            local_ts = datetime.fromisoformat(d["timestamp"]) + local_offset
-            key = (d["badge"], d["camera"], local_ts.strftime("%H:%M:%S"))
-            entries.setdefault(key, {"image_source": d["filename"], "image_b64": None})
-        for s in conn.execute(
-            "SELECT badge, camera, detect_at, image_source, image_b64 FROM scheduled_detections "
-            "WHERE status IN ('pending','released') AND detect_at >= ? AND detect_at < ?",
-            (day_lo.isoformat(), day_hi.isoformat())
-        ).fetchall():
-            key = (s["badge"], s["camera"], datetime.fromisoformat(s["detect_at"]).strftime("%H:%M:%S"))
-            entries.setdefault(key, {"image_source": s["image_source"], "image_b64": s["image_b64"]})
-
-        if not entries:
-            raise HTTPException(404, f"Nothing on {source:%d %b %Y} to copy")
-
-        created, skipped_past, skipped_dupe = 0, 0, 0
-        now = datetime.now()
-        label = _str(body, "label", maxlen=120).strip() or f"copy of {source:%d %b}"
-        with conn:
-            for target in targets:
-                for (badge, camera, hms), img in sorted(entries.items(), key=lambda kv: kv[0][2]):
-                    h, m, s = (int(x) for x in hms.split(":"))
-                    at = target.replace(hour=h, minute=m, second=s)
-                    if at < now:
-                        skipped_past += 1
-                        continue
-                    if _schedule_key_exists(conn, badge, camera, at):
-                        skipped_dupe += 1
-                        continue
-                    conn.execute(
-                        "INSERT INTO scheduled_detections(badge, camera, detect_at, image_source, image_b64, label) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (badge, camera, at.isoformat(), img["image_source"], img["image_b64"], label))
-                    created += 1
-        audit(request, "schedule_copy", f"{source:%Y-%m-%d} → {len(targets)} date(s) · {created} created")
-        return {"ok": True, "source_entries": len(entries), "created": created,
-                "skipped_past": skipped_past, "skipped_duplicate": skipped_dupe}
     finally:
         conn.close()
 
@@ -3169,8 +2706,6 @@ async def admin_schedule_copy(request: Request):
 @app.post("/api/admin/reset")
 def admin_reset_all(request: Request):
     """Wipe ALL data: every DB table + archive images + dead-letter + heartbeats. Irreversible."""
-    if not _check_admin(request):
-        raise HTTPException(401, "Not authenticated")
 
     def _clear_dir(directory: str, pattern: str = "*") -> int:
         """Delete all files matching pattern in a directory. Returns count deleted."""
@@ -3202,14 +2737,11 @@ def admin_reset_all(request: Request):
                 conn.execute("DELETE FROM detections")
                 conn.execute("DELETE FROM sessions")
                 conn.execute("DELETE FROM whitelist")
-                # Scheduled demo entries reuse archived snapshots that were just
-                # deleted above, so they go too — "all data" means all of it.
-                conn.execute("DELETE FROM scheduled_detections")
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions','scheduled_detections')")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('alerts','detections','sessions')")
         finally:
             conn.close()
 
-    audit(request, "full_reset", f"images={deleted_images}")
+    housekeeping.refresh_storage()
     print(
         f"[admin] FULL RESET — all tables cleared | "
         f"images={deleted_images} | dead-letter={deleted_dead} | heartbeats={deleted_hb}"
@@ -3227,7 +2759,8 @@ def admin_reset_all(request: Request):
 async def ws_endpoint(ws: WebSocket):
     # Live feed needs a signed-in session from this site (no cross-site WebSocket hijacking).
     origin = ws.headers.get("origin")
-    if not _sessions.get(ws.cookies.get(SESSION_COOKIE)) or (origin and not _origin_ok(origin, ws.headers)):
+    ident = await asyncio.to_thread(ACCESS.identity, ws.cookies.get(SESSION_COOKIE))
+    if not ACCESS.allowed(ident, ("live",)) or (origin and not _origin_ok(origin, ws.headers)):
         await ws.close(code=1008)
         return
     await wsm.connect(ws)
@@ -3240,6 +2773,9 @@ async def ws_endpoint(ws: WebSocket):
         await wsm.disconnect(ws)
 
 
+app.include_router(ds_control.router)                # /api/ds/* — the DeepStream page (Trinetra team only)
+
+
 # ─── Static frontend — mounted LAST so /api and /ws take precedence ──────
 app.mount("/", StaticFiles(directory=config.FRONTEND_DIR, html=True), name="frontend")
 
@@ -3250,5 +2786,5 @@ if __name__ == "__main__":
     # server_header=False: do not name the web-server software in responses.
     # proxy_headers: a local HTTPS proxy (e.g. Tailscale serve) marks requests as
     # https, so the session cookie gets Secure and HSTS is sent.
-    uvicorn.run("app:app", host=config.HOST, port=config.PORT, log_level="info",
+    uvicorn.run("app:app", host=config.HOST, port=config.PORT, log_level="info", access_log=config.ACCESS_LOG,
                 server_header=False, proxy_headers=True, forwarded_allow_ips="127.0.0.1")
