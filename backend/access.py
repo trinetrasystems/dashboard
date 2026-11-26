@@ -47,11 +47,12 @@ PAGE_NEED = {
     "/logs.html": ("logs",), "/visits.html": ("logs",),
     "/users.html": "admin", "/alerts.html": ("live",),
     "/admins.html": "support", "/activity.html": "support", "/admin.html": "support", "/deepstream.html": "support",
+    "/recordings.html": "support",
 }
 PAGE_LABELS = {"/alerts.html": "Alerts", "/": "Live", "/index.html": "Live", "/whitelist.html": "Whitelist", "/logs.html": "Logs & Charts",
                "/visits.html": "Visits", "/users.html": "Users", "/admins.html": "Admin Accounts",
                "/activity.html": "Activity Logs", "/admin.html": "Settings",
-               "/deepstream.html": "DeepStream"}
+               "/deepstream.html": "DeepStream", "/recordings.html": "Recordings"}
 # where a signed-in person lands: the first page they may open
 PAGE_ORDER = ["/index.html", "/logs.html", "/users.html", "/admin.html"]
 
@@ -379,6 +380,13 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("POST", r"/api/speaker/forget", "alerts", "Removed the Bluetooth speaker"),
     ("PUT", r"/api/ds/config", "pipeline", "Changed cameras / pipeline settings"),
     ("PUT", r"/api/ds/zones/([^/]+)", "pipeline", "Drew perimeter zones"),
+    ("POST", r"/api/captures", "recordings", "Started a recording"),
+    ("POST", r"/api/captures/([^/]+)/stop", "recordings", "Stopped a recording"),
+    ("POST", r"/api/captures/([^/]+)/frames", "recordings", "Made frames of a recording"),
+    ("POST", r"/api/captures/([^/]+)/pack", "recordings", "Compressed + zipped a recording"),
+    ("POST", r"/api/captures/([^/]+)/send", "recordings", "Sent a recording to the laptop"),
+    ("POST", r"/api/captures/([^/]+)/cancel-send", "recordings", "Cancelled sending a recording"),
+    ("DELETE", r"/api/captures/([^/]+)", "recordings", "Deleted a recording"),
 ]]
 
 

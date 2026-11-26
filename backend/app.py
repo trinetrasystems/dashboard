@@ -46,6 +46,7 @@ from watchdog.observers import Observer
 
 import access
 import alert_rules
+import captures
 import config
 import ds_control
 import speaker
@@ -1255,6 +1256,7 @@ async def lifespan(app: FastAPI):
         print("[ds] DeepStream control on (pipeline restarted automatically when it was running)")
     else:
         print("[ds] DeepStream not installed here — the DeepStream page shows the settings only")
+    captures.start()                                 # Recordings page: carries on recordings / frames / packing cut off
     if not config.SUPPORT_PASSWORD:
         print("[access] WARNING: SUPPORT_PASSWORD is empty — nobody can sign in until it is set in the settings file")
     print("[trinetra] startup complete · http://%s:%d" % (config.HOST, config.PORT))
@@ -3140,6 +3142,7 @@ async def ws_endpoint(ws: WebSocket):
 
 
 app.include_router(ds_control.router)                # /api/ds/* — the DeepStream page (Trinetra team only)
+app.include_router(captures.router)                  # /api/captures* — the Recordings page (Trinetra team only)
 
 
 # ─── Static frontend — mounted LAST so /api and /ws take precedence ──────

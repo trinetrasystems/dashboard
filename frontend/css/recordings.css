@@ -1,0 +1,30 @@
+/* Recordings page (Trinetra team): on the DeepStream page's cards (deepstream.css) and the Workplace Analytics design (wa.css). */
+.rec .who-sub { font-size: 13px; color: var(--text-dim); line-height: 1.45; }
+.rec .warn-ink { color: var(--amber-ink); }
+.rec-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
+.rec-link { border: 0; background: none; padding: 0; color: var(--primary); font: inherit; font-weight: 600; cursor: pointer; }
+.rec-link:hover { text-decoration: underline; }
+.rec-cams { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.rec-cam { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--border-bright); border-radius: 8px;
+  background: var(--surface); font-size: 14px; font-weight: 500; cursor: pointer; min-width: 0; }
+.rec-cam-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.rec-cam-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-cam small { font-size: 11px; font-weight: 400; white-space: nowrap; }
+.rec-cam:has(input:checked) { border-color: var(--primary); background: var(--primary-bg); }
+.rec-cam input { accent-color: var(--primary); width: 16px; height: 16px; flex: none; }
+.rec-list { margin-top: 16px; }
+.rec .details td { vertical-align: top; }
+.rec-cell { min-width: 150px; }
+.rec .details td:first-child { min-width: 200px; max-width: 280px; }
+.rec .details td:first-child .who-sub { overflow-wrap: anywhere; }
+.rec-row-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.rec-cell > .btn { margin-top: 8px; }
+.rec-cell .tag { display: inline-flex; align-items: center; gap: 5px; }
+.rec-cell .tag .ic { width: 13px; height: 13px; }
+.rec-bar { margin: 7px 0 3px; height: 7px; max-width: 190px; }
+.rec-bar span { transition: width .6s ease; }
+.rec-live { width: 8px; height: 8px; border-radius: 50%; background: var(--red); animation: ds-pulse 1.2s infinite; }
+tr.rec-open > td { background: var(--primary-bg); }
+.rec .modal .ds-note { line-height: 1.5; }
+.rec code, .ds-note code { font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); }
+@media (max-width: 1100px) { .ds-grid { grid-template-columns: 1fr; } }

@@ -193,6 +193,7 @@ const NAV = [
   ]},
   { section: 'Trinetra', items: [
     { icon: 'video',      label: 'DeepStream',      href: 'deepstream.html', need: 'support' },
+    { icon: 'camera',     label: 'Recordings',      href: 'recordings.html', need: 'support' },
     { icon: 'settings',   label: 'Settings',        href: 'admin.html',      need: 'support' },
     { icon: 'key',        label: 'Admin Accounts',  href: 'admins.html',     need: 'support' },
     { icon: 'file-text',  label: 'Activity Logs',   href: 'activity.html',   need: 'support' },

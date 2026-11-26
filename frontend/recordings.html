@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perimeter Security · Recordings</title>
+<link rel="icon" type="image/png" href="img/favicon-32.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/wa.css">
+<link rel="stylesheet" href="css/deepstream.css">
+<link rel="stylesheet" href="css/recordings.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <main class="main ds rec">
+    <header class="page-head">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+      <div class="page-title-wrap">
+        <h1 class="page-title">Recordings</h1>
+        <div class="page-sub">Record cameras on this Jetson, cut the video into frames, compress + zip them and send them to the Trinetra laptop for labelling</div>
+      </div>
+      <div class="head-controls">
+        <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
+      </div>
+    </header>
+
+    <div class="ds-grid">
+      <!-- ═══ new recording ═══ -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">New recording</div><span class="card-hint" id="rec-disk"></span></div>
+        <form class="ds-body" id="rec-form" autocomplete="off">
+          <div>
+            <div class="rec-label">Cameras <button type="button" class="rec-link" id="rec-all">all</button></div>
+            <div class="rec-cams" id="rec-cams"></div>
+          </div>
+          <div class="ds-form">
+            <label>Duration
+              <select class="ds-input" name="preset">
+                <option value="1">1 min</option><option value="5">5 min</option><option value="10">10 min</option>
+                <option value="15">15 min</option><option value="30" selected>30 min</option><option value="60">1 hour</option>
+                <option value="120">2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option>
+                <option value="720">12 hours</option><option value="1440">24 hours</option><option value="custom">Other…</option>
+              </select></label>
+            <label id="rec-minutes-wrap" hidden>Minutes <input class="ds-input" name="minutes" type="number" min="1" max="1440" value="45">
+              <small>1–1440</small></label>
+            <label>Start
+              <select class="ds-input" name="when"><option value="now">Now</option><option value="at">At a time…</option></select></label>
+            <label id="rec-at-wrap" hidden>At <input class="ds-input" name="start_at" type="datetime-local"></label>
+            <label class="full">Name (optional)
+              <input class="ds-input" name="name" maxlength="60" placeholder="e.g. night shift, gate 2 at dusk"></label>
+          </div>
+          <div class="ds-note" id="rec-estimate"></div>
+          <div class="pop-actions"><span class="form-result" id="rec-msg"></span><span class="spacer"></span>
+            <button class="btn primary" type="submit" id="rec-start">● Start recording</button></div>
+        </form>
+      </div>
+
+      <!-- ═══ the laptop ═══ -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">Trinetra laptop</div></div>
+        <div class="ds-body">
+          <div class="ds-state"><span class="ds-dot" id="rcv-dot"></span>
+            <div><div class="ds-state-text" id="rcv-state">…</div><div class="ds-state-sub" id="rcv-sub"></div></div></div>
+          <div class="ds-note">Send puts a package in line; the laptop fetches it by itself at its next check (every minute) over
+            Tailscale — part by part, continuing where it stopped when the link drops, every part checked (SHA-256) — and the
+            frames are unzipped there, ready for labelling. Set the laptop up once: <code>scripts/install_receiver.sh</code>
+            in the perimeter skill.</div>
+          <dl class="ds-kv">
+            <dt>On this Jetson</dt><dd id="rcv-folder">…</dd>
+            <dt>Free disk</dt><dd id="rcv-free">…</dd>
+            <dt>Every step stops under</dt><dd id="rcv-stop">…</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ the recordings ═══ -->
+    <div class="card rec-list">
+      <div class="card-head"><div class="card-title">Recordings</div><span class="card-hint" id="rec-count"></span></div>
+      <div class="table-wrap">
+        <table class="details">
+          <thead><tr><th>Recording</th><th>1 · Video</th><th>2 · Frames</th><th>3 · Package</th><th>4 · Laptop</th></tr></thead>
+          <tbody id="rec-body"><tr><td colspan="5" class="empty">…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══ one recording: cameras + what happened ═══ -->
+    <div class="card rec-list" id="rec-detail" hidden>
+      <div class="card-head"><div class="card-title" id="det-title"></div><span class="card-hint" id="det-hint"></span>
+        <span class="spacer"></span><button type="button" class="icon-btn" id="det-close" aria-label="Close" data-icon="x"></button></div>
+      <div class="table-wrap">
+        <table class="details">
+          <thead><tr><th>Camera</th><th>Status</th><th>Video</th><th>Reconnects</th><th>Last problem</th><th>Frame</th></tr></thead>
+          <tbody id="det-cams"></tbody>
+        </table>
+      </div>
+      <pre class="ds-log" id="det-log"></pre>
+    </div>
+  </main>
+</div>
+
+<!-- ─── make frames ─── -->
+<div class="modal-backdrop" id="frames-modal" hidden>
+  <form class="modal form" id="frames-form">
+    <div class="card-head"><h2 class="card-title">Make frames</h2><button type="button" class="icon-btn" data-close aria-label="Close" data-icon="x"></button></div>
+    <label>One frame every <select name="every_s"></select></label>
+    <label class="check"><input type="checkbox" name="skip_similar"> Skip frames that barely change (fewer, more useful frames to label)</label>
+    <div class="ds-note" id="frames-est"></div>
+    <div class="form-result" id="frames-msg"></div>
+    <div class="pop-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Make frames</button></div>
+  </form>
+</div>
+
+<!-- ─── compress + zip ─── -->
+<div class="modal-backdrop" id="pack-modal" hidden>
+  <form class="modal form" id="pack-form">
+    <div class="card-head"><h2 class="card-title">Compress + zip</h2><button type="button" class="icon-btn" data-close aria-label="Close" data-icon="x"></button></div>
+    <div class="form-2">
+      <label>Frame size <select name="max_px">
+        <option value="0">As recorded</option><option value="1920">1920 px</option><option value="1280" selected>1280 px (recommended)</option>
+        <option value="960">960 px</option><option value="640">640 px</option></select></label>
+      <label>JPEG quality <input name="quality" type="number" min="50" max="95" value="85"></label>
+    </div>
+    <label>Zip parts of (MB) <input name="part_mb" type="number" min="10" max="200" value="50"></label>
+    <div class="ds-note" id="pack-est"></div>
+    <div class="form-result" id="pack-msg"></div>
+    <div class="pop-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Compress + zip</button></div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/shell.js"></script>
+<script src="js/api.js"></script>
+<script src="js/recordings.js"></script>
+</body>
+</html>

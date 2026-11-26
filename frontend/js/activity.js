@@ -11,7 +11,7 @@ const state = { range: null, role: '', category: '', q: '', items: [], next: nul
 const logPager = pager('log-pager', () => render());
 const ROLE = { user: 'User', admin: 'Admin', support: 'Trinetra team', anonymous: 'Not signed in', system: 'System' };
 const CAT = { 'sign-in': 'Sign-in', account: 'Account', alerts: 'Alerts', whitelist: 'Whitelist', settings: 'Settings',
-              data: 'Data', pipeline: 'DeepStream', pages: 'Page', reports: 'Download', other: 'Other' };
+              data: 'Data', pipeline: 'DeepStream', recordings: 'Recordings', pages: 'Page', reports: 'Download', other: 'Other' };
 
 function fmtTs(ts) {
   const d = new Date(ts);
