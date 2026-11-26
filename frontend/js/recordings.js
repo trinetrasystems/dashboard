@@ -173,8 +173,9 @@ async function renderDetail() {
 }
 
 /* ════════ actions ════════ */
-async function act(a, id) {
+async function act(a, id, btnEl) {
   const c = S.data.captures.find(x => x.id === id); if (!c) return;
+  if (btnEl) { if (btnEl.disabled) return; if (!['open', 'frames', 'pack'].includes(a)) btnEl.disabled = true; }
   const label = c.name || id;
   try {
     if (a === 'open') { S.open = S.open === id ? null : id; renderList(); if (S.open) { await renderDetail(); $('rec-detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } else $('rec-detail').hidden = true; return; }
@@ -185,7 +186,8 @@ async function act(a, id) {
     else if (a === 'pack') return openPack(c);
     else if (a === 'send') {
       await apiPost(`/api/captures/${id}/send`);
-      toast(S.data.receiver.age_s != null && S.data.receiver.age_s < 180 ? 'In line: the laptop fetches it within a minute' : 'In line: it is sent when the laptop checks in');
+      toast(c.send.state === 'received' ? 'In line again: the laptop checks its copy (parts it has are not sent again)'
+        : S.data.receiver.age_s != null && S.data.receiver.age_s < 180 ? 'In line: the laptop fetches it within a minute' : 'In line: it is sent when the laptop checks in');
     } else if (a === 'cancel-send') {
       if (!confirm(`Stop sending “${label}” to the laptop? Parts already on the laptop stay there; Send again continues.`)) return;
       await apiPost(`/api/captures/${id}/cancel-send`); toast('Sending cancelled');
@@ -209,8 +211,11 @@ function openFrames(c) {
   $('frames-msg').textContent = '';
   const upd = () => {
     const secs = c.cameras.reduce((a, x) => a + (x.seconds || 0), 0), n = Math.round(secs / Number(f.every_s.value));
-    $('frames-est').textContent = `≈ ${n.toLocaleString()} frames${f.skip_similar.checked ? ' or fewer' : ''} from ${fmtMin(secs)} of video (all cameras), at full size, on this Jetson.` +
-      (c.frames ? ' The frames and package made before are replaced.' : '');
+    const same = c.frames && c.frames.state === 'done' && c.frames.every_s === Number(f.every_s.value) && !!c.frames.skip_similar === f.skip_similar.checked;
+    $('frames-est').textContent = same ? `Already made with these settings (${c.frames.count.toLocaleString()} frames): nothing to do. Choose other settings to make them again.`
+      : `≈ ${n.toLocaleString()} frames${f.skip_similar.checked ? ' or fewer' : ''} from ${fmtMin(secs)} of video (all cameras), at full size, on this Jetson.` +
+        (c.frames ? ' The frames and package made before are replaced.' : '');
+    $('frames-form').querySelector('button[type=submit]').disabled = same;
   };
   f.every_s.onchange = upd; f.skip_similar.onchange = upd; upd();
   openModal('frames-modal', c);
@@ -222,10 +227,14 @@ function openPack(c) {
   const upd = () => {
     const per = { 0: 380e3, 1920: 380e3, 1280: 150e3, 960: 90e3, 640: 45e3 }[f.max_px.value] * (Number(f.quality.value) / 85);
     const b = per * (c.frames?.count || 0);
-    $('pack-est').innerHTML = `≈ <b>${fmtBytes(b)}</b> for ${(c.frames?.count || 0).toLocaleString()} frames (${over4g(b)}). JPEGs are compressed
+    const p = c.pack, same = p && p.state === 'done' && p.max_px === Number(f.max_px.value) && p.quality === Number(f.quality.value) && p.part_mb === Number(f.part_mb.value);
+    $('pack-est').innerHTML = same ? `Already packed with these settings (${fmtBytes(p.bytes)}, ${p.parts} part${p.parts === 1 ? '' : 's'}): nothing to do. Choose another size or quality to pack again.`
+      : `≈ <b>${fmtBytes(b)}</b> for ${(c.frames?.count || 0).toLocaleString()} frames (${over4g(b)}). JPEGs are compressed
       already, so zip only bundles them; a smaller frame size is what makes the package small. Training uses 640–1280 px.`;
+    $('pack-form').querySelector('button[type=submit]').disabled = same;
   };
-  f.max_px.onchange = upd; f.quality.oninput = upd; upd();
+  if (c.pack) { f.max_px.value = String(c.pack.max_px); f.quality.value = c.pack.quality; f.part_mb.value = c.pack.part_mb; }
+  f.max_px.onchange = upd; f.quality.oninput = upd; f.part_mb.oninput = upd; upd();
   openModal('pack-modal', c);
 }
 
@@ -281,6 +290,7 @@ onReady(() => {
     const all = boxes.every(b => b.checked); boxes.forEach(b => { b.checked = !all; }); estimate(); });
   $('rec-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if ($('rec-start').disabled) return;
     const cams = [...$('rec-cams').querySelectorAll('input:checked')].map(i => i.value), min = minutesAsked();
     if (!cams.length) return msg('rec-msg', 'Choose at least one camera');
     if (!(min >= 1 && min <= S.data.max_minutes)) return msg('rec-msg', `Duration: 1 to ${S.data.max_minutes} minutes`);
@@ -294,24 +304,30 @@ onReady(() => {
     } catch (err) { msg('rec-msg', err.message); }
     $('rec-start').disabled = false; load();
   });
-  $('rec-body').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) act(b.dataset.act, b.dataset.id); });
+  $('rec-body').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) act(b.dataset.act, b.dataset.id, b); });
   $('det-close').addEventListener('click', () => { S.open = null; $('rec-detail').hidden = true; renderList(); });
   document.querySelectorAll('.modal-backdrop [data-close]').forEach(b => b.addEventListener('click', closeModals));
   $('frames-form').addEventListener('submit', async (e) => {
-    e.preventDefault(); const f2 = e.target.elements;
+    e.preventDefault(); const f2 = e.target.elements, sb = e.target.querySelector('button[type=submit]');
+    if (sb.disabled) return; sb.disabled = true;
     try { await apiPost(`/api/captures/${S.modalFor}/frames`, { every_s: Number(f2.every_s.value), skip_similar: f2.skip_similar.checked });
           closeModals(); toast('Making frames — it carries on even if this page is closed'); load(); }
     catch (err) { msg('frames-msg', err.message); }
+    sb.disabled = false;
   });
   $('pack-form').addEventListener('submit', async (e) => {
-    e.preventDefault(); const f2 = e.target.elements;
+    e.preventDefault(); const f2 = e.target.elements, sb = e.target.querySelector('button[type=submit]');
+    if (sb.disabled) return; sb.disabled = true;
     try { await apiPost(`/api/captures/${S.modalFor}/pack`, { max_px: Number(f2.max_px.value), quality: Number(f2.quality.value), part_mb: Number(f2.part_mb.value) });
           closeModals(); toast('Packing — it carries on even if this page is closed'); load(); }
     catch (err) { msg('pack-msg', err.message); }
+    sb.disabled = false;
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
   $('dg-test').addEventListener('click', async () => {
+    if ($('dg-test').disabled) return;
     if (!confirm('Test the 4G speed now? It downloads 5 MB and uploads 2 MB through the dongle (~7 MB of SIM data, ~20 s).')) return;
+    $('dg-test').disabled = true;
     try { await apiPost('/api/dongle/speedtest'); toast('Testing the 4G speed (~20 s)…'); } catch (e) { toast(e.message); }
     loadDongle();
   });

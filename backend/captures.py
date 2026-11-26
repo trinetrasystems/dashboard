@@ -437,14 +437,21 @@ async def api_frames(cid: str, request: Request):
         every = 0
     if every not in FRAME_EVERY:
         raise HTTPException(400, f"One frame every: {', '.join(map(str, FRAME_EVERY))} s")
+    skip = bool(b.get("skip_similar"))
     with _lock:
+        fr = _read(cap / "frames.json") or {}
+        if fr.get("state") == "running":
+            raise HTTPException(409, "The frames are being made already")
+        if fr.get("state") == "done" and fr.get("every_s") == every and bool(fr.get("skip_similar")) == skip:
+            n = (_read(cap / "frames.state.json") or {}).get("kept", 0)
+            raise HTTPException(409, f"Already made with these settings ({n} frames): nothing to do — choose other settings to make them again")
         _ready_for_next(cap, "make the frames again")
         if not any((cap / "video").glob("*/seg_*.mkv")):
             raise HTTPException(409, "No video was recorded (see the log: camera not reachable?)")
         for f in ("pack.json", "pack.state.json"):
             (cap / f).unlink(missing_ok=True)         # new frames → the old package is out of date
         shutil.rmtree(cap / "package", ignore_errors=True)
-        _write(cap / "frames.json", {"run": uuid.uuid4().hex[:12], "every_s": every, "skip_similar": bool(b.get("skip_similar")),
+        _write(cap / "frames.json", {"run": uuid.uuid4().hex[:12], "every_s": every, "skip_similar": skip,
                                      "state": "running", "attempts": 0, "asked": _iso(_now()), "by": _by(request)})
     supervise_once()                                  # starts it now (not in up to 5 s)
     request.state.audit_target = f"{cid}: one every {every} s"
@@ -462,6 +469,12 @@ async def api_pack(cid: str, request: Request):
     if max_px not in SIZES or not 50 <= quality <= 95 or not 10 <= part_mb <= 200:
         raise HTTPException(400, "Size: as recorded / 640 / 960 / 1280 / 1920 px · quality 50–95 · parts of 10–200 MB")
     with _lock:
+        pr = _read(cap / "pack.json") or {}
+        if pr.get("state") == "running":
+            raise HTTPException(409, "It is being packed already")
+        if pr.get("state") == "done" and (pr.get("max_px"), pr.get("quality"), pr.get("part_mb")) == (max_px, quality, part_mb) \
+                and (cap / "package" / "manifest.json").is_file():
+            raise HTTPException(409, "Already packed with these settings: nothing to do — choose another size / quality to pack again")
         _ready_for_next(cap, "pack again")
         if (_read(cap / "frames.json") or {}).get("state") != "done":
             raise HTTPException(409, "Make the frames first")
@@ -481,6 +494,8 @@ def api_send(cid: str, request: Request):
         pr = _read(cap / "pack.json") or {}
         if pr.get("state") != "done" or not (cap / "package" / "manifest.json").is_file():
             raise HTTPException(409, "Compress + zip first")
+        if _send_info(cap, pr.get("run"))["state"] in ("waiting", "sending"):
+            return summary(cap)                       # pressed again while in line / on its way: nothing changes
         for f in ("PROGRESS.json", "RECEIVED.json"):
             (cap / "package" / f).unlink(missing_ok=True)
         _write(cap / "package" / "SEND", {"run": pr["run"], "at": _iso(_now()), "by": _by(request)})
