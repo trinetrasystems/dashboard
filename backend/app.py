@@ -48,6 +48,7 @@ import access
 import alert_rules
 import captures
 import config
+import dongle
 import ds_control
 import speaker
 import housekeeping
@@ -3143,6 +3144,7 @@ async def ws_endpoint(ws: WebSocket):
 
 app.include_router(ds_control.router)                # /api/ds/* — the DeepStream page (Trinetra team only)
 app.include_router(captures.router)                  # /api/captures* — the Recordings page (Trinetra team only)
+app.include_router(dongle.router)                    # /api/dongle* — the 4G dongle on the Recordings page (Trinetra team only)
 
 
 # ─── Static frontend — mounted LAST so /api and /ws take precedence ──────

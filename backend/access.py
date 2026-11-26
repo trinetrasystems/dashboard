@@ -387,6 +387,7 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("POST", r"/api/captures/([^/]+)/send", "recordings", "Sent a recording to the laptop"),
     ("POST", r"/api/captures/([^/]+)/cancel-send", "recordings", "Cancelled sending a recording"),
     ("DELETE", r"/api/captures/([^/]+)", "recordings", "Deleted a recording"),
+    ("POST", r"/api/dongle/speedtest", "recordings", "Tested the 4G dongle speed"),
 ]]
 
 

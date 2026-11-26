@@ -28,3 +28,11 @@ tr.rec-open > td { background: var(--primary-bg); }
 .rec .modal .ds-note { line-height: 1.5; }
 .rec code, .ds-note code { font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); }
 @media (max-width: 1100px) { .ds-grid { grid-template-columns: 1fr; } }
+.rec-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.dg-top { display: flex; align-items: center; gap: 14px; }
+.dg-bars { display: flex; align-items: flex-end; gap: 3px; height: 26px; flex: none; }
+.dg-bars i { width: 7px; border-radius: 2px; background: var(--track, var(--border)); }
+.dg-bars i:nth-child(1) { height: 25%; } .dg-bars i:nth-child(2) { height: 50%; } .dg-bars i:nth-child(3) { height: 75%; } .dg-bars i:nth-child(4) { height: 100%; }
+.dg-bars[data-q="excellent"] i.on, .dg-bars[data-q="good"] i.on { background: var(--green); }
+.dg-bars[data-q="fair"] i.on { background: var(--amber); }
+.dg-bars[data-q="weak"] i.on { background: var(--red); }

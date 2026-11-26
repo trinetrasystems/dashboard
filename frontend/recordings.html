@@ -58,6 +58,7 @@
         </form>
       </div>
 
+      <div class="rec-side">
       <!-- ═══ the laptop ═══ -->
       <div class="card">
         <div class="card-head"><div class="card-title">Trinetra laptop</div></div>
@@ -74,6 +75,28 @@
             <dt>Every step stops under</dt><dd id="rcv-stop">…</dd>
           </dl>
         </div>
+      </div>
+
+      <!-- ═══ the 4G dongle: signal + speed (read only while this page is open) ═══ -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">4G dongle</div><span class="card-hint" id="dg-hint"></span>
+          <span class="spacer"></span><button type="button" class="btn sm" id="dg-test" title="Downloads 5 MB and uploads 2 MB through the dongle">Test speed</button></div>
+        <div class="ds-body">
+          <div class="dg-top">
+            <div class="dg-bars" id="dg-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div><div class="ds-state-text" id="dg-signal">…</div><div class="ds-state-sub" id="dg-sub"></div></div>
+          </div>
+          <dl class="ds-kv">
+            <dt>Right now</dt><dd id="dg-now">…</dd>
+            <dt>Used since plugged in</dt><dd id="dg-used">…</dd>
+            <dt>Internet of the Jetson</dt><dd id="dg-route">…</dd>
+            <dt>Speed test</dt><dd id="dg-speed">not run yet (button above, ~7 MB of SIM data)</dd>
+          </dl>
+          <div class="ds-note warn" id="dg-warn" hidden></div>
+          <div class="ds-note">Placing it: move the dongle on a USB extension cable (window, high up, away from metal and the NVR)
+            and watch the signal — it updates every 5 s. −95 dBm or better is good; under −108 dBm is weak.</div>
+        </div>
+      </div>
       </div>
     </div>
 

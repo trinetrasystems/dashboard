@@ -229,6 +229,42 @@ function openPack(c) {
   openModal('pack-modal', c);
 }
 
+
+/* ════════ the 4G dongle (read only while this page is open: every 5 s) ════════ */
+const netName = (i) => !i ? '—' : /^wl/.test(i) ? `Wi-Fi (${i})` : /^(en|eth)/.test(i) ? `Ethernet (${i})` : /^usb/.test(i) ? `the dongle (${i})` : i;
+async function loadDongle() {
+  let d; try { d = await apiGet('/api/dongle'); } catch (_) { return; }
+  const bars = $('dg-bars').children, sig = d.signal || {};
+  if (!d.present) {
+    [...bars].forEach(b => b.classList.remove('on'));
+    $('dg-signal').textContent = 'No 4G dongle plugged in'; $('dg-sub').textContent = 'a "network card" USB dongle (RNDIS / HiLink) shows up here when plugged in';
+    ['dg-now', 'dg-used'].forEach(id => { $(id).textContent = '—'; });
+    $('dg-route').textContent = d.internet_via ? `through ${netName(d.internet_via)}` : 'no internet route'; $('dg-test').disabled = true; $('dg-warn').hidden = true; $('dg-hint').textContent = ''; return;
+  }
+  $('dg-test').disabled = d.speedtest.running;
+  $('dg-test').textContent = d.speedtest.running ? 'Testing…' : 'Test speed';
+  $('dg-hint').textContent = `${d.iface}${sig.kind ? ' · ' + sig.kind : ''}`;
+  [...bars].forEach((b, i) => { b.classList.toggle('on', (sig.bars || 0) > i); });
+  $('dg-bars').dataset.q = sig.quality || 'none';
+  if (sig.dbm != null) {
+    $('dg-signal').textContent = `${sig.dbm} dBm · ${sig.quality[0].toUpperCase()}${sig.quality.slice(1)}`;
+    $('dg-sub').textContent = [sig.operator, sig.internet && `internet ${sig.internet}`, sig.sim && `SIM ${sig.sim}`, sig.temp_c != null && `${sig.temp_c} °C`,
+                              sig.sinr != null && `SINR ${sig.sinr} dB`].filter(Boolean).join(' · ');
+  } else { $('dg-signal').textContent = 'Signal not readable'; $('dg-sub').textContent = d.signal_error || ''; }
+  $('dg-now').textContent = d.now ? `↓ ${d.now.down_mbit} · ↑ ${d.now.up_mbit} Mbit/s` : 'measuring…';
+  $('dg-used').textContent = `${fmtBytes(d.used.down + d.used.up)} (↓ ${fmtBytes(d.used.down)} · ↑ ${fmtBytes(d.used.up)})`;
+  $('dg-route').innerHTML = d.dongle_is_internet ? '<span class="tag on_desk">through the dongle</span>'
+    : `<span class="tag warn">through ${escapeHtml(netName(d.internet_via))}</span> <span class="muted">(the dongle is the backup here)</span>`;
+  const t = d.speedtest.last;
+  if (t) $('dg-speed').textContent = t.error ? `${hm(t.at)} — ${t.error}`
+    : `↓ ${t.down_mbit ?? '—'} · ↑ ${t.up_mbit ?? '—'} Mbit/s · ${t.ping_ms ?? '—'} ms (${hm(t.at)})`;
+  const w = [];
+  if (sig.hotspot) w.push('The dongle\'s own Wi-Fi hotspot is on: whoever joins it is on the Jetson\'s dongle network. Switch it off on the dongle\'s page unless it is needed.');
+  if (sig.default_password) w.push('The dongle\'s page still has its default password (admin / admin): change it there, then set DONGLE_PASSWORD in the settings file.');
+  if (sig.bars != null && sig.bars <= 1 && sig.dbm != null) w.push('Weak signal: move the dongle (window, higher, USB extension cable) or try another operator\'s SIM.');
+  $('dg-warn').hidden = !w.length; $('dg-warn').innerHTML = w.map(escapeHtml).join('<br>');
+}
+
 onReady(() => {
   const f = $('rec-form').elements;
   f.preset.addEventListener('change', () => { $('rec-minutes-wrap').hidden = f.preset.value !== 'custom'; estimate(); });
@@ -274,6 +310,12 @@ onReady(() => {
     catch (err) { msg('pack-msg', err.message); }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
-  load();
+  $('dg-test').addEventListener('click', async () => {
+    if (!confirm('Test the 4G speed now? It downloads 5 MB and uploads 2 MB through the dongle (~7 MB of SIM data, ~20 s).')) return;
+    try { await apiPost('/api/dongle/speedtest'); toast('Testing the 4G speed (~20 s)…'); } catch (e) { toast(e.message); }
+    loadDongle();
+  });
+  load(); loadDongle();
   setInterval(() => { if (!document.hidden) load(); }, 3000);
+  setInterval(() => { if (!document.hidden) loadDongle(); }, 5000);          // only while the page is open and shown
 });
