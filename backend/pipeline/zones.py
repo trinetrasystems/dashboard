@@ -3,11 +3,22 @@ detection means there.
 
 All points are fractions of the frame (0..1, x right, y down), so they hold for any stream resolution.
 
-    {"line": [[x, y], ...],           # the perimeter line (wall / fence), a polyline of 2+ points
-     "outside": [x, y],               # a point on the OUTSIDE of the line
+    {"line": [[x, y], ...],           # the perimeter line (wall / fence top), a polyline of 2+ points
+     "outside": [x, y],               # a point on the OUTSIDE of the line (the inside is the other side)
      "regions": [{"name": "Wall top", "kind": "alert",  "points": [[x, y], ...]},   # anything here = breach
                  {"name": "Gate A",   "kind": "watch",  "points": [...]},           # the client's alert rules decide
-                 {"name": "Road",     "kind": "ignore", "points": [...]}]}          # never reported
+                 {"name": "Near wall","kind": "near",   "points": [...]},           # a watch region the throw / loitering
+                                                                                    # logic also uses (person near the wall)
+                 {"name": "Road",     "kind": "ignore", "points": [...]},           # never reported
+                 {"name": "Band 1",   "kind": "band",   "points": [...]},           # throw band: the strip along the wall
+                                                                                    # top watched for thrown objects (motion,
+                                                                                    # every frame); needs the perimeter line
+                 {"name": "Landing 1","kind": "landing","points": [...]}]}          # landing zone: the ground inside where a
+                                                                                    # thrown / left object is looked for
+(PERIMETER_THROW_DETECTION_SPEC: wall_top_line / fence_crossing_line = "line", inside_side_point = the side opposite
+"outside", wall_top_band = a band region, near_wall_zone = a near region, landing_zone = a landing region.)
+Band and landing regions are drawn by the Trinetra team only (DeepStream page) and are not person / object regions:
+describe() does not look at them.
 
 (Zones saved before 25 Nov 2026 had "alert": [...] and "ignore": [...] lists: read as regions "Alert 1", "Ignore 1", …)
 
@@ -30,7 +41,10 @@ ZONE_PERSON = "zone-person"
 ZONE_OBJECT = "zone-object"
 PERIMETER_CLASSES = {BREACH.lower(), OUTSIDE_PERSON, OUTSIDE_OBJECT}
 PERSON_LABELS = {"person", "people", "pedestrian", "human", "outside-person"}
-KINDS = ("alert", "watch", "ignore")
+KINDS = ("alert", "watch", "near", "ignore", "band", "landing")
+DETECTION_KINDS = ("band", "landing")                 # for the throw / landing detection, not for person / object rules
+TEAM_KINDS = ("near", "band", "landing")              # drawn on the DeepStream page only (the client's editor keeps them)
+MAX_PER_KIND = {"band": 4, "landing": 4}
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$")
 
 
@@ -110,7 +124,7 @@ def describe(label: str, box, zone, frame_w: float, frame_h: float):
     lab = (label or "").strip().lower()
     names, alert = [], lab == BREACH.lower()
     for r in regions(zone):
-        if r["kind"] == "ignore":
+        if r["kind"] == "ignore" or r["kind"] in DETECTION_KINDS:
             continue
         inside = in_polygon(foot, r["points"]) or (r["kind"] == "alert" and in_polygon(centre, r["points"]))
         if inside:
@@ -136,6 +150,20 @@ def classify(label: str, box, zone, frame_w: float, frame_h: float):
     """the file-name class of one detection, or None (not reported)"""
     d = describe(label, box, zone, frame_w, frame_h)
     return cls(d) if d else None
+
+
+def _segments_cross(a, b, c, d) -> bool:
+    s1, s2 = _side_of_segment(c, a, b), _side_of_segment(d, a, b)
+    s3, s4 = _side_of_segment(a, c, d), _side_of_segment(b, c, d)
+    return s1 * s2 < 0 and s3 * s4 < 0
+
+
+def line_meets(poly, line) -> bool:
+    """the polyline passes through the polygon (a point inside, or a segment crossing an edge)"""
+    if any(in_polygon(_pt(p), poly) for p in line):
+        return True
+    edges = [(_pt(poly[i]), _pt(poly[(i + 1) % len(poly)])) for i in range(len(poly))]
+    return any(_segments_cross(_pt(line[i]), _pt(line[i + 1]), a, b) for i in range(len(line) - 1) for a, b in edges)
 
 
 def clean(zone) -> dict:
@@ -166,7 +194,7 @@ def clean(zone) -> dict:
             raise ValueError("a region is {name, kind, points}")
         name, kind = str(r.get("name", "")).strip(), r.get("kind")
         if kind not in KINDS:
-            raise ValueError("a region is an alert, watch or ignore region")
+            raise ValueError("a region is an alert, watch, near-wall, ignore region, a throw band or a landing zone")
         if not NAME_RE.match(name):
             raise ValueError(f"region name “{name[:40]}”: 1–40 letters, numbers, spaces, dots, dashes")
         if name.lower() in seen:
@@ -176,7 +204,26 @@ def clean(zone) -> dict:
         if not 3 <= len(pts) <= 50:
             raise ValueError(f"region {name} needs 3–50 corners")
         rs.append({"name": name, "kind": kind, "points": pts})
+    for kind, n in MAX_PER_KIND.items():
+        if sum(r["kind"] == kind for r in rs) > n:
+            raise ValueError(f"at most {n} {'throw bands' if kind == 'band' else 'landing zones'} per camera")
+    for r in rs:
+        if r["kind"] == "band":
+            if len(line) < 2:
+                raise ValueError(f"throw band {r['name']}: draw the perimeter line (the wall top) and its outside side first "
+                                 "— a throw is an object crossing it from outside to inside")
+            if not line_meets(r["points"], line):
+                raise ValueError(f"throw band {r['name']}: the perimeter line must run through the band (the band is the "
+                                 "strip just above and below the wall top)")
     return {"line": line, "outside": out, "regions": rs}
+
+
+def keep_team_regions(new: dict, old: dict) -> dict:
+    """a zone saved from the client's editor (Alerts → Regions): the team's regions (near / band / landing) stay as they
+    were — the client can neither add nor remove them"""
+    mine = [r for r in (new.get("regions") or []) if isinstance(r, dict) and r.get("kind") not in TEAM_KINDS]
+    team = [r for r in regions(old or {}) if r["kind"] in TEAM_KINDS]
+    return {**new, "regions": mine + team}
 
 
 if __name__ == "__main__":                            # python3 zones.py: self-test (used by the install check)
@@ -190,4 +237,20 @@ if __name__ == "__main__":                            # python3 zones.py: self-t
     want = [OUTSIDE_PERSON, OUTSIDE_OBJECT, None, BREACH, ZONE_PERSON]
     assert got == want, got
     assert describe("person", box(900, 800), z, 1000, 1000)["regions"] == ["Gate"]
+    band = {"name": "Band 1", "kind": "band", "points": [[0.1, 0.4], [0.9, 0.4], [0.9, 0.6], [0.1, 0.6]]}
+    land = {"name": "Landing 1", "kind": "landing", "points": [[0.1, 0.6], [0.9, 0.6], [0.9, 0.95], [0.1, 0.95]]}
+    near = {"name": "Near wall", "kind": "near", "points": [[0, 0.5], [1, 0.5], [1, 0.75], [0, 0.75]]}
+    z2 = clean({**z, "regions": z["regions"] + [band, land, near]})
+    assert describe("person", box(500, 800), z2, 1000, 1000) is None            # landing / band: not person regions
+    assert describe("person", box(500, 700), z2, 1000, 1000)["regions"] == ["Near wall"]
+    for bad in ({"line": [], "outside": None, "regions": [band]},                # a band needs the line
+                {**z, "regions": [{**band, "points": [[0.1, 0.7], [0.9, 0.7], [0.9, 0.8], [0.1, 0.8]]}]},   # line not in it
+                {**z, "regions": [{**band, "name": f"B{i}"} for i in range(5)]}):
+        try:
+            clean(bad)
+            raise AssertionError("not refused: %r" % bad)
+        except ValueError:
+            pass
+    kept = keep_team_regions({**z, "regions": [z["regions"][0], {**band, "name": "Client band"}]}, z2)
+    assert [r["name"] for r in kept["regions"]] == ["Wall top", "Band 1", "Landing 1", "Near wall"], kept
     print("zones self-test ok")

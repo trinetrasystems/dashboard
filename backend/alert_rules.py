@@ -31,6 +31,15 @@ from typing import Callable, Optional
 RULE_TYPES = ("presence", "dwell", "count", "offline")
 TARGETS = ("person", "object", "any")
 SEVERITIES = ("critical", "warning")
+
+# "False alarm" on an alert (client admins + the Trinetra team): what the detection learns from it
+# (PERIMETER_THROW_DETECTION_SPEC §7.8). The alert is written to data/feedback/feedback.jsonl; the detection workers
+# read it (on_feedback): "bank" = the landing / left-object detection adds that picture patch to the normal-scene bank
+# at once; "negatives" = the throw detection keeps the crops for the next training of its throw checker; "none" =
+# kept for the false-alarm counts only (person rules: tune the region / times instead). An undo writes an "undo" line:
+# the worker takes back what it added for that alert.
+FEEDBACK_LEARN = {"landing": "bank", "unattended": "bank", "anomaly": "bank", "throw": "negatives"}
+NO_FALSE_ALARM_KINDS = ("offline",)                 # a camera without video is a fact, not a detection
 SPECIAL_REGIONS = {"*alert": "any alert region", "*outside": "outside the perimeter line", "*any": "any region or outside"}
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CLASS_META = {                                       # file-name class → observation (images without a description)
@@ -107,7 +116,8 @@ def migrate(conn):
             CREATE INDEX IF NOT EXISTS idx_alerts_kind ON alerts(kind, triggered_at DESC);""")
         cols = {r[1]: r for r in conn.execute("PRAGMA table_info(alerts)").fetchall()}
     for col, typ in (("rule_id", "INTEGER"), ("rule_name", "TEXT"), ("severity", "TEXT"), ("message", "TEXT"),
-                     ("presence_start", "TEXT"), ("object_count", "INTEGER"), ("sound", "INTEGER DEFAULT 1")):
+                     ("presence_start", "TEXT"), ("object_count", "INTEGER"), ("sound", "INTEGER DEFAULT 1"),
+                     ("verdict", "TEXT"), ("verdict_by", "TEXT"), ("verdict_at", "TEXT"), ("verdict_note", "TEXT")):
         if col not in cols:
             conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typ}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule_id, camera, triggered_at)")

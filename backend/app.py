@@ -2231,7 +2231,7 @@ def _cameras_and_regions() -> dict:
     zones = ds_control.load_zones()
     from pipeline import zones as Z
     return {s["name"]: [{"name": r["name"], "kind": r["kind"]} for r in Z.regions(zones.get(s["name"]) or {})
-                        if r["kind"] != "ignore"] for s in cfg["streams"]}
+                        if r["kind"] not in ("ignore",) + Z.DETECTION_KINDS] for s in cfg["streams"]}
 
 
 @app.get("/api/alert-rules")
@@ -2306,7 +2306,13 @@ def _alert_out(r, archive: Path) -> dict:
             "triggered_at": r["triggered_at"], "presence_start": r["presence_start"], "duration_seconds": r["duration_seconds"] or 0,
             "count": r["object_count"],
             "image": r["image"], "has_image": bool(r["image"] and (archive / r["image"]).exists()), "sound": bool(r["sound"] if r["sound"] is not None else 1),
-            "acked": bool(r["acknowledged"]), "acked_at": r["acknowledged_at"], "acked_by": r["acknowledged_by"]}
+            "acked": bool(r["acknowledged"]), "acked_at": r["acknowledged_at"], "acked_by": r["acknowledged_by"],
+            "false_alarm": r["verdict"] == "false_alarm", "verdict_by": r["verdict_by"], "verdict_at": r["verdict_at"],
+            "verdict_note": r["verdict_note"] or "", "learn": alert_rules.FEEDBACK_LEARN.get(r["kind"] or "dwell", "none"),
+            "can_false_alarm": (r["kind"] or "dwell") not in alert_rules.NO_FALSE_ALARM_KINDS}
+
+
+_STATUS_SQL = ("acknowledged=0", "acknowledged=1", "verdict='false_alarm'")   # the status filter's clauses (no arguments)
 
 
 @app.get("/api/alerts")
@@ -2329,6 +2335,8 @@ def api_alerts(date_from: Optional[str] = None, date_to: Optional[str] = None, s
         where.append("acknowledged=0")
     elif status == "acked":
         where.append("acknowledged=1")
+    elif status == "false_alarm":
+        where.append("verdict='false_alarm'")
     if rule_id:
         where.append("rule_id=?"); args.append(rule_id)
     if q.strip():
@@ -2340,13 +2348,17 @@ def api_alerts(date_from: Optional[str] = None, date_to: Optional[str] = None, s
     conn = db()
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM alerts{w}", args).fetchone()[0]
+        fw = " WHERE " + " AND ".join([c for c in where if c not in _STATUS_SQL] + ["verdict='false_alarm'"])
+        fargs = args
+        false_alarms = conn.execute(f"SELECT COUNT(*) FROM alerts{fw}", fargs).fetchone()[0]
         rows = conn.execute(f"SELECT * FROM alerts{w} ORDER BY triggered_at DESC, id DESC LIMIT ? OFFSET ?",
                             args + [size, (page - 1) * size]).fetchall()
         cams = [r[0] for r in conn.execute("SELECT DISTINCT camera FROM alerts WHERE camera IS NOT NULL ORDER BY camera")]
     finally:
         conn.close()
     archive = Path(config.ARCHIVE_DIR)
-    return {"items": [_alert_out(r, archive) for r in rows], "total": total, "page": page, "size": size, "cameras": cams}
+    return {"items": [_alert_out(r, archive) for r in rows], "total": total, "page": page, "size": size, "cameras": cams,
+            "false_alarms": false_alarms}
 
 
 @app.get("/api/alerts/live")
@@ -2376,6 +2388,70 @@ async def api_alerts_ack_all(request: Request):
     return {"ok": True, "acknowledged": n}
 
 
+# ─── "False alarm" (client admins + the Trinetra team): the alert is marked, acknowledged if still open, and handed to
+# the detection workers through data/feedback/feedback.jsonl (what each detection learns: alert_rules.FEEDBACK_LEARN).
+FEEDBACK_FILE = Path(config.DATA_DIR) / "feedback" / "feedback.jsonl"
+
+
+def _feedback_line(row, verdict: str, ident: dict, note: str):
+    FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    kind = row["kind"] or "dwell"
+    line = {"ts": datetime.now().isoformat(timespec="seconds"), "alert_id": row["id"], "verdict": verdict,
+            "by": ident.get("username"), "role": ident.get("role"), "kind": kind, "rule": row["rule_name"],
+            "camera": row["camera"], "zone": row["zone"], "triggered_at": row["triggered_at"], "image": row["image"],
+            "note": note, "learn": alert_rules.FEEDBACK_LEARN.get(kind, "none")}
+    with open(FEEDBACK_FILE, "a") as f:
+        f.write(json.dumps(line) + "\n")
+
+
+@app.post("/api/alerts/{alert_id}/false-alarm")
+async def api_alert_false_alarm(alert_id: int, request: Request):
+    body = await read_json(request) if int(request.headers.get("content-length") or 0) else {}
+    note = str((body or {}).get("note") or "").strip()[:200]
+    ident = request.state.ident
+    now = datetime.utcnow().isoformat()
+    conn = db()
+    try:
+        row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Alert not found")
+        if (row["kind"] or "dwell") in alert_rules.NO_FALSE_ALARM_KINDS:
+            raise HTTPException(400, "A camera-offline alert cannot be a false alarm")
+        if row["verdict"] == "false_alarm":
+            raise HTTPException(409, "Already marked as a false alarm")
+        with _db_lock, conn:
+            conn.execute("UPDATE alerts SET verdict='false_alarm', verdict_by=?, verdict_at=?, verdict_note=? WHERE id=?",
+                         (ident["username"], now, note, alert_id))
+            if not row["acknowledged"]:              # a false alarm needs no one to act on it: off the open alerts
+                conn.execute("UPDATE alerts SET acknowledged=1, acknowledged_at=?, acknowledged_by=? WHERE id=?",
+                             (now, ident["username"], alert_id))
+                if row["session_id"] and (row["kind"] or "dwell") != "breach":
+                    conn.execute("UPDATE sessions SET closed=1, closed_at=? WHERE id=? AND closed=0", (now, row["session_id"]))
+        _feedback_line(row, "false_alarm", ident, note)
+    finally:
+        conn.close()
+    request.state.audit_target = f"#{alert_id} {row['rule_name'] or row['kind'] or ''} · {row['camera'] or ''}".strip()
+    return {"ok": True, "learn": alert_rules.FEEDBACK_LEARN.get(row["kind"] or "dwell", "none")}
+
+
+@app.delete("/api/alerts/{alert_id}/false-alarm")
+def api_alert_false_alarm_undo(alert_id: int, request: Request):
+    conn = db()
+    try:
+        row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Alert not found")
+        if row["verdict"] != "false_alarm":
+            raise HTTPException(400, "This alert is not marked as a false alarm")
+        with _db_lock, conn:                          # stays acknowledged: the undo only takes the lesson back
+            conn.execute("UPDATE alerts SET verdict=NULL, verdict_by=NULL, verdict_at=NULL, verdict_note=NULL WHERE id=?", (alert_id,))
+        _feedback_line(row, "undo", request.state.ident, "")
+    finally:
+        conn.close()
+    request.state.audit_target = f"#{alert_id} {row['rule_name'] or row['kind'] or ''} · {row['camera'] or ''}".strip()
+    return {"ok": True}
+
+
 # ─── regions for the client (Alerts page → Regions): the cameras' pictures + zones, never the stream addresses ───
 @app.get("/api/regions")
 def api_regions():
@@ -2390,7 +2466,7 @@ def api_region_zone(cam: str):
 @app.put("/api/regions/{cam}/zone")
 async def api_region_zone_save(cam: str, request: Request):
     request.state.audit_target = cam
-    return await ds_control.api_zone_save(cam, request)
+    return await ds_control.api_zone_save(cam, request, team=False)   # the team's near / band / landing regions stay
 
 
 @app.get("/api/regions/{cam}/frame")

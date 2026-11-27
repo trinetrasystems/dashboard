@@ -512,7 +512,13 @@ def cmd_pack(cap: Path):
     for p in pkg.glob("*.tmp"):
         p.unlink()                                     # a part cut off half-way is made again
     frames = sorted(cap.glob("frames/*/*.jpg"), key=lambda p: (p.parent.name, p.name))
-    st.update(state="running", pid=os.getpid(), error=None, total=len(frames))
+    extras = [(cap / f, f"meta/{f}") for f in ("capture.json", "zones.json", "ground_truth.csv", "sample.state.json")
+              if (cap / f).is_file()]
+    if cfg.get("include_video"):
+        for v in sorted(cap.glob("video/*/seg_*.mkv")) + sorted(cap.glob("video/*/segments.jsonl")):
+            extras.append((v, f"video/{v.parent.name}/{v.name}"))
+    items = [(p, None) for p in frames] + extras         # (file, name in the zip — None: a frame, recompressed)
+    st.update(state="running", pid=os.getpid(), error=None, total=len(items))
     write_json(sf, st, sync=True)
     i, part = st["frames_done"], None
     sizes = {}
@@ -530,7 +536,7 @@ def cmd_pack(cap: Path):
         write_json(sf, st, sync=True)
         log(f"{name}: {n_in} frame(s), {st['parts'][-1]['bytes'] / 1e6:.1f} MB")
 
-    while i < len(frames):
+    while i < len(items):
         if TERM["now"]:
             return 1
         if free_gb(cap) < STOP_GB:
@@ -542,7 +548,19 @@ def cmd_pack(cap: Path):
             tmp = pkg / f"part-{len(st['parts']) + 1:03d}.zip.tmp"
             zf = zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED, allowZip64=True)
             part, n_in, first_i = (zf, tmp), 0, i
-        p = frames[i]
+        p, arc = items[i]
+        if arc is not None:                            # meta / video: stored as it is (streamed, never all in memory)
+            zf, tmp = part
+            size = p.stat().st_size if p.exists() else 0
+            if n_in and zf.fp.tell() + size + 200 > part_bytes:
+                close_part(zf, tmp, n_in, first_i)
+                part = None
+                continue
+            if size:
+                zf.write(p, arc, compress_type=zipfile.ZIP_STORED if p.suffix == ".mkv" else zipfile.ZIP_DEFLATED)
+            n_in += 1
+            i += 1
+            continue
         img = cv2.imread(str(p), cv2.IMREAD_COLOR)
         if img is None:
             i += 1
@@ -581,6 +599,8 @@ def cmd_pack(cap: Path):
                 "frames": len(frames), "frames_per_camera": per_cam, "frame_every_s": (read_json(cap / "frames.json", {}) or {}).get("every_s"),
                 "near_identical_skipped": fst.get("skipped", 0), "original_sizes": sizes,
                 "max_px": max_px, "jpeg_quality": quality, "parts": st["parts"],
+                "kind": meta.get("kind") or "video", "include_video": bool(cfg.get("include_video")),
+                "files": [{"name": a, "bytes": p.stat().st_size} for p, a in extras if p.exists()],
                 "bytes": sum(p["bytes"] for p in st["parts"]), "packed": now_iso()}
     write_json(pkg / "manifest.json", manifest, sync=True)
     sums = "".join(f"{p['sha256']}  {p['file']}\n" for p in st["parts"]) + f"{sha256(pkg / 'manifest.json')}  manifest.json\n"

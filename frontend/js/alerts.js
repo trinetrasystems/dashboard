@@ -51,17 +51,58 @@ async function loadHistory() {
   const sel = $('cam-filter'), cur = sel.value;
   sel.innerHTML = '<option value="">All cameras</option>' + d.cameras.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
   sel.value = d.cameras.includes(cur) ? cur : '';
-  const ack = can('manage_alerts');
-  $('al-body').innerHTML = d.items.length ? d.items.map(a => `<tr class="${a.acked ? '' : (a.severity === 'critical' ? 'row-crit' : 'row-warn')}">
+  const ack = can('manage_alerts'), fa = can('admin');
+  $('fa-count').textContent = d.false_alarms || 0;
+  $('al-body').innerHTML = d.items.length ? d.items.map(a => `<tr class="${a.false_alarm ? 'row-fa' : a.acked ? '' : (a.severity === 'critical' ? 'row-crit' : 'row-warn')}">
       <td class="nowrap">${fmtTs(a.triggered_at)}</td>
       <td><div class="who-name">${escapeHtml(a.rule_name)}</div>${sevTag(a.severity)}</td>
       <td>${escapeHtml(a.message)}${a.badge && a.kind !== 'offline' ? `<div class="emp-cell-sub">${escapeHtml(a.badge)}</div>` : ''}</td>
       <td>${escapeHtml(a.camera)}${a.zone ? `<div class="emp-cell-sub">${escapeHtml(a.zone)}</div>` : ''}</td>
       <td>${a.has_image ? `<button class="snap-thumb" data-snap="${a.id}" title="Open the snapshot"><img src="/images/${encodeURIComponent(a.image)}" alt="" loading="lazy"></button>` : '<span class="muted">—</span>'}</td>
-      <td class="nowrap">${a.acked ? `<span class="tag on_desk">Acknowledged</span><div class="emp-cell-sub">${escapeHtml(a.acked_by || '')}</div>`
-        : (ack ? `<button class="btn sm" data-ack="${a.id}"><span class="ic-inline">✓</span>Acknowledge</button>` : '<span class="tag warn">Open</span>')}</td>
+      <td class="nowrap">${statusCell(a, ack, fa)}</td>
     </tr>`).join('') : `<tr><td colspan="6" class="empty">No alerts ${S.q || S.sev || S.status || S.camera ? 'match' : 'in this period'}.</td></tr>`;
   S.items = d.items;
+}
+
+function statusCell(a, ack, fa) {
+  if (a.false_alarm) {
+    return `<span class="tag fa">False alarm</span><div class="emp-cell-sub">${escapeHtml(a.verdict_by || '')}</div>`
+      + (a.verdict_note ? `<div class="emp-cell-sub fa-note">${escapeHtml(a.verdict_note)}</div>` : '')
+      + (fa ? `<button class="link-btn" data-fa-undo="${a.id}">Undo</button>` : '');
+  }
+  const st = a.acked ? `<span class="tag on_desk">Acknowledged</span><div class="emp-cell-sub">${escapeHtml(a.acked_by || '')}</div>`
+    : (ack ? `<button class="btn sm" data-ack="${a.id}"><span class="ic-inline">✓</span>Acknowledge</button>` : '<span class="tag warn">Open</span>');
+  return st + (fa && a.can_false_alarm ? `<div><button class="btn sm ghost fa-btn" data-fa="${a.id}">False alarm</button></div>` : '');
+}
+/* what marking this alert as a false alarm teaches the detection (PERIMETER_THROW_DETECTION_SPEC §7.8) */
+const LEARN = {
+  bank: 'The detection learns from this at once: this part of the picture is added to the normal scene, so the same thing is not alerted again.',
+  negatives: 'This moving object is kept as a "not a throw" example. It is used the next time the Trinetra team trains the throw check.',
+  none: 'Kept in the false-alarm count only — nothing is learned from it. If a region often gives false alarms, change the region or its times.',
+};
+function openFalseAlarm(id) {
+  const a = (S.items || []).find(x => x.id === Number(id)); if (!a) return;
+  S.fa = a;
+  $('fa-sub').textContent = `${a.rule_name} · ${a.camera}${a.zone ? ' · ' + a.zone : ''} · ${fmtTs(a.triggered_at)}`;
+  $('fa-learn').textContent = LEARN[a.learn] || LEARN.none;
+  $('fa-form').reset();
+  $('fa-modal').hidden = false;
+  $('fa-form').note.focus();
+}
+async function saveFalseAlarm(e) {
+  e.preventDefault();
+  const a = S.fa; if (!a) return;
+  $('fa-save').disabled = true;
+  try {
+    await apiPost(`/api/alerts/${a.id}/false-alarm`, { note: $('fa-form').note.value.trim() });
+    $('fa-modal').hidden = true; toast('Marked as a false alarm'); loadHistory(); refreshAlertStrip();
+  } catch (err) { toast(err.message); }
+  finally { $('fa-save').disabled = false; }
+}
+async function undoFalseAlarm(id) {
+  if (!confirm('Take back "false alarm" on this alert? Anything the detection learned from it is taken back too.')) return;
+  try { await apiDelete(`/api/alerts/${id}/false-alarm`); toast('No longer a false alarm'); loadHistory(); }
+  catch (e) { toast(e.message); }
 }
 
 async function ack(id) {
@@ -272,9 +313,14 @@ onReady(() => {
   $('ack-all').addEventListener('click', ackAll);
   $('al-body').addEventListener('click', (e) => {
     const a = e.target.closest('[data-ack]'); if (a) return ack(a.dataset.ack);
+    const f = e.target.closest('[data-fa]'); if (f) return openFalseAlarm(f.dataset.fa);
+    const u = e.target.closest('[data-fa-undo]'); if (u) return undoFalseAlarm(u.dataset.faUndo);
     const s = e.target.closest('[data-snap]'); if (s) openSnap(s.dataset.snap);
   });
   $('snap-close').addEventListener('click', () => { $('snap-modal').hidden = true; });
+  $('fa-form').addEventListener('submit', saveFalseAlarm);
+  ['fa-close', 'fa-cancel'].forEach(x => $(x).addEventListener('click', () => { $('fa-modal').hidden = true; }));
+  $('fa-modal').addEventListener('click', (e) => { if (e.target.id === 'fa-modal') $('fa-modal').hidden = true; });
   $('snap-modal').addEventListener('click', (e) => { if (e.target.id === 'snap-modal') $('snap-modal').hidden = true; });
   // rules
   $('rule-new').addEventListener('click', () => openRule(null));

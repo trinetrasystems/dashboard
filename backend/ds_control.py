@@ -44,6 +44,7 @@ SNAPS = SHM / "perimeter_snap"
 CONFIG = DS / "config.json"
 ZONES = DS / "zones.json"
 INTENT = RUN / "intent.json"
+SAMPLING = RUN / "sampling.json"                      # normal-scene frames the running pipeline saves (captures.py writes it)
 PIDF = RUN / "pipeline.pid"
 NIGHTLY_FILE = RUN / "nightly_restart.json"           # {"day": iso}: the planned night restart of that day is done
 APP = Path(__file__).resolve().parent / "pipeline"
@@ -51,6 +52,7 @@ PY = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else sys.executable
 YOLO_LIB = "/root/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
 BUILD_VIDEO = "/opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4"
 SAMPLE_VIDEOS = "/opt/nvidia/deepstream/deepstream/samples/streams"
+MUX_W, MUX_H = 1920, 1080                             # the pipeline's frame size: zones, normal frames, the banks
 CAM_RE = re.compile(r"^[A-Za-z0-9-]{1,40}$")          # the dashboard's file names: <camera>_<class>_<time>.jpg
 MAX_CAMERAS = 16
 ENGINE_STEP = 4                                       # engines for 4, 8, 12, 16 cameras: adding one camera rarely rebuilds
@@ -62,7 +64,13 @@ MAX_RESTARTS_PER_HOUR, RESTART_MIN_GB = 5, 2.0
 RESTART_SETTLE_S = 30
 FREE_MEM_AFTER_S = 60
 DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "frame_skip": 2, "loop_files": True,
-            "nightly_restart": "00:00"}
+            "nightly_restart": "00:00", "classes": [], "night_saturation_max": 12, "mode_hysteresis_s": 30}
+# classes: the model's labels the pipeline reports ([] = all; PERIMETER_THROW_DETECTION_SPEC yolo.classes_keep, e.g. person,
+# backpack, handbag, suitcase of a COCO model) — the others are dropped inside nvinfer (filter-out-class-ids).
+# Per camera "throw": true = throw detection on that camera (spec §7.4): every frame is decoded and looked at (the frame
+# skip above does not apply to it) — a thrown object is in the picture for only 5–15 frames.
+# Day / night (spec §7.3): night when the picture's mean colour saturation (HSV, 0–255) stays under night_saturation_max for
+# mode_hysteresis_s (an IR picture is grey), day when above as long.
 
 router = APIRouter()
 _lock = threading.Lock()
@@ -159,7 +167,7 @@ symmetric-padding=1
 parse-bbox-func-name=NvDsInferParseYoloCuda
 custom-lib-path={lib}
 engine-create-func-name=NvDsInferYoloCudaEngineGet
-
+{filt}
 [class-attrs-all]
 nms-iou-threshold=0.45
 pre-cluster-threshold={th}
@@ -167,9 +175,13 @@ topk=100
 """
 
 
-def pgie_text(model: dict, engine: str, batch: int, th: float) -> str:
+def pgie_text(model: dict, engine: str, batch: int, th: float, keep: Optional[list] = None) -> str:
+    """keep: the labels to report (None / [] = all); the others are dropped by nvinfer itself (filter-out-class-ids) —
+    the engine does not change, so no rebuild"""
     lab = Path(model["path"]).with_name(Path(model["path"]).stem + ".labels.txt")
-    return PGIE_T.format(onnx=model["path"], engine=engine, labels=lab, batch=batch, nc=len(model["labels"]), lib=YOLO_LIB, th=th)
+    drop = [str(i) for i, l in enumerate(model["labels"]) if keep and l not in keep]
+    return PGIE_T.format(onnx=model["path"], engine=engine, labels=lab, batch=batch, nc=len(model["labels"]), lib=YOLO_LIB, th=th,
+                         filt=f"filter-out-class-ids={';'.join(drop)}\n" if drop else "")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -198,7 +210,8 @@ def check_config(raw: dict) -> dict:
         if uri.startswith("file://") and available() and not _exists(uri[7:]):
             raise ValueError(f"{name}: no video file {uri[7:]} on the Jetson")
         tr = s.get("transport", "tcp")
-        streams.append({"name": name, "uri": uri, "transport": "udp" if tr == "udp" else "tcp", "enabled": bool(s.get("enabled", True))})
+        streams.append({"name": name, "uri": uri, "transport": "udp" if tr == "udp" else "tcp", "enabled": bool(s.get("enabled", True)),
+                        "throw": bool(s.get("throw", False))})
     if len(streams) > MAX_CAMERAS:
         raise ValueError(f"at most {MAX_CAMERAS} cameras on one Jetson")
     cfg["streams"] = streams
@@ -209,12 +222,28 @@ def check_config(raw: dict) -> dict:
     except (TypeError, ValueError):
         raise ValueError("threshold / image interval / frame skip must be numbers")
     cfg["loop_files"] = bool(cfg["loop_files"])
+    try:
+        cfg["night_saturation_max"] = int(min(80, max(1, int(cfg["night_saturation_max"]))))
+        cfg["mode_hysteresis_s"] = int(min(600, max(5, int(cfg["mode_hysteresis_s"]))))
+    except (TypeError, ValueError):
+        raise ValueError("day / night: numbers")
+    classes = cfg.get("classes") or []
+    if not isinstance(classes, list) or len(classes) > 200:
+        raise ValueError("classes: a list of the model's labels")
+    cfg["classes"] = list(dict.fromkeys(str(c).strip() for c in classes if str(c).strip()))
     nr = str(cfg.get("nightly_restart") or "").strip()
     if nr and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", nr):
         raise ValueError("nightly restart: a time HH:MM (empty = off)")
     cfg["nightly_restart"] = nr
     if cfg["model"] and not model_by_name(cfg["model"]):
         raise ValueError(f"model {cfg['model']} not found")
+    m = model_by_name(cfg["model"])
+    if m and cfg["classes"]:
+        bad = [c for c in cfg["classes"] if c not in m["labels"]]
+        if bad:
+            raise ValueError(f"not a class of {m['name']}: {', '.join(bad)[:120]}")
+        if set(cfg["classes"]) == set(m["labels"]):
+            cfg["classes"] = []                       # every class = no filter
     return cfg
 
 
@@ -492,7 +521,7 @@ def build_engine(job: Job, model: dict, plan: dict):
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
     target = Path(plan["file"])
-    (work / "build_infer.txt").write_text(pgie_text(model, str(target), plan["size"], 0.4))
+    (work / "build_infer.txt").write_text(pgie_text(model, str(target), plan["size"], 0.4))   # all classes: same engine
     argv = ["gst-launch-1.0", "-e", "uridecodebin", f"uri=file://{BUILD_VIDEO}", "!", "m.sink_0", "nvstreammux", "name=m",
             "batch-size=1", "width=1920", "height=1080", "!", "nvinfer", f"config-file-path={work / 'build_infer.txt'}",
             f"batch-size={plan['size']}", "!", "fakesink", "sync=false"]
@@ -555,11 +584,13 @@ def run_plan(cfg: dict):
 
 def write_run_configs(cfg: dict, streams: list, model: dict, plan: dict):
     run = {"streams": [{"name": s["name"], "type": "file" if s["uri"].startswith("file://") else "rtsp", "uri": s["uri"],
-                        "transport": s["transport"]} for s in streams],
-           "labels": model["labels"], "save_every_s": cfg["save_every_s"], "frame_skip": cfg["frame_skip"],
-           "loop_files": cfg["loop_files"], "incoming": config.INCOMING_DIR, "zones_file": str(ZONES)}
+                        "transport": s["transport"], "throw": bool(s.get("throw"))} for s in streams],
+           "labels": model["labels"], "classes": cfg.get("classes") or [], "save_every_s": cfg["save_every_s"],
+           "frame_skip": cfg["frame_skip"], "loop_files": cfg["loop_files"], "incoming": config.INCOMING_DIR,
+           "zones_file": str(ZONES), "sampling_file": str(SAMPLING),
+           "mode": {"night_saturation_max": cfg["night_saturation_max"], "hysteresis_s": cfg["mode_hysteresis_s"]}}
     write_atomic(RUN / "config_run.json", json.dumps(run, indent=1))
-    write_atomic(RUN / "pgie_run.txt", pgie_text(model, plan["file"], len(streams), cfg["threshold"]))
+    write_atomic(RUN / "pgie_run.txt", pgie_text(model, plan["file"], len(streams), cfg["threshold"], cfg.get("classes")))
 
 
 def wait_ready(job: Job, n: int):
@@ -774,7 +805,10 @@ def api_status():
     return {"available": available(), "running": bool(pid), "pid": pid, "intent": intent(), "state": st,
             "exit_reason": exit_reason(), "health": host_health(), "job": JOB.summary() if JOB else None,
             "model": model["name"] if model else None, "engine": plan, "cameras": len(streams),
-            "zones_drawn": sorted(c for c, z in load_zones().items() if z and (z.get("line") or Z.regions(z)))}
+            "zones_drawn": sorted(c for c, z in load_zones().items() if z and (z.get("line") or Z.regions(z))),
+            "throw_cameras": [s["name"] for s in streams if s.get("throw")],
+            "throw_no_band": [s["name"] for s in streams if s.get("throw") and not Z.regions(load_zones().get(s["name"]) or {}, "band")],
+            "classes": cfg.get("classes") or []}
 
 
 @router.get("/api/ds/config")
@@ -815,14 +849,17 @@ def api_zone(cam: str):
 
 
 @router.put("/api/ds/zones/{cam}")
-async def api_zone_save(cam: str, request: Request):
+async def api_zone_save(cam: str, request: Request, team: bool = True):
+    """team = the DeepStream page; the client's editor (Alerts → Regions, team=False) keeps the team's near / band /
+    landing regions as they are"""
     if cam not in {s["name"] for s in load_config()["streams"]}:
         raise HTTPException(404, "No such camera")
+    z = load_zones()
     try:
-        zone = Z.clean(await _body(request))
+        body = await _body(request)
+        zone = Z.clean(body if team else Z.keep_team_regions(body, z.get(cam) or {}))
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
-    z = load_zones()
     z[cam] = zone
     write_atomic(ZONES, json.dumps(z, indent=1))     # a running pipeline reads it again within 10 s
     return {"ok": True, "zone": zone, "applied": "within 10 s" if pid_alive() else "at the next start"}
@@ -835,7 +872,7 @@ async def api_frame(cam: str, refresh: int = 0):
     s = next((x for x in load_config()["streams"] if x["name"] == cam), None)
     if not s:
         raise HTTPException(404, "No such camera")
-    live = SNAPS / f"{cam}.jpg"
+    live = SNAPS / f"{cam}.clean.jpg"                 # the running pipeline's frame WITHOUT its drawings (the editor draws)
     if pid_alive() and live.is_file() and time.time() - live.stat().st_mtime < 30:
         return FileResponse(live, headers={"Cache-Control": "no-store"})
     saved = FRAMES / f"{cam}.jpg"

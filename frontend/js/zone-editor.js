@@ -1,13 +1,22 @@
 /* ────────────────────────────────────────────────────────────────────────────
  * ZONE EDITOR — the perimeter line (+ its outside side) and named regions drawn on a camera's picture.
  * Used by DeepStream → Perimeter zones (Trinetra team) and Alerts → Regions (the client's admins).
- *   ZoneEditor(root, { cameras: [names], zoneUrl: cam => url, frameUrl: (cam, refresh) => url, onSaved })
- * Regions: alert (anything there = breach), watch (the alert rules decide), ignore (never reported).
+ *   ZoneEditor(root, { cameras: [names], zoneUrl: cam => url, frameUrl: (cam, refresh) => url, onSaved, team })
+ * Regions: alert (anything there = breach), watch (the alert rules decide), ignore (never reported) and — drawn by the
+ * Trinetra team only (team: true, the DeepStream page) — near (near the wall: a watch region the throw / loitering logic
+ * also uses), band (throw band: the strip along the wall top watched for thrown objects, every frame) and landing
+ * (landing zone: the ground inside where a thrown / left object is looked for). The client's editor shows those three
+ * but cannot change them (the server keeps them as they are).
  * Points are fractions of the frame; the outside-side rule is the same as backend/pipeline/zones.py.
  * ──────────────────────────────────────────────────────────────────────────── */
 function ZoneEditor(root, opts) {
-  const COL = { line: '#f59e0b', alert: '#ef4444', watch: '#3b82f6', ignore: '#8a8f99', draft: '#14b8a6' };
-  const KIND = { alert: 'Alert region', watch: 'Watch region', ignore: 'Ignore region' };
+  const COL = { line: '#f59e0b', alert: '#ef4444', watch: '#3b82f6', ignore: '#8a8f99', draft: '#14b8a6',
+                near: '#a855f7', band: '#facc15', landing: '#84cc16' };
+  const KIND = { alert: 'Alert region', watch: 'Watch region', ignore: 'Ignore region', near: 'Near-wall region',
+                 band: 'Throw band', landing: 'Landing zone' };
+  const SHORT = { alert: 'alert', watch: 'watch', ignore: 'ignore', near: 'near wall', band: 'throw band', landing: 'landing zone' };
+  const TEAM_KINDS = ['near', 'band', 'landing'], REGION_TOOLS = ['alert', 'watch', 'ignore', ...TEAM_KINDS];
+  const team = !!opts.team;
   const HELP = {
     null: 'Pick a tool, then click on the picture.',
     line: '<b>Perimeter line:</b> click along the wall or fence, point by point. <b>Double-click</b> or <b>Enter</b> to finish. A new line replaces the old one.',
@@ -15,6 +24,9 @@ function ZoneEditor(root, opts) {
     alert: '<b>Alert region</b> (wall top, concertina wire — anything there is a breach): click its corners; click the <b>first point</b> or <b>double-click</b> to close it, then name it.',
     watch: '<b>Watch region</b> (a gate, a parking area — your alert rules decide): click its corners, close it, name it.',
     ignore: '<b>Ignore region</b> (a road, a moving tree — never reported): click its corners, close it, name it.',
+    near: '<b>Near-wall region</b> (the ground just inside the wall): a person here raises a throw alert\'s level and can be a loitering rule\'s region. Click its corners, close it, name it.',
+    band: '<b>Throw band</b> (thrown objects): a strip along the wall top, a little above and below it — the perimeter line must run through it. Every frame is checked here for a small fast object crossing the line from outside to inside. Keep it tight: trees, the road and lights must stay out.',
+    landing: '<b>Landing zone</b> (thrown / left objects): the ground inside where something thrown would land. Checked for new objects about once a second, against pictures of the normal scene. Leave out moving things (trees, a busy path).',
   };
   const S = { cam: null, zone: null, draft: null, tool: null, hist: [], dirty: false, hover: null };
   const empty = () => ({ line: [], outside: null, regions: [] });
@@ -30,6 +42,9 @@ function ZoneEditor(root, opts) {
         <button data-tool="alert">Alert region</button>
         <button data-tool="watch">Watch region</button>
         <button data-tool="ignore">Ignore region</button>
+        ${team ? `<button data-tool="near" title="Trinetra team">Near wall</button>
+        <button data-tool="band" title="Trinetra team: throw detection">Throw band</button>
+        <button data-tool="landing" title="Trinetra team: landing / left-object detection">Landing zone</button>` : ''}
       </div>
       <button class="btn sm" data-ze="undo" title="Remove the last point (Ctrl+Z)">Undo</button>
       <button class="btn sm danger-ghost" data-ze="clear">Clear all</button>
@@ -54,6 +69,9 @@ function ZoneEditor(root, opts) {
           <div><span class="sw" style="background:${COL.watch}"></span>In a <b>watch region</b> → the alert rules that name it</div>
           <div><span class="sw" style="background:#22c55e"></span>Inside, no region → not reported</div>
           <div><span class="sw" style="background:${COL.ignore}"></span>In an <b>ignore region</b> → never reported</div>
+          <div><span class="sw" style="background:${COL.near}"></span>In a <b>near-wall region</b> → as a watch region; also raises a throw alert</div>
+          <div><span class="sw" style="background:${COL.band}"></span><b>Throw band</b> → watched for thrown objects (not for people)</div>
+          <div><span class="sw" style="background:${COL.landing}"></span><b>Landing zone</b> → watched for new / left objects (not for people)</div>
           <div>The point that counts is the bottom centre of each box (where the person stands).</div>
         </div>
       </div>
@@ -100,12 +118,14 @@ function ZoneEditor(root, opts) {
   function meaning(p) {
     const z = S.zone;
     if (regions().some(r => r.kind === 'ignore' && inPoly(p, r.points))) return 'ignored';
-    const names = regions().filter(r => r.kind !== 'ignore' && inPoly(p, r.points));
+    const names = regions().filter(r => !['ignore', 'band', 'landing'].includes(r.kind) && inPoly(p, r.points));
     const o = isOutside(p, z);
     const parts = [];
     if (names.some(r => r.kind === 'alert')) parts.push('BREACH (alert region)');
-    names.filter(r => r.kind === 'watch').forEach(r => parts.push(`in watch region “${r.name}”`));
+    names.filter(r => r.kind === 'watch' || r.kind === 'near').forEach(r => parts.push(`in ${r.kind === 'near' ? 'near-wall' : 'watch'} region “${r.name}”`));
     if (o === true) parts.push('OUTSIDE the line');
+    regions().filter(r => (r.kind === 'band' || r.kind === 'landing') && inPoly(p, r.points))
+      .forEach(r => parts.push(r.kind === 'band' ? `throw band “${r.name}” (thrown objects)` : `landing zone “${r.name}” (new objects)`));
     if (!parts.length) return o === null && !regions().length ? 'draw the perimeter line, its outside side and the regions' : 'inside → not reported';
     return parts.join(' · ');
   }
@@ -134,8 +154,10 @@ function ZoneEditor(root, opts) {
     const label = (text, p, col) => { const [x, y] = P(p); ctx.font = `600 ${12.5 * r}px "Open Sans", sans-serif`;
       const w = ctx.measureText(text).width + 10 * r; ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(x - w / 2, y - 10 * r, w, 20 * r);
       ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y); };
-    const fill = { alert: 'rgba(239,68,68,.28)', watch: 'rgba(59,130,246,.25)', ignore: 'rgba(138,143,153,.35)' };
-    z.regions.forEach(rg => { poly(rg.points, fill[rg.kind], COL[rg.kind]); label(rg.name, centroid(rg.points), '#fff'); });
+    const fill = { alert: 'rgba(239,68,68,.28)', watch: 'rgba(59,130,246,.25)', ignore: 'rgba(138,143,153,.35)',
+                   near: 'rgba(168,85,247,.22)', band: 'rgba(250,204,21,.16)', landing: 'rgba(132,204,22,.14)' };
+    z.regions.forEach(rg => { poly(rg.points, fill[rg.kind], COL[rg.kind], true, rg.kind === 'band' || rg.kind === 'landing' ? [8, 5] : []);
+                              label(rg.name, centroid(rg.points), '#fff'); });
     if (z.line.length >= 2) {
       poly(z.line, null, COL.line, false); dots(z.line, COL.line);
       if (z.outside) {
@@ -169,9 +191,13 @@ function ZoneEditor(root, opts) {
       ${z.line.length ? '<button class="btn sm danger-ghost" data-zdel="line" title="Delete">✕</button>' : ''}</div>`);
     rows.push(`<div class="zone-item"><span><span class="sw" style="background:${COL.line}"></span>Outside side · ${z.outside ? 'marked' : '<i>not marked</i>'}</span>
       ${z.outside ? '<button class="btn sm danger-ghost" data-zdel="outside" title="Delete">✕</button>' : ''}</div>`);
-    z.regions.forEach((rg, i) => rows.push(`<div class="zone-item"><span><span class="sw" style="background:${COL[rg.kind]}"></span>
-      <button class="link-btn" data-zren="${i}" title="Rename">${escapeHtml(rg.name)}</button> · ${KIND[rg.kind].split(' ')[0].toLowerCase()} · ${rg.points.length} corners</span>
-      <button class="btn sm danger-ghost" data-zdel="r:${i}" title="Delete">✕</button></div>`));
+    z.regions.forEach((rg, i) => {
+      const locked = !team && TEAM_KINDS.includes(rg.kind);           // the team's: shown, not changed here
+      rows.push(`<div class="zone-item"><span><span class="sw" style="background:${COL[rg.kind] || '#999'}"></span>
+      ${locked ? `<b>${escapeHtml(rg.name)}</b>` : `<button class="link-btn" data-zren="${i}" title="Rename">${escapeHtml(rg.name)}</button>`}
+      · ${SHORT[rg.kind] || rg.kind} · ${rg.points.length} corners${locked ? ' · <span class="muted">set by Trinetra</span>' : ''}</span>
+      ${locked ? '' : `<button class="btn sm danger-ghost" data-zdel="r:${i}" title="Delete">✕</button>`}</div>`);
+    });
     id('list').innerHTML = rows.join('');
   }
   function remember() { S.hist.push(JSON.stringify(S.zone)); if (S.hist.length > 60) S.hist.shift(); S.dirty = true; msg('not saved', false); }
@@ -194,7 +220,7 @@ function ZoneEditor(root, opts) {
     });
   }
   function nextName(kind) {
-    const base = { alert: 'Alert', watch: 'Gate', ignore: 'Ignore' }[kind];
+    const base = { alert: 'Alert', watch: 'Gate', ignore: 'Ignore', near: 'Near wall', band: 'Band', landing: 'Landing' }[kind];
     for (let i = 1; ; i++) if (!S.zone.regions.some(r => r.name.toLowerCase() === `${base} ${i}`.toLowerCase())) return `${base} ${i}`;
   }
 
@@ -202,7 +228,7 @@ function ZoneEditor(root, opts) {
     const d = S.draft; S.draft = null;
     if (!d) return;
     if (d.tool === 'line' && d.pts.length >= 2) { remember(); S.zone.line = d.pts; }
-    if (['alert', 'watch', 'ignore'].includes(d.tool) && d.pts.length >= 3) {
+    if (REGION_TOOLS.includes(d.tool) && d.pts.length >= 3) {
       changed();
       const name = await askName(`Name this ${KIND[d.tool].toLowerCase()}`, nextName(d.tool));
       if (name) { remember(); S.zone.regions.push({ name, kind: d.tool, points: d.pts }); }
@@ -242,6 +268,7 @@ function ZoneEditor(root, opts) {
   async function save() {
     await finishDraft();
     if (S.zone.line.length >= 2 && !S.zone.outside) { msg('Mark the outside side first (tool “Outside side”).', false); return; }
+    if (S.zone.regions.some(r => r.kind === 'band') && S.zone.line.length < 2) { msg('A throw band needs the perimeter line (the wall top) through it.', false); return; }
     try {
       const out = await apiPut(opts.zoneUrl(S.cam), S.zone);
       S.zone = { ...empty(), ...out.zone }; S.dirty = false; S.hist = [];
@@ -264,7 +291,7 @@ function ZoneEditor(root, opts) {
     } catch (_) { S.zone = empty(); }
     showEmpty('Taking a picture from the camera…');
     const img = id('img');
-    img.onload = () => { id('empty').hidden = true; sizeCanvas(); draw(); };
+    img.onload = () => { id('empty').hidden = true; id('stage').style.minHeight = ''; sizeCanvas(); draw(); };
     img.onerror = async () => {
       let why = 'no picture from this camera';
       try { const r = await fetch(img.src, { credentials: 'same-origin' }); why = (await r.json()).detail || why; } catch (_) { }
@@ -285,7 +312,10 @@ function ZoneEditor(root, opts) {
   id('refresh').addEventListener('click', () => open(S.cam, true));
   id('tools').querySelectorAll('button').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
   id('undo').addEventListener('click', undo);
-  id('clear').addEventListener('click', () => { if (confirm('Clear every zone of this camera? (Save to keep it that way.)')) { remember(); S.zone = empty(); S.draft = null; changed(); } });
+  id('clear').addEventListener('click', () => {
+    if (!confirm(team ? 'Clear every zone of this camera? (Save to keep it that way.)'
+                      : 'Clear the perimeter line and your regions of this camera? (Trinetra\'s regions stay. Save to keep it that way.)')) return;
+    remember(); S.zone = { ...empty(), regions: team ? [] : S.zone.regions.filter(r => TEAM_KINDS.includes(r.kind)) }; S.draft = null; changed(); });
   id('save').addEventListener('click', save);
   id('list').addEventListener('click', async (e) => {
     const ren = e.target.closest('[data-zren]');

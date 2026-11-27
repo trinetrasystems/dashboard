@@ -284,6 +284,8 @@ class Access:
             return ("alert_rules",)
         if path == "/api/speaker" or path.startswith("/api/speaker/"):
             return ("alert_rules",)                        # the Bluetooth speaker (Alerts page → Speaker)
+        if re.fullmatch(r"/api/alerts/\d+/false-alarm", path) and method in ("POST", "DELETE"):
+            return "admin"                                 # the client's admins + the Trinetra team (it teaches the detection)
         if re.fullmatch(r"/api/alerts/\d+/ack", path) and method == "POST":
             return ("manage_alerts",)
         if path.startswith("/api/whitelist"):
@@ -373,6 +375,8 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("PUT", r"/api/alert-rules/(\d+)", "alerts", "Changed an alert rule"),
     ("DELETE", r"/api/alert-rules/(\d+)", "alerts", "Deleted an alert rule"),
     ("POST", r"/api/alerts/ack-all", "alerts", "Acknowledged all alerts"),
+    ("POST", r"/api/alerts/(\d+)/false-alarm", "alerts", "Marked an alert as a false alarm"),
+    ("DELETE", r"/api/alerts/(\d+)/false-alarm", "alerts", "Took back a false alarm"),
     ("PUT", r"/api/regions/([^/]+)/zone", "alerts", "Changed regions"),
     ("PUT", r"/api/speaker", "alerts", "Changed the speaker settings"),
     ("POST", r"/api/speaker/test", "alerts", "Test beep on the speaker"),
@@ -387,6 +391,8 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("POST", r"/api/captures/([^/]+)/send", "recordings", "Sent a recording to the laptop"),
     ("POST", r"/api/captures/([^/]+)/cancel-send", "recordings", "Cancelled sending a recording"),
     ("DELETE", r"/api/captures/([^/]+)", "recordings", "Deleted a recording"),
+    ("POST", r"/api/captures/([^/]+)/marks", "recordings", "Logged a staged-test event"),
+    ("DELETE", r"/api/captures/([^/]+/marks/\d+)", "recordings", "Removed a staged-test entry"),
     ("POST", r"/api/dongle/speedtest", "recordings", "Tested the 4G dongle speed"),
 ]]
 

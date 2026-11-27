@@ -16,7 +16,8 @@
 .rec .details td { vertical-align: top; }
 .rec-cell { min-width: 150px; }
 .rec .details td:first-child { min-width: 200px; max-width: 280px; }
-.rec .details td:first-child .who-sub { overflow-wrap: anywhere; }
+.rec .details td:first-child .who-sub { overflow-wrap: anywhere; white-space: normal; }
+.rec .details td.rec-cell { white-space: normal; }
 .rec-row-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .rec-cell > .btn { margin-top: 8px; }
 .rec-cell .tag { display: inline-flex; align-items: center; gap: 5px; }
@@ -36,3 +37,11 @@ tr.rec-open > td { background: var(--primary-bg); }
 .dg-bars[data-q="excellent"] i.on, .dg-bars[data-q="good"] i.on { background: var(--green); }
 .dg-bars[data-q="fair"] i.on { background: var(--amber); }
 .dg-bars[data-q="weak"] i.on { background: var(--red); }
+
+/* kind switch, staged test log */
+.rec-kind { align-self: flex-start; }
+.mk-row { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 12px; }
+.mk-row label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.mk-btns { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mk-btns .btn { min-height: 44px; padding: 0 18px; }          /* pressed at the wall, on a phone */
+@media (max-width: 720px) { .mk-row { grid-template-columns: 1fr 1fr; } .mk-notes { grid-column: 1 / -1; } }

@@ -48,8 +48,8 @@
           </div>
           <div class="ds-note" id="ds-engine-note"></div>
           <div class="table-wrap">
-            <table class="details"><thead><tr><th>Camera</th><th>Status</th><th>FPS</th><th>Images this run</th></tr></thead>
-              <tbody id="ds-streams"><tr><td colspan="4" class="empty">not running</td></tr></tbody></table>
+            <table class="details"><thead><tr><th>Camera</th><th>Status</th><th>FPS</th><th>Day / night</th><th>Images this run</th></tr></thead>
+              <tbody id="ds-streams"><tr><td colspan="5" class="empty">not running</td></tr></tbody></table>
           </div>
         </div>
         <div class="card-head" style="border-top:1px solid var(--border)"><div class="card-title">Progress</div>
@@ -68,10 +68,18 @@
               <label>One image every (s) <input class="ds-input" name="save_every_s" type="number" min="1" max="300">
                 <small>per camera and class while something is there</small></label>
               <label>Frames skipped <input class="ds-input" name="frame_skip" type="number" min="0" max="10">
-                <small>0 = every frame; 2 = every 3rd (less GPU)</small></label>
+                <small>0 = every frame; 2 = every 2nd, 3 = every 3rd (less GPU); throw cameras: always every frame</small></label>
               <label>Nightly restart at <input class="ds-input" name="nightly_restart" type="time">
                 <small>a short clean restart frees memory (as Workplace Analytics); empty = off</small></label>
               <label class="check"><input type="checkbox" name="loop_files"> Loop video files (testing)</label>
+              <div class="full ds-classes"><span class="rec-label">Classes reported <small class="muted" id="ds-classes-hint"></small></span>
+                <div class="ds-class-list" id="ds-classes"></div>
+                <small>None ticked = every class. The others are dropped inside the detector (no engine rebuild).
+                  For a COCO model: person, backpack, handbag, suitcase.</small></div>
+              <label>Night below colour <input class="ds-input" name="night_saturation_max" type="number" min="1" max="80">
+                <small>mean colour saturation 0–255 (an IR picture ≈ 0); default 12</small></label>
+              <label>Day / night after (s) <input class="ds-input" name="mode_hysteresis_s" type="number" min="5" max="600">
+                <small>the picture must stay so this long; default 30</small></label>
             </div>
             <div class="pop-actions"><span class="form-result" id="ds-settings-msg"></span><span class="spacer"></span>
               <button class="btn primary" type="submit">Save settings</button></div>
@@ -99,8 +107,8 @@
           <button class="btn primary" id="cam-add">+ Add camera</button></div>
       </div>
       <div class="table-wrap">
-        <table class="details"><thead><tr><th>Camera</th><th>Stream address</th><th>Transport</th><th>On</th><th>Zones</th><th></th></tr></thead>
-          <tbody id="cam-body"><tr><td colspan="6" class="empty">loading…</td></tr></tbody></table>
+        <table class="details"><thead><tr><th>Camera</th><th>Stream address</th><th>Transport</th><th>On</th><th>Throw detection</th><th>Zones</th><th></th></tr></thead>
+          <tbody id="cam-body"><tr><td colspan="7" class="empty">loading…</td></tr></tbody></table>
       </div>
       <div class="pager" id="cam-pager" style="padding:12px 18px"></div>
     </div>
@@ -135,6 +143,9 @@
     <label>Stream address <input name="uri" required maxlength="500" placeholder="rtsp://user:password@192.168.1.64:554/Streaming/Channels/101"></label>
     <label>…or a video on the Jetson (testing) <select class="ds-input" id="cam-sample"><option value="">—</option></select></label>
     <label class="check"><input type="checkbox" name="enabled" checked> On (used by the pipeline)</label>
+    <label class="check"><input type="checkbox" name="throw"> Throw detection — every frame is looked at (objects thrown over the wall
+      are in the picture for under a second). Needs 25 fps or more, a fixed shutter of 1/500 s or faster by day, and a
+      throw band drawn on the Perimeter zones tab. Uses more GPU than the other cameras.</label>
     <div class="form-result" id="cam-msg"></div>
     <div class="pop-actions"><button type="button" class="btn" id="cam-test">Test connection</button><span class="spacer"></span>
       <button type="button" class="btn ghost" data-close>Cancel</button>

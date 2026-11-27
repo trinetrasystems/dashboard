@@ -63,7 +63,7 @@
         <h2 class="card-title">Alerts <span class="count-pill" id="al-count">0</span></h2>
         <div class="head-controls">
           <div class="seg small" id="sev-filter"><button data-sev="" class="active">All</button><button data-sev="critical">Critical</button><button data-sev="warning">Warning</button></div>
-          <div class="seg small" id="status-filter"><button data-status="" class="active">All</button><button data-status="open">Open</button><button data-status="acked">Acknowledged</button></div>
+          <div class="seg small" id="status-filter"><button data-status="" class="active">All</button><button data-status="open">Open</button><button data-status="acked">Acknowledged</button><button data-status="false_alarm">False alarms <span class="count-pill sm" id="fa-count">0</span></button></div>
           <label class="select-pill compact"><span data-icon="video"></span><select id="cam-filter" aria-label="Camera"><option value="">All cameras</option></select></label>
           <button class="btn" id="ack-all" data-need="manage_alerts"><span data-icon="check"></span>Acknowledge all open</button>
         </div>
@@ -192,6 +192,22 @@
     <div class="pop-actions"><span class="spacer"></span>
       <button type="button" class="btn ghost" id="rule-cancel">Cancel</button>
       <button type="submit" class="btn primary" id="rule-save">Save rule</button></div>
+  </form>
+</div>
+
+<!-- ─── false alarm ─── -->
+<div class="modal-backdrop" id="fa-modal" hidden>
+  <form class="modal form" id="fa-form" autocomplete="off">
+    <div class="card-head"><h2 class="card-title">Mark as a false alarm</h2>
+      <button type="button" class="icon-btn" id="fa-close" aria-label="Close" data-icon="x"></button></div>
+    <div class="snap-sub" id="fa-sub"></div>
+    <div class="rule-preview" id="fa-learn"></div>
+    <label>Why (optional) <input name="note" maxlength="200" placeholder="e.g. a bird · a shadow · our own staff"></label>
+    <div class="pop-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" id="fa-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="fa-save">Mark as false alarm</button>
+    </div>
   </form>
 </div>
 

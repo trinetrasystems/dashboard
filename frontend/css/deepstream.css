@@ -50,7 +50,7 @@
 .zone-help b { color: var(--text); }
 .zone-pointer { color: var(--primary); font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .zone-wrap { display: grid; grid-template-columns: 1fr 280px; user-select: none; }
-.zone-stage { position: relative; background: #000; line-height: 0; user-select: none; }
+.zone-stage { position: relative; background: #000; line-height: 0; user-select: none; align-self: start; }   /* never stretched to the side list: the canvas must cover exactly the picture */
 .zone-stage img { width: 100%; height: auto; display: block; }
 .zone-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .zone-stage .zone-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #9aa;
@@ -82,3 +82,13 @@
 /* the zone editor card (DeepStream → Perimeter zones, Alerts → Regions) */
 .ze-card { padding: 0; overflow: hidden; }
 .zone-bar .ds-input { height: 34px; }
+
+/* Settings → Classes reported (the model's labels as tick boxes, the Recordings camera look) */
+.ds-classes { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.ds-classes .rec-label { display: flex; align-items: center; gap: 8px; }
+.ds-class-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; max-height: 190px; overflow: auto; }
+.ds-form .ds-class-list label.rec-cam { flex-direction: row; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--border-bright);
+  border-radius: 8px; background: var(--surface); font-size: 13px; font-weight: 500; color: var(--text); cursor: pointer; min-width: 0; }
+.ds-class-list .rec-cam-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-class-list .rec-cam:has(input:checked) { border-color: var(--primary); background: var(--primary-bg); }
+.ds-class-list .rec-cam input { accent-color: var(--primary); width: 15px; height: 15px; flex: none; }

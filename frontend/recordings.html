@@ -20,7 +20,7 @@
       <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
       <div class="page-title-wrap">
         <h1 class="page-title">Recordings</h1>
-        <div class="page-sub">Record cameras on this Jetson, cut the video into frames, compress + zip them and send them to the Trinetra laptop for labelling</div>
+        <div class="page-sub">Record cameras on this Jetson (video for labelling and staged tests, or normal-scene frames for the landing-zone model), compress + zip and send to the Trinetra laptop</div>
       </div>
       <div class="head-controls">
         <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" data-icon="moon"></button>
@@ -32,6 +32,11 @@
       <div class="card">
         <div class="card-head"><div class="card-title">New recording</div><span class="card-hint" id="rec-disk"></span></div>
         <form class="ds-body" id="rec-form" autocomplete="off">
+          <div class="seg rec-kind" id="rec-kind" role="tablist">
+            <button type="button" data-kind="video" class="active">Video</button>
+            <button type="button" data-kind="normal">Normal frames</button>
+          </div>
+          <div class="ds-note" id="rec-kind-note"></div>
           <div>
             <div class="rec-label">Cameras <button type="button" class="rec-link" id="rec-all">all</button></div>
             <div class="rec-cams" id="rec-cams"></div>
@@ -45,7 +50,9 @@
                 <option value="720">12 hours</option><option value="1440">24 hours</option><option value="custom">Other…</option>
               </select></label>
             <label id="rec-minutes-wrap" hidden>Minutes <input class="ds-input" name="minutes" type="number" min="1" max="1440" value="45">
-              <small>1–1440</small></label>
+              <small id="rec-minutes-hint">1–1440</small></label>
+            <label id="rec-every-wrap" hidden>One frame every <select class="ds-input" name="every_s"></select>
+              <small>per camera (the spec: every 2–5 min)</small></label>
             <label>Start
               <select class="ds-input" name="when"><option value="now">Now</option><option value="at">At a time…</option></select></label>
             <label id="rec-at-wrap" hidden>At <input class="ds-input" name="start_at" type="datetime-local"></label>
@@ -100,6 +107,30 @@
       </div>
     </div>
 
+    <!-- ═══ staged test log: while a video recording runs (spec §8.5 ground truth) ═══ -->
+    <div class="card rec-list" id="mk-card" hidden>
+      <div class="card-head"><div class="card-title">Staged test log</div><span class="card-hint" id="mk-hint"></span></div>
+      <div class="ds-body">
+        <div class="ds-note">Press the button the moment it happens — the object leaves the hand, is put down, or is picked up.
+          Each press goes into <code>ground_truth.csv</code> of this recording (a throw: from 2 s before to 3 s after the press),
+          with day / night as the pipeline sees it. The package then holds the log, the zones and — tick “include the video” — the video for replay.</div>
+        <div class="mk-row">
+          <label>Camera <select class="ds-input" id="mk-cam"></select></label>
+          <label>Object <select class="ds-input" id="mk-obj"></select></label>
+          <label class="mk-notes">Notes <input class="ds-input" id="mk-notes" maxlength="200" placeholder="e.g. high arc, left of the gate, fast"></label>
+        </div>
+        <div class="mk-btns">
+          <button type="button" class="btn primary" data-mark="throw">Thrown now</button>
+          <button type="button" class="btn" data-mark="placed">Placed now</button>
+          <button type="button" class="btn" data-mark="removed">Removed now</button>
+          <button type="button" class="btn ghost" data-mark="note">Note</button>
+          <span class="form-result" id="mk-msg"></span>
+        </div>
+        <div class="table-wrap"><table class="details"><thead><tr><th>#</th><th>Time</th><th>Event</th><th>Object</th><th>Camera</th><th>Mode</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="mk-body"></tbody></table></div>
+      </div>
+    </div>
+
     <!-- ═══ the recordings ═══ -->
     <div class="card rec-list">
       <div class="card-head"><div class="card-title">Recordings</div><span class="card-hint" id="rec-count"></span></div>
@@ -120,6 +151,12 @@
           <thead><tr><th>Camera</th><th>Status</th><th>Video</th><th>Reconnects</th><th>Last problem</th><th>Frame</th></tr></thead>
           <tbody id="det-cams"></tbody>
         </table>
+      </div>
+      <div id="det-marks-wrap" hidden>
+        <div class="card-head" style="border-top:1px solid var(--border)"><div class="card-title">Staged test log</div>
+          <span class="card-hint" id="det-marks-hint"></span></div>
+        <div class="table-wrap"><table class="details"><thead><tr><th>#</th><th>Time</th><th>Event</th><th>Object</th><th>Camera</th><th>Mode</th><th>Notes</th></tr></thead>
+          <tbody id="det-marks"></tbody></table></div>
       </div>
       <pre class="ds-log" id="det-log"></pre>
     </div>
@@ -150,6 +187,7 @@
       <label>JPEG quality <input name="quality" type="number" min="50" max="95" value="85"></label>
     </div>
     <label>Zip parts of (MB) <input name="part_mb" type="number" min="10" max="200" value="50"></label>
+    <label class="check" id="pack-video-wrap"><input type="checkbox" name="include_video"> Include the video (replay of a staged test on the laptop)</label>
     <div class="ds-note" id="pack-est"></div>
     <div class="form-result" id="pack-msg"></div>
     <div class="pop-actions"><button type="button" class="btn ghost" data-close>Cancel</button>

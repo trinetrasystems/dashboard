@@ -11,7 +11,13 @@ Per frame, every detection's foot point is placed in the camera's zones (zones.p
 (breach), outside the perimeter line → outside-person / outside-object, inside → nothing. One whole frame per camera
 and class at most every save_every_s seconds is written to incoming/ as <camera>_<class>_<YYYYMMDD-HHMMSS>.jpg (960x540,
 boxes + zones drawn) — exactly what the dashboard ingests. Live view: every 2 s per camera a 960x540 frame (zones +
-boxes) in /dev/shm/perimeter_snap/<camera>.jpg.
+boxes) in /dev/shm/perimeter_snap/<camera>.jpg, and the same frame without drawings in <camera>.clean.jpg (zone drawing).
+Throw / landing detection groundwork (PERIMETER_THROW_DETECTION_SPEC): a camera with "throw" on is decoded at every frame
+(the frame skip does not apply: a thrown object is in the picture for only 5–15 frames); every camera has a day / night
+mode (scene.py: colour saturation with hysteresis), in the state file and in every frame description; while a "normal
+frames" recording runs (ds/run/sampling.json, from the Recordings page) one clean whole 1920x1080 frame per camera every
+N s goes to that recording — never one with something detected in a landing zone (the PatchCore banks must hold only
+normal scenes). Band / landing / near regions are drawn on the live view.
 Robustness (as the Workplace Analytics pipeline, site-proven): a camera without frames for 10 s is re-created on its own
 (an unreachable RTSP camera is port-checked first, every 60 s), source errors never stop the pipeline, the zones file is
 re-read when it changes, RAM guard 700 MB / temperature 85 °C / disk 5 GB, stall watchdog, clean stop on SIGTERM.
@@ -28,6 +34,7 @@ import pyds
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import zones as Z
 from savepolicy import SavePolicy
+from scene import ModeDetector, Sampler, busy, saturation
 
 ROOT = os.environ.get("PERIMETER_ROOT", "/root/PERIMETER")
 DATA = os.environ.get("TRINETRA_DATA", f"{ROOT}/data")
@@ -40,6 +47,8 @@ MIN_FREE_GB, MAX_TEMP_C, RAM_FLOOR_KB = 5.0, 85.0, 716_800
 RECONNECT_S = 10
 RETRY_S = int(os.environ.get("PERIMETER_RETRY_S", "60"))
 TRACKER = "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml"
+ZONE_COL = {"alert": (40, 40, 220), "watch": (220, 140, 40), "near": (247, 85, 168), "ignore": (90, 90, 90),
+            "band": (21, 204, 250), "landing": (22, 204, 132)}                  # BGR, as the zone editor
 COLORS = {Z.BREACH: (64, 64, 255), Z.OUTSIDE_PERSON: (0, 170, 255), Z.OUTSIDE_OBJECT: (0, 200, 255),
           Z.ZONE_PERSON: (230, 150, 40), Z.ZONE_OBJECT: (230, 170, 80)}   # BGR
 _LOG_LOCK = threading.Lock()
@@ -59,13 +68,14 @@ def draw_zones(img, zone):
     h, w = img.shape[:2]
     P = lambda p: (int(p[0] * w), int(p[1] * h))
     over = img.copy()
-    col = {"alert": (40, 40, 220), "watch": (220, 140, 40), "ignore": (90, 90, 90)}
+    col = ZONE_COL
     for r in Z.regions(zone):
-        cv2.fillPoly(over, [np.array([P(p) for p in r["points"]], np.int32)], col[r["kind"]])
+        if r["kind"] not in Z.DETECTION_KINDS:          # band / landing: outlined only (the picture stays readable)
+            cv2.fillPoly(over, [np.array([P(p) for p in r["points"]], np.int32)], col.get(r["kind"], (160, 160, 160)))
     cv2.addWeighted(over, 0.28, img, 0.72, 0, img)
     for r in Z.regions(zone):
         pts = np.array([P(p) for p in r["points"]], np.int32)
-        cv2.polylines(img, [pts], True, col[r["kind"]], 2, cv2.LINE_AA)
+        cv2.polylines(img, [pts], True, col.get(r["kind"], (160, 160, 160)), 2, cv2.LINE_AA)
         x, y = pts[:, 0].min(), pts[:, 1].min()
         cv2.putText(img, r["name"], (int(x) + 4, int(y) + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
     line = zone.get("line") or []
@@ -89,6 +99,11 @@ class App:
         self.zones_file = self.cfg.get("zones_file") or f"{DATA}/ds/zones.json"
         self.zones, self.zones_mtime = {}, 0.0
         self.reload_zones()
+        mc = self.cfg.get("mode") or {}
+        self.modes = {c: ModeDetector(mc.get("night_saturation_max", 12), mc.get("hysteresis_s", 30)) for c in self.cams}
+        self.sampler = Sampler(self.cfg.get("sampling_file") or f"{DATA}/ds/run/sampling.json",
+                               owner=int(os.environ.get("CAPTURES_UID", "1000")), log=log)
+        self.sampler.reload()
         n = len(self.srcs)
         self.loop_files = bool(self.cfg.get("loop_files", True))
         self.drop = int(self.cfg.get("frame_skip", 2))
@@ -163,7 +178,12 @@ class App:
     def make_source(self, i):
         s = self.srcs[i]; self.gen[i] += 1
         b = Gst.ElementFactory.make("nvurisrcbin", f"src{i}_g{self.gen[i]}")
-        b.set_property("uri", s["uri"]); setp(b, "drop-frame-interval", self.drop)
+        b.set_property("uri", s["uri"]); setp(b, "drop-frame-interval", 0 if s.get("throw") else self.drop)
+        if self.gen[i] == 1:                               # what the decoder really does (logged once per camera)
+            try: d = b.get_property("drop-frame-interval")
+            except TypeError: d = None
+            log(f"camera {s['name']}: decoder gives " + ("every frame" if not d else f"every {d}{'nd' if d == 2 else 'rd' if d == 3 else 'th'} frame")
+                + (" (throw detection)" if s.get("throw") else ""))
         setp(b, "cudadec-memtype", 0); setp(b, "disable-audio", True)
         if s["type"] == "file":
             setp(b, "file-loop", self.loop_files)
@@ -217,6 +237,7 @@ class App:
                     and (self.reach[i] is None or now - self.reach[i][0] >= RETRY_S - 1):
                 self.check_reachable(i)
         self.reload_zones()
+        self.sampler.reload()
         return True
 
     def check_reachable(self, i):
@@ -304,11 +325,29 @@ class App:
         if (due or hold) and self.disk_low:                    # saving paused (disk low): no frame copies for nothing
             self.policy.saved(cam, objs, due, now); due, hold = [], False
         snap = now - self.last_snap.get(cam, -1e9) >= 2.0
+        samples = [] if self.disk_low else self.sampler.due(cam, now, wall)
+        if samples and busy([b for b, _c, _l, _f in boxes], zone, MUX_W, MUX_H):
+            for j in samples: self.sampler.busy_now(j, cam, now)   # not a normal scene: tried again in 5 s
+            samples = []
+        if not (due or hold or snap or samples): return
+        full = self.frame_copy(buf, fm)
+        if full is None: return
+        if snap or samples:                                    # day / night from a small copy (every 2 s)
+            md = self.modes[cam]
+            sw = md.update(saturation(cv2.resize(full, (160, 90), interpolation=cv2.INTER_AREA)), now)
+            if sw: log(f"MODE {cam}: {sw} (colour saturation {md.sat})")
+        for j in samples:
+            try:
+                name = self.sampler.save(j, cam, full, self.modes[cam].mode, self.modes[cam].sat, wall, now)
+                log("NORMAL FRAME", j["id"], name)
+            except OSError as e:
+                log("normal frame not written:", repr(e)); self.sampler.busy_now(j, cam, now)
         if not (due or hold or snap): return
-        img = self.frame_image(buf, fm, zone, boxes)
-        if img is None: return
+        img = self.frame_image(full, zone, boxes)
         if snap:
             self.last_snap[cam] = now
+            clean = cv2.resize(full, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)       # for drawing zones: no drawings on it
+            tmp = f"{SNAPS}/{cam}.clean.tmp.jpg"; cv2.imwrite(tmp, clean, [cv2.IMWRITE_JPEG_QUALITY, 85]); os.replace(tmp, f"{SNAPS}/{cam}.clean.jpg")
             tmp = f"{SNAPS}/{cam}.tmp.jpg"; cv2.imwrite(tmp, img, [cv2.IMWRITE_JPEG_QUALITY, 80]); os.replace(tmp, f"{SNAPS}/{cam}.jpg")
         if due or hold:
             ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])   # encoded in memory: the temp name has no .jpg
@@ -326,7 +365,7 @@ class App:
         ts = f"{wall.strftime('%Y%m%d-%H%M%S')}-{wall.microsecond // 1000:03d}"
         self.seq += 1
         meta = json.dumps({"v": 1, "frame": f"{cam}|{wall.isoformat(timespec='milliseconds')}|{self.seq}", "camera": cam,
-                           "ts": wall.isoformat(timespec="milliseconds"),
+                           "ts": wall.isoformat(timespec="milliseconds"), "mode": self.modes[cam].mode,
                            "objects": [{k: o[k] for k in ("label", "kind", "regions", "alert", "outside", "track", "conf", "box")}
                                        for o in objs]})
         for c in classes:
@@ -352,15 +391,20 @@ class App:
                 except OSError as e:
                     log("held frame not written:", repr(e))
 
-    def frame_image(self, buf, fm, zone, boxes):
-        """this frame at 960x540 BGR with the zones and the boxes drawn"""
+    @staticmethod
+    def frame_copy(buf, fm):
+        """this frame, whole (streammux size 1920x1080), BGR — a copy: the buffer is handed back at once"""
         try:
             rgba = pyds.get_nvds_buf_surface(hash(buf), fm.batch_id)
             try: full = np.array(rgba, copy=True, order="C")
             finally: pyds.unmap_nvds_buf_surface(hash(buf), fm.batch_id)
         except Exception as e:
             log("frame copy failed:", repr(e)); return None
-        img = cv2.resize(cv2.cvtColor(full, cv2.COLOR_RGBA2BGR), (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
+        return cv2.cvtColor(full, cv2.COLOR_RGBA2BGR)
+
+    def frame_image(self, full, zone, boxes):
+        """the frame at 960x540 with the zones and the boxes drawn"""
+        img = cv2.resize(full, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
         draw_zones(img, zone)
         sx, sy = OUT_W / MUX_W, OUT_H / MUX_H
         for (l, t, w, h), cls, lab, conf in boxes:
@@ -412,7 +456,8 @@ class App:
             elif nsf == sf: self._wd = (pf, nsf, time.monotonic())
             self.fps = {c: round(self.fps_cnt[c] / 5.0, 2) for c in self.cams}; self.fps_cnt.clear()
             mono = time.monotonic()
-            streams = [{"name": s["name"], "type": s["type"], "online": self.online[i],
+            streams = [{"name": s["name"], "type": s["type"], "online": self.online[i], "throw": bool(s.get("throw")),
+                        "mode": self.modes[s["name"]].mode, "saturation": self.modes[s["name"]].sat,
                         "reachable": None if self.reach[i] is None or self.online[i] else self.reach[i][1],
                         "last_frame_s": None if not self.last_buf[i] else round(mono - self.last_buf[i], 1),
                         "fps": self.fps.get(s["name"], 0), "reconnects": self.reconnects[i],
@@ -435,7 +480,7 @@ class App:
         self.safety()
         GLib.timeout_add_seconds(5, self.write_state)
         GLib.timeout_add_seconds(RECONNECT_S, self.watch_sources)
-        log(f"starting {len(self.srcs)} camera(s): " + ", ".join(f"{s['name']} ({s['type']})" for s in self.srcs)
+        log(f"starting {len(self.srcs)} camera(s): " + ", ".join(f"{s['name']} ({s['type']}{', throw detection: every frame' if s.get('throw') else ''})" for s in self.srcs)
             + f"; images every {self.save_every:g} s per camera and class → {self.incoming}")
         self.pipe.set_state(Gst.State.PLAYING)
         try: self.loop.run()

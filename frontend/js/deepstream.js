@@ -47,13 +47,15 @@ async function loadStatus() {
   else if (e) note.textContent = `Start builds the TensorRT engine of ${st.model} for ${e.size} camera(s) first — one time, about ${e.minutes} min.`;
   const missing = (S.cfg?.streams || []).filter(s => s.enabled && !st.zones_drawn.includes(s.name)).map(s => s.name);
   if (st.cameras && missing.length) { note.className = 'ds-note warn'; note.textContent += ` No zones drawn for ${missing.join(', ')}: nothing is reported from ${missing.length > 1 ? 'them' : 'it'} (Perimeter zones tab).`; }
+  if ((st.throw_no_band || []).length) { note.className = 'ds-note warn'; note.textContent += ` Throw detection is on for ${st.throw_no_band.join(', ')} but no throw band is drawn (Perimeter zones tab → Throw band).`; }
   const rows = st.state.streams || [];
   $('ds-streams').innerHTML = rows.length ? rows.map(s => `<tr>
       <td class="who-name">${escapeHtml(s.name)}<div class="who-sub">${escapeHtml(s.type)}${s.reconnects ? ` · ${s.reconnects} reconnects` : ''}</div></td>
       <td>${s.online ? '<span class="tag on_desk">Online</span>' : `<span class="tag bad">Offline</span>${s.reachable === false ? ' <span class="muted">not reachable</span>' : ''}`}</td>
-      <td class="mono">${s.fps ?? 0}</td>
+      <td class="mono">${s.fps ?? 0}${s.throw ? `<div class="who-sub">throw: every frame${s.online && s.fps && s.fps < 20 ? ' · <span style="color:var(--red)">low fps</span>' : ''}</div>` : ''}</td>
+      <td>${s.mode ? `<span class="tag ${s.mode === 'night' ? 'dept' : 'warn'}">${s.mode === 'night' ? 'Night' : 'Day'}</span><div class="who-sub">colour ${s.saturation ?? '?'}</div>` : '<span class="muted">—</span>'}</td>
       <td>${Object.entries(s.images || {}).map(([c, n]) => `<span class="tag">${escapeHtml(c)} ${n}</span>`).join('') || '<span class="muted">none</span>'}</td></tr>`).join('')
-    : `<tr><td colspan="4" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
+    : `<tr><td colspan="5" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
   if (job) { $('ds-job-title').textContent = `${job.action} · ${job.status}${job.error ? ' — ' + job.error : ''}`;
              const pre = $('ds-job'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
              pre.textContent = job.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; }
@@ -89,7 +91,16 @@ function fillSettings() {
   $('ds-model-help').textContent = m ? `classes: ${m.labels.join(', ')}${m.kind === 'built-in' ? ' — stand-in until the perimeter model is ready' : ''}` : '';
   f.threshold.value = c.threshold; f.save_every_s.value = c.save_every_s; f.frame_skip.value = c.frame_skip; f.loop_files.checked = c.loop_files;
   f.nightly_restart.value = c.nightly_restart || '';
+  f.night_saturation_max.value = c.night_saturation_max ?? 12; f.mode_hysteresis_s.value = c.mode_hysteresis_s ?? 30;
+  renderClasses(m, c.classes || []);
 }
+function renderClasses(m, keep) {
+  const labels = m ? m.labels : [];
+  $('ds-classes').innerHTML = labels.map(l => `<label class="rec-cam"><input type="checkbox" value="${escapeHtml(l)}"${keep.includes(l) ? ' checked' : ''}>
+    <span class="rec-cam-text"><span>${escapeHtml(l)}</span></span></label>`).join('') || '<span class="muted">no model</span>';
+  $('ds-classes-hint').textContent = labels.length ? (keep.length ? `${keep.length} of ${labels.length}` : `all ${labels.length}`) : '';
+}
+const keptClasses = () => [...$('ds-classes').querySelectorAll('input:checked')].map(i => i.value);
 
 async function saveConfig(patch, msgId) {
   try {
@@ -112,10 +123,11 @@ function renderCameras() {
       <td class="url-cell" title="${escapeHtml(maskUri(s.uri))}">${escapeHtml(maskUri(s.uri))}</td>
       <td class="mono">${s.uri.startsWith('file://') ? 'file' : s.transport.toUpperCase()}</td>
       <td>${s.enabled ? '<span class="tag on_desk">On</span>' : '<span class="tag">Off</span>'}</td>
+      <td>${s.throw ? `<span class="tag warn">Every frame</span>${(S.status?.throw_no_band || []).includes(s.name) ? '<div class="who-sub" style="color:var(--red)">no throw band drawn</div>' : ''}` : '<span class="muted">off</span>'}</td>
       <td>${drawn.includes(s.name) ? '<span class="tag on_desk">Drawn</span>' : '<span class="tag bad">Not drawn</span>'}</td>
       <td class="row-actions"><button class="btn sm" data-draw="${i}">Draw zones</button>
         <button class="btn sm" data-edit="${i}">Edit</button><button class="btn sm danger-ghost" data-del="${i}">Remove</button></td></tr>`).join('')
-    : '<tr><td colspan="6" class="empty">No cameras yet — “Add camera”.</td></tr>';
+    : '<tr><td colspan="7" class="empty">No cameras yet — “Add camera”.</td></tr>';
 }
 
 function openCam(i) {
@@ -124,6 +136,7 @@ function openCam(i) {
   $('cam-form').reset(); $('cam-msg').textContent = '';
   $('cam-title').textContent = s ? `Edit ${s.name}` : 'Add camera';
   f.name.value = s?.name || ''; f.uri.value = s?.uri || ''; f.transport.value = s?.transport || 'tcp'; f.enabled.checked = s ? s.enabled : true;
+  f.throw.checked = !!s?.throw;
   $('cam-sample').innerHTML = '<option value="">—</option>' + (S.cfg.sample_videos || []).map(v => `<option value="file://${escapeHtml(v)}">${escapeHtml(v.split('/').pop())}</option>`).join('');
   $('cam-modal').hidden = false; f.name.focus();
 }
@@ -135,7 +148,9 @@ async function testCam() {
   $('cam-test').disabled = true;
   try {
     const r = await apiPost('/api/ds/probe', { uri: f.uri.value.trim(), transport: f.transport.value });
-    if (r.ok) msg('cam-msg', `Connected: ${r.width}×${r.height} ${r.codec}${r.fps ? ` · ${r.fps} fps` : ''}`, true);
+    if (r.ok && f.throw.checked && r.fps && r.fps < 25)
+      msg('cam-msg', `Connected: ${r.width}×${r.height} ${r.codec} · ${r.fps} fps — throw detection needs 25 fps or more: raise the camera's frame rate (its web page → Video)`, false);
+    else if (r.ok) msg('cam-msg', `Connected: ${r.width}×${r.height} ${r.codec}${r.fps ? ` · ${r.fps} fps` : ''}`, true);
     else msg('cam-msg', `No video: ${r.error}`, false);
   } catch (e) { msg('cam-msg', e.message, false); }
   finally { $('cam-test').disabled = false; }
@@ -144,7 +159,7 @@ async function testCam() {
 async function saveCam(ev) {
   ev.preventDefault();
   const f = $('cam-form').elements;
-  const cam = { name: f.name.value.trim(), uri: f.uri.value.trim(), transport: f.transport.value, enabled: f.enabled.checked };
+  const cam = { name: f.name.value.trim(), uri: f.uri.value.trim(), transport: f.transport.value, enabled: f.enabled.checked, throw: f.throw.checked };
   const streams = S.cfg.streams.slice();
   if (S.editing == null) streams.push(cam); else streams[S.editing] = cam;
   try {
@@ -200,11 +215,15 @@ onReady(async () => {
   document.querySelectorAll('#ds-log-kind button').forEach(b => b.addEventListener('click', () => {
     S.logKind = b.dataset.kind; document.querySelectorAll('#ds-log-kind button').forEach(x => x.classList.toggle('active', x === b)); loadLog(); }));
   $('ds-model').addEventListener('change', () => { const m = S.cfg.models.find(x => x.name === $('ds-model').value);
-    $('ds-model-help').textContent = m ? `classes: ${m.labels.join(', ')}` : ''; });
+    $('ds-model-help').textContent = m ? `classes: ${m.labels.join(', ')}` : ''; renderClasses(m, []); });
+  $('ds-classes').addEventListener('change', () => { const m = S.cfg.models.find(x => x.name === $('ds-model').value);
+    const k = keptClasses(); $('ds-classes-hint').textContent = m ? (k.length ? `${k.length} of ${m.labels.length}` : `all ${m.labels.length}`) : ''; });
   $('ds-settings').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target.elements;
     try { await saveConfig({ model: f.model.value, threshold: Number(f.threshold.value), save_every_s: Number(f.save_every_s.value),
-                             frame_skip: Number(f.frame_skip.value), loop_files: f.loop_files.checked, nightly_restart: f.nightly_restart.value }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
+                             frame_skip: Number(f.frame_skip.value), loop_files: f.loop_files.checked, nightly_restart: f.nightly_restart.value,
+                             classes: keptClasses(), night_saturation_max: Number(f.night_saturation_max.value),
+                             mode_hysteresis_s: Number(f.mode_hysteresis_s.value) }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
   });
   // cameras
   $('cam-add').addEventListener('click', () => openCam(null));
@@ -220,6 +239,7 @@ onReady(async () => {
   $('cam-modal').querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeCam));
   // zones: the shared editor (team: the DeepStream zone API)
   ZE = ZoneEditor(document.getElementById('zone-editor'), {
+    team: true,                                         // the Trinetra team: near-wall, throw band, landing zone too
     zoneUrl: (cam) => `/api/ds/zones/${encodeURIComponent(cam)}`,
     frameUrl: (cam, refresh) => `/api/ds/frame/${encodeURIComponent(cam)}?refresh=${refresh ? 1 : 0}`,
     onSaved: () => loadStatus(),
