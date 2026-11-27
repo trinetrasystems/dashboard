@@ -4,13 +4,15 @@
 
 const API_BASE = '';            // empty = same origin (FastAPI serves the frontend)
 
-/* Signed out or session expired → back to the sign-in page. */
+/* Signed out or session expired → back to the sign-in page. The page is leaving, so the call never settles: no
+   "refresh failed" error from a poll that fired in the instant between sign-out and the sign-in page. */
 async function apiCheck(path, r) {
   if (r.status === 401) {
     const page = location.pathname.replace(/^\//, '');
     window.location.replace(page && page !== 'index.html' && page !== 'login.html'
       ? `login.html?next=${encodeURIComponent(page + location.search)}` : 'login.html');
-    throw new Error('Signed out');
+    LEAVING = true;
+    return NEVER();
   }
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -18,11 +20,18 @@ async function apiCheck(path, r) {
   }
   return r.json();
 }
+/* Signing out: no new request leaves the page any more (a poll sent after the sign-out would only get 401). */
+let LEAVING = false;
+function leavingPage() { LEAVING = true; }
+const NEVER = () => new Promise(() => {});
+
 async function apiGet(path) {
+  if (LEAVING) return NEVER();
   const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' });
   return apiCheck(path, r);
 }
 async function apiPost(path, body) {
+  if (LEAVING) return NEVER();
   const r = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -32,6 +41,7 @@ async function apiPost(path, body) {
   return apiCheck(path, r);
 }
 async function apiPut(path, body) {
+  if (LEAVING) return NEVER();
   const r = await fetch(`${API_BASE}${path}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -41,6 +51,7 @@ async function apiPut(path, body) {
   return apiCheck(path, r);
 }
 async function apiDelete(path) {
+  if (LEAVING) return NEVER();
   const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE', credentials: 'same-origin' });
   return apiCheck(path, r);
 }

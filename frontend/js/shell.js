@@ -216,6 +216,7 @@ function currentPage() { return location.pathname.split('/').pop() || 'index.htm
 function firstAllowedPage() { return (ME.first_page || '').replace(/^\//, '') || NAV.flatMap(g => g.items).find(it => can(it.need))?.href; }
 
 async function signOut() {
+  if (typeof leavingPage === 'function') leavingPage();      // api.js: the page's polls stop before the session ends
   try { await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: '{}' }); } catch (_) { }
   location.replace('login.html');
 }
@@ -527,7 +528,7 @@ function beep(critical) {
 }, { once: true }));
 
 async function refreshAlertStrip() {
-  if (!can('live')) return;
+  if (!can('live') || (typeof LEAVING !== 'undefined' && LEAVING)) return;     // signing out: no more polls
   let d;
   try { d = await fetch('/api/alerts/live', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null); } catch (_) { return; }
   if (!d) return;
