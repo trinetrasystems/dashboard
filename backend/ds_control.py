@@ -590,7 +590,8 @@ def write_run_configs(cfg: dict, streams: list, model: dict, plan: dict):
                         "transport": s["transport"], "throw": bool(s.get("throw"))} for s in streams],
            "labels": model["labels"], "classes": cfg.get("classes") or [], "save_every_s": cfg["save_every_s"],
            "frame_skip": cfg["frame_skip"], "loop_files": cfg["loop_files"], "incoming": config.INCOMING_DIR,
-           "zones_file": str(ZONES), "sampling_file": str(SAMPLING),
+           "zones_file": str(ZONES), "sampling_file": str(SAMPLING), "throws_dir": str(DS / "throws"),
+           "keep_days": config.IMAGE_RETENTION_DAYS,                     # 0 or less: kept forever (as the images)
            "mode": {"night_saturation_max": cfg["night_saturation_max"], "hysteresis_s": cfg["mode_hysteresis_s"]}}
     write_atomic(RUN / "config_run.json", json.dumps(run, indent=1))
     write_atomic(RUN / "pgie_run.txt", pgie_text(model, plan["file"], len(streams), cfg["threshold"], cfg.get("classes"),

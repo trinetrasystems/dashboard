@@ -18,6 +18,12 @@ mode (scene.py: colour saturation with hysteresis), in the state file and in eve
 frames" recording runs (ds/run/sampling.json, from the Recordings page) one clean whole 1920x1080 frame per camera every
 N s goes to that recording — never one with something detected in a landing zone (the PatchCore banks must hold only
 normal scenes). Band / landing / near regions are drawn on the live view.
+Throw over the wall (throw.py, spec §7.4): for a throw camera with a throw band + the perimeter line, every frame's band
+(only that strip, grey) goes to the camera's own worker thread through a short queue (the oldest dropped and counted
+when the worker is behind: the pipeline never waits). A throw → ds/throws/events.jsonl + a review picture
+ds/throws/<YYYYmmdd>/<camera>_<time>.jpg + a THROW log line; no client alert yet (the alert logic comes later). Days older
+than the image retention are deleted. Person crossed the wall (zones.LineCrossing): a tracked person outside the line
+for 3 frames, then inside for 3 → that frame's person is a breach ("crossed", region "Perimeter line").
 Robustness (as the Workplace Analytics pipeline, site-proven): a camera without frames for 10 s is re-created on its own
 (an unreachable RTSP camera is port-checked first, every 60 s), source errors never stop the pipeline, the zones file is
 re-read when it changes, RAM guard 700 MB / temperature 85 °C / disk 5 GB, stall watchdog, clean stop on SIGTERM.
@@ -35,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import zones as Z
 from savepolicy import SavePolicy
 from scene import ModeDetector, Sampler, busy, saturation
+from throw import ThrowDetector
 
 ROOT = os.environ.get("PERIMETER_ROOT", "/root/PERIMETER")
 DATA = os.environ.get("TRINETRA_DATA", f"{ROOT}/data")
@@ -121,6 +128,19 @@ class App:
         self.exit_reason = "eos"
         self._wd = (0, 0, time.monotonic())
         os.makedirs(SNAPS, exist_ok=True); os.makedirs(self.incoming, exist_ok=True)
+        self.crossing = Z.LineCrossing()
+        self.throws_dir = self.cfg.get("throws_dir") or f"{DATA}/ds/throws"
+        self.keep_days = int(self.cfg.get("keep_days", 30) or 0)
+        self.throw_cfg = self.cfg.get("throw_cfg") or {}
+        self.throw_cams = [s["name"] for s in self.srcs if s.get("throw")]
+        self.throw_det, self.throw_q, self.throw_cv = {}, {}, threading.Condition()
+        self.throw_n = collections.Counter()               # camera → throws, dropped frames, frames fed
+        self.cam_frame = collections.Counter()
+        self.throw_day = None
+        self.build_throw_detectors()
+        for c in self.throw_cams:
+            self.throw_q[c] = collections.deque()
+            threading.Thread(target=self.throw_worker, args=(c,), daemon=True, name=f"throw-{c}").start()
         self.loop = GLib.MainLoop(); self.build()
 
     def reload_zones(self):
@@ -131,10 +151,110 @@ class App:
         if m == self.zones_mtime: return
         try:
             self.zones = json.load(open(self.zones_file)); self.zones_mtime = m
+            if hasattr(self, "throw_det"):
+                self.build_throw_detectors()
             log("zones loaded:", ", ".join(f"{c} ({len(Z.regions(z or {}))} region(s), line {'yes' if (z or {}).get('line') else 'no'})"
                                          for c, z in self.zones.items() if c in self.cams) or "none for these cameras")
         except Exception as e:
             log("zones file not read:", repr(e))
+
+    # ---- throw over the wall: one detector + worker per throw camera
+    def build_throw_detectors(self):
+        for c in self.throw_cams:
+            d = ThrowDetector(self.zones.get(c) or {}, self.throw_cfg, (MUX_W, MUX_H), camera=c)
+            self.throw_det[c] = d
+            log(f"THROW {c}: " + (f"watching the band {d.box} (every frame)" if d.ok else
+                                  "throw detection on, but no throw band / perimeter line / outside point drawn: idle"))
+
+    def throw_worker(self, cam):
+        q = self.throw_q[cam]
+        while True:
+            with self.throw_cv:
+                while not q:
+                    self.throw_cv.wait(1.0)
+                item = q.popleft()
+            fno, t, wall, crop, persons, mode = item
+            det = self.throw_det.get(cam)
+            if det is None or not det.ok or crop.shape != (det.box[3] - det.box[1], det.box[2] - det.box[0]):
+                continue                                     # zones changed while this frame waited
+            try:
+                for ev in det.feed(fno, t, crop, persons):
+                    self.write_throw(cam, det, ev, wall, mode)
+            except Exception as e:
+                log(f"THROW {cam}: worker error (carries on): {e!r}")
+
+    def write_throw(self, cam, det, ev, wall, mode):
+        self.throw_n[(cam, "throws")] += 1
+        day = wall.strftime("%Y%m%d")
+        d = os.path.join(self.throws_dir, day)
+        name = f"{cam}_{wall.strftime('%Y%m%d-%H%M%S')}-{wall.microsecond // 1000:03d}.jpg"
+        ev = {**ev, "ts": wall.isoformat(timespec="milliseconds"), "mode": mode, "image": f"{day}/{name}"}
+        try:
+            os.makedirs(d, exist_ok=True)
+            if self.throw_n[(cam, "images_" + day)] < 500:     # a storm of false ones never fills the disk
+                ok, jpg = cv2.imencode(".jpg", det.review_image(ev), [cv2.IMWRITE_JPEG_QUALITY, 90])
+                if ok:
+                    with open(os.path.join(d, "." + name + ".part"), "wb") as f:
+                        f.write(jpg.tobytes())
+                    os.replace(os.path.join(d, "." + name + ".part"), os.path.join(d, name))
+                    self.throw_n[(cam, "images_" + day)] += 1
+            with open(os.path.join(self.throws_dir, "events.jsonl"), "a") as f:
+                f.write(json.dumps(ev) + "\n")
+        except OSError as e:
+            log(f"THROW {cam}: not written: {e!r}")
+        log(f"THROW {cam}: {ev['curve']} over the line at {ev['crossing_xy']}, {ev['points']} points, "
+            f"{ev['speed_px_f']} px/frame, fit {ev['fit_rms']} px → {ev['image']}")
+
+    def prune_throws(self):
+        """days of review pictures older than the image retention (events.jsonl keeps its last 20 000 lines)"""
+        if self.keep_days <= 0 or not os.path.isdir(self.throws_dir):
+            return
+        today = datetime.now().strftime("%Y%m%d")
+        if self.throw_day == today:
+            return
+        self.throw_day = today
+        cut = (datetime.now().timestamp() - self.keep_days * 86400)
+        for name in os.listdir(self.throws_dir):
+            p = os.path.join(self.throws_dir, name)
+            if re.fullmatch(r"\d{8}", name) and os.path.isdir(p):
+                try:
+                    if datetime.strptime(name, "%Y%m%d").timestamp() < cut:
+                        for f in os.listdir(p):
+                            os.remove(os.path.join(p, f))
+                        os.rmdir(p); log(f"THROW: review pictures of {name} deleted (older than {self.keep_days} days)")
+                except (OSError, ValueError) as e:
+                    log("THROW: old day not deleted:", repr(e))
+        ev = os.path.join(self.throws_dir, "events.jsonl")
+        try:
+            if os.path.getsize(ev) > 8_000_000:
+                lines = open(ev).read().splitlines()[-20000:]
+                with open(ev + ".tmp", "w") as f:
+                    f.write("\n".join(lines) + "\n")
+                os.replace(ev + ".tmp", ev)
+        except OSError:
+            pass
+
+    def feed_throw(self, cam, buf, fm, boxes, now, wall):
+        det = self.throw_det.get(cam)
+        if det is None or not det.ok:
+            return
+        x0, y0, x1, y1 = det.box
+        try:
+            rgba = pyds.get_nvds_buf_surface(hash(buf), fm.batch_id)
+            try: crop = cv2.cvtColor(np.ascontiguousarray(rgba[y0:y1, x0:x1]), cv2.COLOR_RGBA2GRAY)   # only the band
+            finally: pyds.unmap_nvds_buf_surface(hash(buf), fm.batch_id)
+        except Exception as e:
+            self.throw_n[(cam, "copy_errors")] += 1
+            if self.throw_n[(cam, "copy_errors")] <= 3: log(f"THROW {cam}: band copy failed: {e!r}")
+            return
+        persons = [b for b, _c, lab, _f in boxes if Z.target_of(lab) == "person"]
+        self.cam_frame[cam] += 1
+        q = self.throw_q[cam]
+        with self.throw_cv:
+            if len(q) >= 30:                                  # the worker is behind by a second: drop the oldest
+                q.popleft(); self.throw_n[(cam, "dropped")] += 1
+            q.append((self.cam_frame[cam], now, wall, crop, persons, self.modes[cam].mode))
+            self.throw_cv.notify_all()
 
     # ---- pipeline (as Workplace Analytics)
     def build(self):
@@ -217,12 +337,27 @@ class App:
         return Gst.PadProbeReturn.OK
 
     def restart_source(self, i):
+        """re-create camera i. The old source is DETACHED from the muxer first and shut down only 1.5 s later: its
+        decoder's video memory must outlive its frames still on their way down the pipeline. (Shut down first — as
+        before 27 Nov 2026 — it freed memory a frame in flight still pointed to: NVMAP_IOC_DUP_HANDLE failed → NvVicCompose
+        failed → nvinfer "Internal data stream error" → the whole pipeline fatal, every time a camera's stream ended.)
+        Errors the detached old source may still post are ignored (an older generation: on_msg)."""
         old, pad = self.bins[i], self.mux_pads[i]
-        old.set_state(Gst.State.NULL); self.pipe.remove(old)
         if pad is not None:
+            peer = pad.get_peer()
+            if peer is not None:
+                peer.unlink(pad)
             pad.send_event(Gst.Event.new_flush_stop(False)); self.mux.release_request_pad(pad); self.mux_pads[i] = None
         self.reconnects[i] += 1; self.outage[i] += 1
         self.make_source(i).sync_state_with_parent()
+        GLib.timeout_add(1500, self._dispose_source, old)
+
+    def _dispose_source(self, old):
+        try:
+            old.set_state(Gst.State.NULL); self.pipe.remove(old)
+        except Exception as e:
+            log("old camera source not removed:", repr(e))
+        return False
 
     def watch_sources(self):
         if self.stopping: return True
@@ -308,14 +443,22 @@ class App:
             lab = self.labels[o.class_id] if 0 <= o.class_id < len(self.labels) else str(o.class_id)
             b = (r.left, r.top, r.width, r.height)
             d = Z.describe(lab, b, zone, MUX_W, MUX_H)
+            tid = int(o.object_id) if o.object_id < 2**53 else None
+            if Z.target_of(lab) == "person" and self.crossing.update(
+                    cam, tid, ((b[0] + b[2] / 2) / MUX_W, (b[1] + b[3]) / MUX_H), zone, time.monotonic()):
+                d = dict(d or {"kind": "person", "regions": [], "alert": False, "outside": False, "near": False})
+                d.update(alert=True, crossed=True, regions=d["regions"] + [Z.CROSSED_REGION])
+                log(f"CROSSED {cam}: person (track {tid}) crossed the perimeter line")
             c = Z.cls(d) if d else None
             boxes.append((b, c, lab, o.confidence))
             if d:
-                objs.append({**d, "label": lab, "cls": c, "track": int(o.object_id) if o.object_id < 2**53 else None,
+                objs.append({"crossed": False, **d, "label": lab, "cls": c, "track": tid,
                              "conf": round(float(o.confidence), 3),
                              "box": [round(b[0] / MUX_W, 4), round(b[1] / MUX_H, 4), round(b[2] / MUX_W, 4), round(b[3] / MUX_H, 4)]})
             lo = lo.next
         now, wall = time.monotonic(), datetime.now()
+        if cam in self.throw_q:
+            self.feed_throw(cam, buf, fm, boxes, now, wall)
         rel = self.policy.release(cam, now)                    # a held frame (news that had to wait): written now
         if rel:
             r_objs, (r_jpg, r_wall), r_cls = rel
@@ -366,8 +509,8 @@ class App:
         self.seq += 1
         meta = json.dumps({"v": 1, "frame": f"{cam}|{wall.isoformat(timespec='milliseconds')}|{self.seq}", "camera": cam,
                            "ts": wall.isoformat(timespec="milliseconds"), "mode": self.modes[cam].mode,
-                           "objects": [{k: o[k] for k in ("label", "kind", "regions", "alert", "outside", "track", "conf", "box")}
-                                       for o in objs]})
+                           "objects": [{k: o.get(k) for k in ("label", "kind", "regions", "alert", "outside", "near", "crossed",
+                                                              "track", "conf", "box")} for o in objs]})
         for c in classes:
             name = f"{cam}_{c}_{ts}.jpg"
             side = os.path.join(self.incoming, name[:-4] + ".json")
@@ -461,8 +604,11 @@ class App:
                         "reachable": None if self.reach[i] is None or self.online[i] else self.reach[i][1],
                         "last_frame_s": None if not self.last_buf[i] else round(mono - self.last_buf[i], 1),
                         "fps": self.fps.get(s["name"], 0), "reconnects": self.reconnects[i],
-                        "images": {c: n for (cam, c), n in self.counts.items() if cam == s["name"]}}
+                        "images": {c: n for (cam, c), n in self.counts.items() if cam == s["name"]},
+                        "throw_stats": self.throw_stats(s["name"])}
                        for i, s in enumerate(self.srcs)]
+            self.crossing.prune(mono)
+            self.prune_throws()
             st = {"running": True, "started": self.started, "pid": os.getpid(), "updated": datetime.now().isoformat(timespec="seconds"),
                   "frames": self.frames, "streams": streams, "free_disk_gb": round(gb, 1), "temp_c": temp,
                   "images_paused_low_disk": self.disk_low}
@@ -470,6 +616,13 @@ class App:
         except Exception as e:
             log("state write failed:", repr(e))
         return True
+
+    def throw_stats(self, cam):
+        det = self.throw_det.get(cam)
+        if det is None:
+            return None
+        return {"watching": det.ok, "throws": self.throw_n[(cam, "throws")], "dropped": self.throw_n[(cam, "dropped")],
+                "queue": len(self.throw_q.get(cam) or ()), **(det.summary() if det.ok else {})}
 
     def run(self):
         mem = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo") if ":" in l}

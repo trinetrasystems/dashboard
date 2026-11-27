@@ -20,19 +20,28 @@ async function apiCheck(path, r) {
   }
   return r.json();
 }
-/* Signing out: no new request leaves the page any more (a poll sent after the sign-out would only get 401). */
-let LEAVING = false;
+/* Signing out: no new request leaves the page any more (a poll sent after the sign-out would only get 401), and the
+   sign-out waits (up to 2 s) for the requests already on their way, so none of them reaches a session that has ended. */
+let LEAVING = false, INFLIGHT = 0;
 function leavingPage() { LEAVING = true; }
 const NEVER = () => new Promise(() => {});
+async function trackedFetch(url, opts) {
+  INFLIGHT++;
+  try { return await fetch(url, opts); } finally { INFLIGHT--; }
+}
+async function requestsSettled(maxMs = 2000) {
+  const end = Date.now() + maxMs;
+  while (INFLIGHT > 0 && Date.now() < end) await new Promise(r => setTimeout(r, 50));
+}
 
 async function apiGet(path) {
   if (LEAVING) return NEVER();
-  const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' });
+  const r = await trackedFetch(`${API_BASE}${path}`, { credentials: 'same-origin' });
   return apiCheck(path, r);
 }
 async function apiPost(path, body) {
   if (LEAVING) return NEVER();
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await trackedFetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
@@ -42,7 +51,7 @@ async function apiPost(path, body) {
 }
 async function apiPut(path, body) {
   if (LEAVING) return NEVER();
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await trackedFetch(`${API_BASE}${path}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
@@ -52,7 +61,7 @@ async function apiPut(path, body) {
 }
 async function apiDelete(path) {
   if (LEAVING) return NEVER();
-  const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE', credentials: 'same-origin' });
+  const r = await trackedFetch(`${API_BASE}${path}`, { method: 'DELETE', credentials: 'same-origin' });
   return apiCheck(path, r);
 }
 

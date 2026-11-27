@@ -23,6 +23,14 @@ function showTab(t) {
 }
 
 /* ════════ pipeline ════════ */
+/* throw detection of one camera (pipeline state): throws this run, motion time per frame, frames dropped when behind */
+function throwCell(t) {
+  if (!t) return '<span class="muted">—</span>';
+  if (!t.watching) return '<span class="tag warn">No band / line</span>';
+  const sub = [`${t.ms_median ?? '?'} ms/frame`, t.dropped ? `<span style="color:var(--red)">${t.dropped} dropped</span>` : ''].filter(Boolean).join(' · ');
+  return `<span class="tag ${t.throws ? 'bad' : 'on_desk'}">${t.throws} throw${t.throws === 1 ? '' : 's'}</span><div class="who-sub">${sub}</div>`;
+}
+
 async function loadStatus() {
   try { S.status = await apiGet('/api/ds/status'); } catch (e) { return; }
   const st = S.status, job = st.job, busy = job && job.status === 'running';
@@ -54,8 +62,9 @@ async function loadStatus() {
       <td>${s.online ? '<span class="tag on_desk">Online</span>' : `<span class="tag bad">Offline</span>${s.reachable === false ? ' <span class="muted">not reachable</span>' : ''}`}</td>
       <td class="mono">${s.fps ?? 0}${s.throw ? `<div class="who-sub">throw: every frame${s.online && s.fps && s.fps < 20 ? ' · <span style="color:var(--red)">low fps</span>' : ''}</div>` : ''}</td>
       <td>${s.mode ? `<span class="tag ${s.mode === 'night' ? 'dept' : 'warn'}">${s.mode === 'night' ? 'Night' : 'Day'}</span><div class="who-sub">colour ${s.saturation ?? '?'}</div>` : '<span class="muted">—</span>'}</td>
+      <td>${throwCell(s.throw_stats)}</td>
       <td>${Object.entries(s.images || {}).map(([c, n]) => `<span class="tag">${escapeHtml(c)} ${n}</span>`).join('') || '<span class="muted">none</span>'}</td></tr>`).join('')
-    : `<tr><td colspan="5" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
+    : `<tr><td colspan="6" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
   if (job) { $('ds-job-title').textContent = `${job.action} · ${job.status}${job.error ? ' — ' + job.error : ''}`;
              const pre = $('ds-job'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
              pre.textContent = job.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; }

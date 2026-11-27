@@ -122,7 +122,7 @@ def describe(label: str, box, zone, frame_w: float, frame_h: float):
     if any(in_polygon(foot, r["points"]) for r in regions(zone, "ignore")):
         return None
     lab = (label or "").strip().lower()
-    names, alert = [], lab == BREACH.lower()
+    names, alert, near = [], lab == BREACH.lower(), False
     for r in regions(zone):
         if r["kind"] == "ignore" or r["kind"] in DETECTION_KINDS:
             continue
@@ -130,11 +130,52 @@ def describe(label: str, box, zone, frame_w: float, frame_h: float):
         if inside:
             names.append(r["name"])
             alert = alert or r["kind"] == "alert"
+            near = near or r["kind"] == "near"
     outside = lab in (OUTSIDE_PERSON, OUTSIDE_OBJECT) or is_outside(foot, zone)
     if not (names or alert or outside):
         return None
     kind = "person" if lab == OUTSIDE_PERSON else ("object" if lab in (OUTSIDE_OBJECT, BREACH.lower()) else target_of(lab))
-    return {"kind": kind, "regions": names, "alert": alert, "outside": outside}
+    return {"kind": kind, "regions": names, "alert": alert, "outside": outside, "near": near}
+
+
+CROSSED_REGION = "Perimeter line"       # the region name a crossing is reported in (alert text: "… in Perimeter line")
+
+
+class LineCrossing:
+    """Person crossed the wall (spec §7.2 crossed_line / §7.6 person_crossed_fence): a tracked person whose foot point
+    was OUTSIDE the perimeter line for `need` observations and then INSIDE for `need` observations has crossed — once per
+    track. `need` > 1 so a box wobbling on the line (detector jitter) is not a crossing. Tracks not seen for `forget_s`
+    are dropped (memory stays bounded)."""
+
+    def __init__(self, need: int = 3, forget_s: float = 10.0):
+        self.need, self.forget_s = need, forget_s
+        self.t = {}                                   # (camera, track) → [outside_run, inside_run_after, crossed, last]
+
+    def update(self, cam: str, track, foot, zone, now: float) -> bool:
+        """foot = (x, y) as fractions of the frame → True exactly once, on the observation that completes a crossing"""
+        if track is None or len(zone.get("line") or []) < 2 or not zone.get("outside"):
+            return False
+        k = (cam, track)
+        st = self.t.get(k) or [0, 0, False, now]
+        st[3] = now
+        if is_outside(foot, zone):
+            if st[1]:                                 # back outside before the crossing completed: start again
+                st[0], st[1] = 0, 0
+            st[0] += 1
+        elif st[0] >= self.need and not st[2]:
+            st[1] += 1
+            if st[1] >= self.need:
+                st[2] = True
+                self.t[k] = st
+                return True
+        else:
+            st[0] = 0                                 # inside without a full outside run first: not a crossing
+        self.t[k] = st
+        return False
+
+    def prune(self, now: float):
+        for k in [k for k, v in self.t.items() if now - v[3] > self.forget_s]:
+            del self.t[k]
 
 
 def cls(d) -> str:
@@ -253,4 +294,19 @@ if __name__ == "__main__":                            # python3 zones.py: self-t
             pass
     kept = keep_team_regions({**z, "regions": [z["regions"][0], {**band, "name": "Client band"}]}, z2)
     assert [r["name"] for r in kept["regions"]] == ["Wall top", "Band 1", "Landing 1", "Near wall"], kept
+    d = describe("person", box(500, 700), z2, 1000, 1000)
+    assert d["near"] and not describe("person", box(900, 800), z2, 1000, 1000)["near"]   # near-wall flag
+    # crossing: outside 3x, then inside 3x → one crossing; jitter on the line is none; inside first is none
+    lc = LineCrossing(need=3)
+    o, i = (0.5, 0.3), (0.5, 0.7)
+    seq = [lc.update("c", 7, p, z, t) for t, p in enumerate([o, o, o, i, i, i, i, i])]
+    assert seq == [False] * 5 + [True, False, False], seq
+    lc = LineCrossing(need=3)                                                   # wobbling on the line: never
+    assert not any(lc.update("c", 8, p, z, t) for t, p in enumerate([o, i, o, i, o, i, i, o, i]))
+    lc = LineCrossing(need=3)                                                   # inside → outside (leaving): never
+    assert not any(lc.update("c", 9, p, z, t) for t, p in enumerate([i, i, i, o, o, o, o]))
+    lc = LineCrossing(need=3)                                                   # outside, back out half-way, then in
+    assert [lc.update("c", 1, p, z, t) for t, p in enumerate([o, o, o, i, o, o, o, i, i, i])][-1] is True
+    assert not lc.update("c", None, i, z, 0) and not LineCrossing().update("c", 1, i, {"line": []}, 0)   # no track / line
+    lc.prune(100.0); assert not lc.t
     print("zones self-test ok")

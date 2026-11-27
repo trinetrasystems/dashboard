@@ -19,7 +19,8 @@ rule, camera and region, not per tracking id). One alert per presence (also when
 Offline: a camera that blinks back for a few seconds does not reset its outage — only 60 s of video in a row does.
 
 Each rule: cameras ([] = all), region (*alert = any alert region, *outside = outside the perimeter line, *any = any
-region or outside, or one region's name), target (person / object / any), active days + hours (overnight allowed),
+region or outside, *near = any near-wall zone, *crossed = a person who crossed the perimeter line from outside to inside
+(the pipeline's LineCrossing; such a frame is also an alert-region breach), or one region's name), target (person / object / any), active days + hours (overnight allowed),
 cooldown, severity (critical / warning), sound. Whitelisted labels never alert.
 """
 import json
@@ -40,7 +41,8 @@ SEVERITIES = ("critical", "warning")
 # the worker takes back what it added for that alert.
 FEEDBACK_LEARN = {"landing": "bank", "unattended": "bank", "anomaly": "bank", "throw": "negatives"}
 NO_FALSE_ALARM_KINDS = ("offline",)                 # a camera without video is a fact, not a detection
-SPECIAL_REGIONS = {"*alert": "any alert region", "*outside": "outside the perimeter line", "*any": "any region or outside"}
+SPECIAL_REGIONS = {"*alert": "any alert region", "*outside": "outside the perimeter line", "*any": "any region or outside",
+                   "*near": "any near-wall zone", "*crossed": "crossed the perimeter line"}
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CLASS_META = {                                       # file-name class → observation (images without a description)
     "boundry-object": {"kind": "object", "alert": True, "outside": False},
@@ -158,7 +160,7 @@ def check(body: dict, known_cameras: Optional[set] = None) -> dict:
         raise ValueError(f"Unknown camera: {', '.join(c for c in cams if c not in known_cameras)}")
     region = str(body.get("region") or "*alert").strip()
     if region not in SPECIAL_REGIONS and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", region):
-        raise ValueError("Region: a region name, any alert region, outside the line, or any region")
+        raise ValueError("Region: a region name, any alert region, outside the line, any region, any near-wall zone or crossed the line")
     target = body.get("target") or "any"
     if target not in TARGETS:
         raise ValueError("Who: person, object or any")
@@ -239,6 +241,10 @@ def matches(rule: dict, obj: dict, whitelist: set) -> bool:
         return bool(obj.get("outside"))
     if reg == "*any":
         return bool(obj.get("alert") or obj.get("outside") or obj.get("regions"))
+    if reg == "*near":
+        return bool(obj.get("near"))
+    if reg == "*crossed":
+        return bool(obj.get("crossed"))
     return reg.lower() in [n.lower() for n in obj.get("regions") or []]
 
 
@@ -275,7 +281,8 @@ class Engine:
             objs, frame = [o], f"{camera}|{ts_local.isoformat()}|{image}"
         clean = [{"label": str(o.get("label", ""))[:40], "kind": "person" if o.get("kind") == "person" else "object",
                   "regions": [str(n)[:40] for n in (o.get("regions") or [])][:20], "alert": bool(o.get("alert")),
-                  "outside": bool(o.get("outside")), "track": o.get("track") if isinstance(o.get("track"), int) else None}
+                  "outside": bool(o.get("outside")), "near": bool(o.get("near")), "crossed": bool(o.get("crossed")),
+                  "track": o.get("track") if isinstance(o.get("track"), int) else None}
                  for o in objs]
         fired = []
         with self._mu:
