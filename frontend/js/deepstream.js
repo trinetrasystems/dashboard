@@ -92,6 +92,7 @@ function fillSettings() {
   f.threshold.value = c.threshold; f.save_every_s.value = c.save_every_s; f.frame_skip.value = c.frame_skip; f.loop_files.checked = c.loop_files;
   f.nightly_restart.value = c.nightly_restart || '';
   f.night_saturation_max.value = c.night_saturation_max ?? 12; f.mode_hysteresis_s.value = c.mode_hysteresis_s ?? 30;
+  f.detect_every.value = c.detect_every ?? 1;
   renderClasses(m, c.classes || []);
 }
 function renderClasses(m, keep) {
@@ -223,7 +224,7 @@ onReady(async () => {
     try { await saveConfig({ model: f.model.value, threshold: Number(f.threshold.value), save_every_s: Number(f.save_every_s.value),
                              frame_skip: Number(f.frame_skip.value), loop_files: f.loop_files.checked, nightly_restart: f.nightly_restart.value,
                              classes: keptClasses(), night_saturation_max: Number(f.night_saturation_max.value),
-                             mode_hysteresis_s: Number(f.mode_hysteresis_s.value) }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
+                             mode_hysteresis_s: Number(f.mode_hysteresis_s.value), detect_every: Number(f.detect_every.value) }, 'ds-settings-msg'); fillSettings(); loadStatus(); } catch (_) { }
   });
   // cameras
   $('cam-add').addEventListener('click', () => openCam(null));

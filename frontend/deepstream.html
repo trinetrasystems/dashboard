@@ -69,13 +69,16 @@
                 <small>per camera and class while something is there</small></label>
               <label>Frames skipped <input class="ds-input" name="frame_skip" type="number" min="0" max="10">
                 <small>0 = every frame; 2 = every 2nd, 3 = every 3rd (less GPU); throw cameras: always every frame</small></label>
+              <label>Detector on every <input class="ds-input" name="detect_every" type="number" min="1" max="4"> frame(s)
+                <small>1 = every frame; 2 = every 2nd (about half the detector's GPU). The tracker follows people between;
+                  every frame is still decoded for the throw detection</small></label>
               <label>Nightly restart at <input class="ds-input" name="nightly_restart" type="time">
                 <small>a short clean restart frees memory (as Workplace Analytics); empty = off</small></label>
               <label class="check"><input type="checkbox" name="loop_files"> Loop video files (testing)</label>
               <div class="full ds-classes"><span class="rec-label">Classes reported <small class="muted" id="ds-classes-hint"></small></span>
                 <div class="ds-class-list" id="ds-classes"></div>
                 <small>None ticked = every class. The others are dropped inside the detector (no engine rebuild).
-                  For a COCO model: person, backpack, handbag, suitcase.</small></div>
+                  For a COCO model: person, backpack, handbag, suitcase (+ car, motorcycle, bicycle, truck where vehicles may stand).</small></div>
               <label>Night below colour <input class="ds-input" name="night_saturation_max" type="number" min="1" max="80">
                 <small>mean colour saturation 0–255 (an IR picture ≈ 0); default 12</small></label>
               <label>Day / night after (s) <input class="ds-input" name="mode_hysteresis_s" type="number" min="5" max="600">

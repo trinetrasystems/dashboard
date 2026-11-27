@@ -64,7 +64,8 @@ MAX_RESTARTS_PER_HOUR, RESTART_MIN_GB = 5, 2.0
 RESTART_SETTLE_S = 30
 FREE_MEM_AFTER_S = 60
 DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "frame_skip": 2, "loop_files": True,
-            "nightly_restart": "00:00", "classes": [], "night_saturation_max": 12, "mode_hysteresis_s": 30}
+            "nightly_restart": "00:00", "classes": [], "night_saturation_max": 12, "mode_hysteresis_s": 30,
+            "detect_every": 1}
 # classes: the model's labels the pipeline reports ([] = all; PERIMETER_THROW_DETECTION_SPEC yolo.classes_keep, e.g. person,
 # backpack, handbag, suitcase of a COCO model) — the others are dropped inside nvinfer (filter-out-class-ids).
 # Per camera "throw": true = throw detection on that camera (spec §7.4): every frame is decoded and looked at (the frame
@@ -156,7 +157,7 @@ labelfile-path={labels}
 batch-size={batch}
 network-mode=2
 num-detected-classes={nc}
-interval=0
+interval={interval}
 gie-unique-id=1
 process-mode=1
 network-type=0
@@ -175,13 +176,14 @@ topk=100
 """
 
 
-def pgie_text(model: dict, engine: str, batch: int, th: float, keep: Optional[list] = None) -> str:
+def pgie_text(model: dict, engine: str, batch: int, th: float, keep: Optional[list] = None, every: int = 1) -> str:
     """keep: the labels to report (None / [] = all); the others are dropped by nvinfer itself (filter-out-class-ids) —
-    the engine does not change, so no rebuild"""
+    the engine does not change, so no rebuild. every: the detector runs on every Nth frame (nvinfer interval = N-1); the
+    NvDCF tracker carries the objects through the frames between, and every frame is still decoded (motion / throw)"""
     lab = Path(model["path"]).with_name(Path(model["path"]).stem + ".labels.txt")
     drop = [str(i) for i, l in enumerate(model["labels"]) if keep and l not in keep]
     return PGIE_T.format(onnx=model["path"], engine=engine, labels=lab, batch=batch, nc=len(model["labels"]), lib=YOLO_LIB, th=th,
-                         filt=f"filter-out-class-ids={';'.join(drop)}\n" if drop else "")
+                         interval=max(0, int(every) - 1), filt=f"filter-out-class-ids={';'.join(drop)}\n" if drop else "")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -225,6 +227,7 @@ def check_config(raw: dict) -> dict:
     try:
         cfg["night_saturation_max"] = int(min(80, max(1, int(cfg["night_saturation_max"]))))
         cfg["mode_hysteresis_s"] = int(min(600, max(5, int(cfg["mode_hysteresis_s"]))))
+        cfg["detect_every"] = int(min(4, max(1, int(cfg.get("detect_every") or 1))))
     except (TypeError, ValueError):
         raise ValueError("day / night: numbers")
     classes = cfg.get("classes") or []
@@ -590,7 +593,8 @@ def write_run_configs(cfg: dict, streams: list, model: dict, plan: dict):
            "zones_file": str(ZONES), "sampling_file": str(SAMPLING),
            "mode": {"night_saturation_max": cfg["night_saturation_max"], "hysteresis_s": cfg["mode_hysteresis_s"]}}
     write_atomic(RUN / "config_run.json", json.dumps(run, indent=1))
-    write_atomic(RUN / "pgie_run.txt", pgie_text(model, plan["file"], len(streams), cfg["threshold"], cfg.get("classes")))
+    write_atomic(RUN / "pgie_run.txt", pgie_text(model, plan["file"], len(streams), cfg["threshold"], cfg.get("classes"),
+                                                       cfg.get("detect_every", 1)))
 
 
 def wait_ready(job: Job, n: int):
