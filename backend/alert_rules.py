@@ -21,8 +21,16 @@ Offline: a camera that blinks back for a few seconds does not reset its outage �
 Each rule: cameras ([] = all), region (*alert = any alert region, *outside = outside the perimeter line, *any = any
 region or outside, *near = any near-wall zone, *crossed = a person who crossed the perimeter line from outside to inside
 (the pipeline's LineCrossing; such a frame is also an alert-region breach), *thrown = an object the pipeline's
-throw detection saw thrown over the wall (alert kind "throw"), or one region's name), target (person / object / any), active days + hours (overnight allowed),
-cooldown, severity (critical / warning), sound. Whitelisted labels never alert.
+throw detection saw thrown over the wall, in or out (alert kind "throw"), *thrower = such a throw with a person near the
+wall / outside it just before, *landed = a thrown object the landing detection (PatchCore) then found on the ground
+(alert kind "landing"), *unattended = a new object left in a landing zone with nobody near it (kind "unattended"), or
+one region's name), target (person / object / any), active days + hours (overnight allowed), cooldown, severity
+(critical / warning), sound. Whitelisted labels never alert.
+
+One throw, one alert (spec §7.6 "a later, stronger match upgrades an open alert"): the throw rules (*thrown, *thrower,
+*landed) of a camera within FUSE_S of each other make ONE alert — the first one is stored, a stronger one (Critical
+after Warning) upgrades it in place (severity, rule, message, picture; the dashboards and the speaker are told again),
+an equal or weaker one adds nothing. Critical rules are looked at first for the same frame.
 """
 import json
 import re
@@ -44,7 +52,11 @@ FEEDBACK_LEARN = {"landing": "bank", "unattended": "bank", "anomaly": "bank", "t
 NO_FALSE_ALARM_KINDS = ("offline",)                 # a camera without video is a fact, not a detection
 SPECIAL_REGIONS = {"*alert": "any alert region", "*outside": "outside the perimeter line", "*any": "any region or outside",
                    "*near": "any near-wall zone", "*crossed": "crossed the perimeter line",
-                   "*thrown": "thrown over the wall"}
+                   "*thrown": "thrown over the wall", "*thrower": "thrown over the wall, person near",
+                   "*landed": "thrown over the wall and landed", "*unattended": "object left (unattended)"}
+THROW_FAMILY = ("*thrown", "*thrower", "*landed")
+FUSE_S = 60                                          # seconds: throw alerts of one camera this close are one alert
+SEV_RANK = {"warning": 1, "critical": 2}
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CLASS_META = {                                       # file-name class → observation (images without a description)
     "boundry-object": {"kind": "object", "alert": True, "outside": False},
@@ -91,6 +103,16 @@ CREATE INDEX IF NOT EXISTS idx_obs_cam_ts ON observations(camera, ts);
 # install gets it once (alert_rules_throw_seeded), and a client who deletes it keeps it deleted.
 THROW_RULE = {"name": "Throw over the wall", "type": "presence", "region": "*thrown", "target": "any",
               "severity": "warning", "cooldown": 1}
+# LANDING_RULES (28 Nov 2026, step E; the levels the user chose on 27 Nov): throw + person near the wall, throw + landing,
+# an unattended object = Critical. Seeded once (alert_rules_landing_seeded), as THROW_RULE.
+LANDING_RULES = [
+    {"name": "Throw, person near the wall", "type": "presence", "region": "*thrower", "target": "any",
+     "severity": "critical", "cooldown": 1},
+    {"name": "Thrown object landed", "type": "presence", "region": "*landed", "target": "any",
+     "severity": "critical", "cooldown": 1},
+    {"name": "Unattended object", "type": "presence", "region": "*unattended", "target": "any",
+     "severity": "critical", "cooldown": 1},
+]
 DEFAULT_RULES = [
     {"name": "Perimeter breach", "type": "presence", "region": "*alert", "target": "any", "severity": "critical",
      "cooldown": 1},
@@ -100,6 +122,7 @@ DEFAULT_RULES = [
      "severity": "warning"},
     {"name": "Camera offline", "type": "offline", "minutes": 5, "severity": "warning", "sound": False},
     THROW_RULE,
+    *LANDING_RULES,
 ]
 
 
@@ -145,6 +168,7 @@ def migrate(conn):
                          [json.dumps(v) if isinstance(v, list) else v for v in c.values()])
         conn.execute("CREATE TABLE alert_rules_seeded (x)")   # the defaults once: a client who deletes them keeps it so
         conn.execute("CREATE TABLE IF NOT EXISTS alert_rules_throw_seeded (x)")   # a new install has it already
+        conn.execute("CREATE TABLE IF NOT EXISTS alert_rules_landing_seeded (x)")
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='alert_rules_throw_seeded'").fetchone():
         if not conn.execute("SELECT 1 FROM alert_rules WHERE region='*thrown' LIMIT 1").fetchone():
             c = check({**THROW_RULE, "enabled": True})
@@ -152,6 +176,14 @@ def migrate(conn):
                          [json.dumps(v) if isinstance(v, list) else v for v in c.values()])
             print("[migrate] alert rule added: Throw over the wall (warning)")
         conn.execute("CREATE TABLE alert_rules_throw_seeded (x)")
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='alert_rules_landing_seeded'").fetchone():
+        for r in LANDING_RULES:
+            if not conn.execute("SELECT 1 FROM alert_rules WHERE region=? LIMIT 1", (r["region"],)).fetchone():
+                c = check({**r, "enabled": True})
+                conn.execute(f"INSERT INTO alert_rules({', '.join(_q(k) for k in c)}) VALUES({', '.join('?' * len(c))})",
+                             [json.dumps(v) if isinstance(v, list) else v for v in c.values()])
+                print(f"[migrate] alert rule added: {r['name']} ({r['severity']})")
+        conn.execute("CREATE TABLE alert_rules_landing_seeded (x)")
 
 
 def _q(k):
@@ -177,7 +209,7 @@ def check(body: dict, known_cameras: Optional[set] = None) -> dict:
     region = str(body.get("region") or "*alert").strip()
     if region not in SPECIAL_REGIONS and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", region):
         raise ValueError("Region: a region name, any alert region, outside the line, any region, any near-wall zone, "
-                         "crossed the line or thrown over the wall")
+                         "crossed the line, thrown over the wall (with a person near / landed) or object left")
     target = body.get("target") or "any"
     if target not in TARGETS:
         raise ValueError("Who: person, object or any")
@@ -264,6 +296,12 @@ def matches(rule: dict, obj: dict, whitelist: set) -> bool:
         return bool(obj.get("crossed"))
     if reg == "*thrown":
         return bool(obj.get("thrown"))
+    if reg == "*thrower":
+        return bool(obj.get("thrown") and obj.get("thrower"))
+    if reg == "*landed":
+        return bool(obj.get("landed"))
+    if reg == "*unattended":
+        return bool(obj.get("unattended"))
     return reg.lower() in [n.lower() for n in obj.get("regions") or []]
 
 
@@ -301,7 +339,11 @@ class Engine:
         clean = [{"label": str(o.get("label", ""))[:40], "kind": "person" if o.get("kind") == "person" else "object",
                   "regions": [str(n)[:40] for n in (o.get("regions") or [])][:20], "alert": bool(o.get("alert")),
                   "outside": bool(o.get("outside")), "near": bool(o.get("near")), "crossed": bool(o.get("crossed")),
-                  "thrown": bool(o.get("thrown")), "track": o.get("track") if isinstance(o.get("track"), int) else None}
+                  "thrown": bool(o.get("thrown")), "thrower": bool(o.get("thrower")), "landed": bool(o.get("landed")),
+                  "unattended": bool(o.get("unattended")),
+                  "throw_dir": o.get("throw_dir") if o.get("throw_dir") in ("in", "out") else None,
+                  "age_s": round(float(o["age_s"])) if isinstance(o.get("age_s"), (int, float)) else None,
+                  "track": o.get("track") if isinstance(o.get("track"), int) else None}
                  for o in objs]
         fired = []
         with self._mu:
@@ -314,6 +356,7 @@ class Engine:
                         return []                    # the same frame, saved as another class's image: counted once
                     wl = {r[0].lower() for r in conn.execute("SELECT badge FROM whitelist")}
                     rules = [row_out(r) for r in conn.execute("SELECT * FROM alert_rules WHERE enabled=1 AND type!='offline'")]
+                    rules.sort(key=lambda r: -SEV_RANK.get(r["severity"], 0))   # Critical first (one throw, one alert)
                     for rule in rules:
                         if not for_camera(rule, camera) or not active_at(rule, ts_local):
                             continue
@@ -410,18 +453,56 @@ class Engine:
             if not rule.get("repeat") or now_utc - datetime.fromisoformat(prev["triggered_at"]) < timedelta(minutes=rule["repeat"]):
                 return None
         what = self._what(rule, hit)
-        if rule["region"] == "*thrown":
-            msg = f"{what} thrown over the wall"
+        if rule["region"] in THROW_FAMILY or rule["region"] == "*unattended":
+            msg = self._throw_msg(rule, hit)
         elif rule["type"] == "dwell":
             msg = f"{what} in {where} for {int(dur // 60)} min {int(dur % 60)} s"
         else:
             msg = f"{what} in {where}" + (f" — still there after {int(dur // 60)} min {int(dur % 60)} s" if prev else "")
+        if rule["region"] in THROW_FAMILY:
+            return self._fuse(conn, rule, camera, image, hit, start, int(dur), msg)
         return self._store(conn, rule, camera, image, hit, start, int(dur), msg)
+
+    @staticmethod
+    def _throw_msg(rule, hit) -> str:
+        o = hit[0]
+        way = {"in": "in over the wall", "out": "out over the wall"}.get(o.get("throw_dir"), "over the wall")
+        where = ", ".join(o.get("regions") or []) or "a landing zone"
+        if rule["region"] == "*unattended":
+            return f"Object left in {where}" + (f" for {o['age_s']} s, nobody near it" if o.get("age_s") else ", nobody near it")
+        if rule["region"] == "*landed":
+            return f"Object thrown {way} — landed in {where}"
+        if rule["region"] == "*thrower":
+            return f"Object thrown {way} — person near the wall"
+        return f"Object thrown {way}"
+
+    def _fuse(self, conn, rule, camera, image, hit, start, dur, msg) -> Optional[dict]:
+        """one throw, one alert: a throw alert of this camera within FUSE_S → upgraded when this rule is stronger,
+        else nothing new; none → a new alert"""
+        since = (datetime.utcnow() - timedelta(seconds=FUSE_S)).isoformat()
+        prev = conn.execute("SELECT * FROM alerts WHERE camera=? AND kind IN ('throw', 'landing') AND triggered_at>=? "
+                            "AND rule_id IS NOT NULL ORDER BY id DESC LIMIT 1", (camera, since)).fetchone()
+        if not prev:
+            return self._store(conn, rule, camera, image, hit, start, dur, msg)
+        if SEV_RANK.get(rule["severity"], 0) <= SEV_RANK.get(prev["severity"], 0) and not (
+                rule["region"] == "*landed" and prev["kind"] == "throw"):
+            return None                                  # already alerted as strongly
+        kind = "landing" if rule["region"] == "*landed" else "throw"
+        sev = rule["severity"] if SEV_RANK.get(rule["severity"], 0) >= SEV_RANK.get(prev["severity"], 0) else prev["severity"]
+        zone = ", ".join(sorted({n for o in hit for n in o["regions"]}))[:200] or prev["zone"]   # where it landed
+        conn.execute("UPDATE alerts SET severity=?, rule_id=?, rule_name=?, message=?, image=?, kind=?, sound=?, zone=?, "
+                     "acknowledged=0, acknowledged_at=NULL, acknowledged_by=NULL WHERE id=?",
+                     (sev, rule["id"], rule["name"], msg[:300], image or prev["image"], kind, int(rule["sound"]), zone, prev["id"]))
+        return {"alert_id": prev["id"], "rule_id": rule["id"], "rule_name": rule["name"], "severity": sev, "kind": kind,
+                "camera": camera, "zone": zone, "message": msg, "image": image or prev["image"],
+                "badge": prev["badge"], "sound": bool(rule["sound"]), "count": len(hit), "duration_seconds": dur,
+                "upgraded": True}
 
     def _store(self, conn, rule, camera, image, hit, start, dur, msg) -> dict:
         labels = sorted({o["label"] for o in hit if o["label"]})
         regions = sorted({n for o in hit for n in o["regions"]}) or ([SPECIAL_REGIONS[rule["region"]]] if rule["region"] in SPECIAL_REGIONS else [rule["region"]])
-        kind = "throw" if rule["region"] == "*thrown" else \
+        kind = "throw" if rule["region"] in ("*thrown", "*thrower") else "landing" if rule["region"] == "*landed" else \
+            "unattended" if rule["region"] == "*unattended" else \
             "breach" if rule["severity"] == "critical" and rule["type"] == "presence" else rule["type"]
         cur = conn.execute(
             "INSERT INTO alerts(session_id, badge, triggered_at, duration_seconds, kind, camera, zone, image, rule_id, "

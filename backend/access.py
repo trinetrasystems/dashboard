@@ -384,6 +384,7 @@ AUDIT_RULES = [(m, re.compile(p + "$"), c, a) for m, p, c, a in [
     ("POST", r"/api/speaker/forget", "alerts", "Removed the Bluetooth speaker"),
     ("PUT", r"/api/ds/config", "pipeline", "Changed cameras / pipeline settings"),
     ("PUT", r"/api/ds/zones/([^/]+)", "pipeline", "Drew perimeter zones"),
+    ("POST", r"/api/ds/landing/build", "pipeline", "Built the landing memory"),
     ("POST", r"/api/captures", "recordings", "Started a recording"),
     ("POST", r"/api/captures/([^/]+)/stop", "recordings", "Stopped a recording"),
     ("POST", r"/api/captures/([^/]+)/frames", "recordings", "Made frames of a recording"),

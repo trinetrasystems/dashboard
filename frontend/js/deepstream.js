@@ -31,6 +31,53 @@ function throwCell(t) {
   return `<span class="tag ${t.throws ? 'bad' : 'on_desk'}">${t.throws} throw${t.throws === 1 ? '' : 's'}</span><div class="who-sub">${sub}</div>`;
 }
 
+/* landing detection of one camera (the landing worker's state): what it does now, new objects, alerts */
+const SIDE = { inside: 'inside', outside: 'outside' };
+function landCell(l) {
+  if (!l) return '<span class="muted">—</span>';
+  const st = l.status || '';
+  if (st !== 'watching' && !st.startsWith('paused') && !st.startsWith('scene')) return `<span class="tag warn" title="${escapeHtml(st)}">${escapeHtml(st.split(' (')[0].split(':')[0])}</span>`;
+  const sub = [l.mode ? (l.mode === 'night' ? 'night memory' : 'day memory') : '', l.ms_median != null ? `${l.ms_median} ms/check` : '',
+               l.learnt ? `${l.learnt} false alarm(s) learnt` : ''].filter(Boolean).join(' · ');
+  const n = (l.landed || 0) + (l.unattended || 0);
+  return `<span class="tag ${n ? 'bad' : 'on_desk'}">${st === 'watching' ? 'Watching' : escapeHtml(st.split(' (')[0].split(':')[0])}${n ? ` · ${n} alert${n === 1 ? '' : 's'}` : ''}</span><div class="who-sub">${escapeHtml(sub)}</div>`;
+}
+const DIR_TEXT = { both: 'in + out', in: 'in only', out: 'out only' };
+
+async function loadLanding() {
+  let d;
+  try { d = await apiGet('/api/ds/landing'); } catch (_) { return; }
+  const busy = d.job && d.job.status === 'running';
+  const memo = (m, mode) => !m ? '<span class="muted">not built</span>'
+    : `<span class="tag ${m.fits ? 'on_desk' : m.covered && m.covered.length ? 'warn' : 'bad'}">${m.fits ? 'Ready' : m.covered && m.covered.length ? 'Partly ready' : 'Zones changed'}</span>
+       ${m.missing && m.missing.length ? `<div class="who-sub">watching ${escapeHtml(m.covered.join(', ') || 'none')} · <b>${escapeHtml(m.missing.join(', '))}</b> not in it yet</div>` : ''}
+       <div class="who-sub">${m.images} frames · built ${escapeHtml(fmtBuilt(m.built))}${m.objects_found_pct != null ? ` · test objects found ${m.objects_found_pct}%` : ''}${m.false_alarms_learnt ? ` · ${m.false_alarms_learnt} false alarm(s) learnt` : ''}</div>`;
+  $('land-body').innerHTML = d.cameras.length ? d.cameras.map(c => {
+    const enough = c.frames.day >= 20 || c.frames.night >= 20;
+    return `<tr><td class="who-name">${escapeHtml(c.camera)}${c.enabled ? '' : '<div class="who-sub">off</div>'}</td>
+      <td>${c.zones.map(z => `<div>${escapeHtml(z.name)} <span class="muted">${z.side ? SIDE[z.side] : 'no perimeter line'}</span></div>`).join('')}<div class="who-sub">${c.tiles} tiles</div></td>
+      <td class="mono">${c.frames.day} day · ${c.frames.night} night${enough ? '' : '<div class="who-sub">at least 20 of day or night needed</div>'}</td>
+      <td>${memo(c.modes.day)}</td><td>${memo(c.modes.night)}</td>
+      <td>${landCell(c.now)}</td>
+      <td class="row-actions">${(d.pending || {})[c.camera] ? `<div class="who-sub" data-pending="${escapeHtml(c.camera)}">builds by itself in ${d.pending[c.camera].in_s} s — ${escapeHtml(d.pending[c.camera].reason)}</div>` : ''}
+        <button class="btn sm${enough ? ' primary' : ''}" data-land="${escapeHtml(c.camera)}"${busy || !enough ? ' disabled' : ''}
+        title="${enough ? 'Build the day and night memory from the Normal frames (a few minutes; the pipeline keeps running)' : 'Record Normal frames first (Recordings page)'}">Build landing memory</button></td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="empty">No camera has a landing zone — draw one on the Perimeter zones tab (Landing zone).</td></tr>';
+  const j = d.job, pre = $('land-job');
+  $('land-job-head').hidden = pre.hidden = !j;
+  if (j) {
+    $('land-job-title').textContent = `${j.action} · ${j.status}${j.error ? ' — ' + j.error : ''}`;
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    pre.textContent = j.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight;
+  }
+}
+const fmtBuilt = (iso) => { if (!iso) return ''; const d = new Date(iso); return `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })} ${hhmm(iso)}`; };
+async function buildLanding(cam) {
+  if (!confirm(`Build the landing memory of ${cam} from its Normal frames now? A few minutes per mode (day, night); the pipeline keeps running.`)) return;
+  try { await apiPost('/api/ds/landing/build', { camera: cam }); toast(`Building the landing memory of ${cam}…`); } catch (e) { toast(e.message); }
+  loadLanding();
+}
+
 async function loadStatus() {
   try { S.status = await apiGet('/api/ds/status'); } catch (e) { return; }
   const st = S.status, job = st.job, busy = job && job.status === 'running';
@@ -62,9 +109,10 @@ async function loadStatus() {
       <td>${s.online ? '<span class="tag on_desk">Online</span>' : `<span class="tag bad">Offline</span>${s.reachable === false ? ' <span class="muted">not reachable</span>' : ''}`}</td>
       <td class="mono">${s.fps ?? 0}${s.throw ? `<div class="who-sub">throw: every frame${s.online && s.fps && s.fps < 20 ? ' · <span style="color:var(--red)">low fps</span>' : ''}</div>` : ''}</td>
       <td>${s.mode ? `<span class="tag ${s.mode === 'night' ? 'dept' : 'warn'}">${s.mode === 'night' ? 'Night' : 'Day'}</span><div class="who-sub">colour ${s.saturation ?? '?'}</div>` : '<span class="muted">—</span>'}</td>
-      <td>${throwCell(s.throw_stats)}</td>
+      <td>${throwCell(s.throw_stats)}${s.throw ? `<div class="who-sub">${DIR_TEXT[s.throw_dir || 'both']}</div>` : ''}</td>
+      <td>${landCell(s.landing)}</td>
       <td>${Object.entries(s.images || {}).map(([c, n]) => `<span class="tag">${escapeHtml(c)} ${n}</span>`).join('') || '<span class="muted">none</span>'}</td></tr>`).join('')
-    : `<tr><td colspan="6" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
+    : `<tr><td colspan="7" class="empty">${st.running ? 'starting…' : 'not running'}</td></tr>`;
   if (job) { $('ds-job-title').textContent = `${job.action} · ${job.status}${job.error ? ' — ' + job.error : ''}`;
              const pre = $('ds-job'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
              pre.textContent = job.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; }
@@ -133,7 +181,7 @@ function renderCameras() {
       <td class="url-cell" title="${escapeHtml(maskUri(s.uri))}">${escapeHtml(maskUri(s.uri))}</td>
       <td class="mono">${s.uri.startsWith('file://') ? 'file' : s.transport.toUpperCase()}</td>
       <td>${s.enabled ? '<span class="tag on_desk">On</span>' : '<span class="tag">Off</span>'}</td>
-      <td>${s.throw ? `<span class="tag warn">Every frame</span>${(S.status?.throw_no_band || []).includes(s.name) ? '<div class="who-sub" style="color:var(--red)">no throw band drawn</div>' : ''}` : '<span class="muted">off</span>'}</td>
+      <td>${s.throw ? `<span class="tag warn">Every frame</span><div class="who-sub">thrown ${DIR_TEXT[s.throw_dir || 'both']}</div>${(S.status?.throw_no_band || []).includes(s.name) ? '<div class="who-sub" style="color:var(--red)">no throw band drawn</div>' : ''}` : '<span class="muted">off</span>'}</td>
       <td>${drawn.includes(s.name) ? '<span class="tag on_desk">Drawn</span>' : '<span class="tag bad">Not drawn</span>'}</td>
       <td class="row-actions"><button class="btn sm" data-draw="${i}">Draw zones</button>
         <button class="btn sm" data-edit="${i}">Edit</button><button class="btn sm danger-ghost" data-del="${i}">Remove</button></td></tr>`).join('')
@@ -146,7 +194,8 @@ function openCam(i) {
   $('cam-form').reset(); $('cam-msg').textContent = '';
   $('cam-title').textContent = s ? `Edit ${s.name}` : 'Add camera';
   f.name.value = s?.name || ''; f.uri.value = s?.uri || ''; f.transport.value = s?.transport || 'tcp'; f.enabled.checked = s ? s.enabled : true;
-  f.throw.checked = !!s?.throw;
+  f.throw.checked = !!s?.throw; f.throw_dir.value = s?.throw_dir || 'both';
+  $('cam-dir-row').hidden = !f.throw.checked;
   $('cam-sample').innerHTML = '<option value="">—</option>' + (S.cfg.sample_videos || []).map(v => `<option value="file://${escapeHtml(v)}">${escapeHtml(v.split('/').pop())}</option>`).join('');
   $('cam-modal').hidden = false; f.name.focus();
 }
@@ -169,7 +218,8 @@ async function testCam() {
 async function saveCam(ev) {
   ev.preventDefault();
   const f = $('cam-form').elements;
-  const cam = { name: f.name.value.trim(), uri: f.uri.value.trim(), transport: f.transport.value, enabled: f.enabled.checked, throw: f.throw.checked };
+  const cam = { name: f.name.value.trim(), uri: f.uri.value.trim(), transport: f.transport.value, enabled: f.enabled.checked, throw: f.throw.checked,
+                throw_dir: f.throw_dir.value || 'both' };
   const streams = S.cfg.streams.slice();
   if (S.editing == null) streams.push(cam); else streams[S.editing] = cam;
   try {
@@ -244,6 +294,8 @@ onReady(async () => {
     else { S.zcam = S.cfg.streams[Number(b.dataset.draw)].name; fillZoneCams(); showTab('zones'); }
   });
   $('cam-sample').addEventListener('change', (e) => { if (e.target.value) $('cam-form').elements.uri.value = e.target.value; });
+  $('cam-form').elements.throw.addEventListener('change', (e) => { $('cam-dir-row').hidden = !e.target.checked; });
+  $('land-body').addEventListener('click', (e) => { const b = e.target.closest('[data-land]'); if (b) buildLanding(b.dataset.land); });
   $('cam-test').addEventListener('click', testCam);
   $('cam-form').addEventListener('submit', saveCam);
   $('cam-modal').querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeCam));
@@ -258,6 +310,7 @@ onReady(async () => {
   // timers: status every 3 s, log every 5 s (Pipeline tab), live frames every 2 s (Live tab)
   setInterval(loadStatus, 3000);
   setInterval(() => { if (S.tab === 'pipeline') loadLog(); }, 5000);
+  loadLanding(); setInterval(() => { if (S.tab === 'pipeline') loadLanding(); }, 5000);
   setInterval(refreshLive, 2000);
   const fromHash = () => {                              // #zones=<camera> (links, the Draw button) and back / forward
     const h = location.hash.slice(1).split('=');

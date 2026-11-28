@@ -24,6 +24,12 @@ when the worker is behind: the pipeline never waits). A throw → ds/throws/even
 ds/throws/<YYYYmmdd>/<camera>_<time>.jpg + a THROW log line; no client alert yet (the alert logic comes later). Days older
 than the image retention are deleted. Person crossed the wall (zones.LineCrossing): a tracked person outside the line
 for 3 frames, then inside for 3 → that frame's person is a breach ("crossed", region "Perimeter line").
+Throws both ways (28 Nov 2026, the user's choice): a camera's "throw_dir" = both (default) / in / out; the alert says
+"thrown in" or "thrown out". A person in a near-wall region within PERSON_LOOKBACK_S before a throw
+marks it "thrower" (alert rule *thrower: Critical). Landing / left objects (landing.py, PatchCore, step E): a camera with
+a landing zone hands the landing worker — its OWN process, started here once a memory exists (bank.py) and started
+again if it ever stops — one picture about every LANDING_EVERY_S (the landing tiles' part at full size + the frame at
+960x540 + the people / vehicles in it); the worker's state is shown per camera.
 Robustness (as the Workplace Analytics pipeline, site-proven): a camera without frames for 10 s is re-created on its own
 (an unreachable RTSP camera is port-checked first, every 60 s), source errors never stop the pipeline, the zones file is
 re-read when it changes, RAM guard 700 MB / temperature 85 °C / disk 5 GB, stall watchdog, clean stop on SIGTERM.
@@ -40,8 +46,9 @@ import pyds
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import zones as Z
 from savepolicy import SavePolicy
-from scene import ModeDetector, Sampler, busy, saturation
+from scene import ModeDetector, Parked, Sampler, busy, saturation
 from throw import ThrowDetector
+from bank import landing_layout
 
 ROOT = os.environ.get("PERIMETER_ROOT", "/root/PERIMETER")
 DATA = os.environ.get("TRINETRA_DATA", f"{ROOT}/data")
@@ -55,6 +62,12 @@ RECONNECT_S = 10
 RETRY_S = int(os.environ.get("PERIMETER_RETRY_S", "60"))
 HANG_S, EXIT_S, CLOSE_S, CLOSE_MAX = 60, 20, 60, 3   # watchdog(): main loop silent / shutdown / old connection closing
 TRACKER = "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml"
+THROW_DIRS = {"both": ("in", "out"), "in": ("in",), "out": ("out",)}
+PERSON_LOOKBACK_S = 8.0                               # spec fusion.person_lookback_s
+LANDING_EVERY_S = 1.0                                 # spec anomaly.check_interval_s
+LANDING_SHM = f"{SHM}/perimeter_landing"
+LANDING_STATE = f"{SHM}/perimeter_landing_state.json"
+SUPPRESS_LABELS = {"car", "motorcycle", "bicycle", "truck", "bus", "train"}   # moving vehicles: never a landed object
 ZONE_COL = {"alert": (40, 40, 220), "watch": (220, 140, 40), "near": (247, 85, 168), "ignore": (90, 90, 90),
             "band": (21, 204, 250), "landing": (22, 204, 132)}                  # BGR, as the zone editor
 COLORS = {Z.BREACH: (64, 64, 255), Z.OUTSIDE_PERSON: (0, 170, 255), Z.OUTSIDE_OBJECT: (0, 200, 255),
@@ -112,6 +125,7 @@ class App:
         self.sampler = Sampler(self.cfg.get("sampling_file") or f"{DATA}/ds/run/sampling.json",
                                owner=int(os.environ.get("CAPTURES_UID", "1000")), log=log)
         self.sampler.reload()
+        self.parked = Parked()                            # parked bikes / cars: normal scene for the sampler
         n = len(self.srcs)
         self.loop_files = bool(self.cfg.get("loop_files", True))
         self.drop = int(self.cfg.get("frame_skip", 2))
@@ -143,6 +157,11 @@ class App:
         self.throw_n = collections.Counter()               # camera → throws, dropped frames, frames fed
         self.cam_frame = collections.Counter()
         self.throw_day = None
+        self.near_seen = {}                                # camera → monotonic time a person was near the wall / outside
+        self.land = {}                                     # camera → landing layout (cameras with a landing zone)
+        self.land_last, self.land_proc, self.land_starts, self.land_next = {}, None, collections.deque(maxlen=10), 0.0
+        self.banks_dir = self.cfg.get("banks_dir") or f"{DATA}/ds/banks"
+        self.build_landing()
         self.build_throw_detectors()
         for c in self.throw_cams:
             self.throw_q[c] = collections.deque()
@@ -159,6 +178,8 @@ class App:
             self.zones = json.load(open(self.zones_file)); self.zones_mtime = m
             if hasattr(self, "throw_det"):
                 self.build_throw_detectors()
+            if hasattr(self, "land"):
+                self.build_landing()
             log("zones loaded:", ", ".join(f"{c} ({len(Z.regions(z or {}))} region(s), line {'yes' if (z or {}).get('line') else 'no'})"
                                          for c, z in self.zones.items() if c in self.cams) or "none for these cameras")
         except Exception as e:
@@ -167,10 +188,116 @@ class App:
     # ---- throw over the wall: one detector + worker per throw camera
     def build_throw_detectors(self):
         for c in self.throw_cams:
-            d = ThrowDetector(self.zones.get(c) or {}, self.throw_cfg, (MUX_W, MUX_H), camera=c)
+            way = next((s.get("throw_dir") for s in self.srcs if s["name"] == c), None) or "both"
+            d = ThrowDetector(self.zones.get(c) or {}, {**self.throw_cfg, "dirs": THROW_DIRS.get(way, THROW_DIRS["both"])},
+                              (MUX_W, MUX_H), camera=c)
             self.throw_det[c] = d
-            log(f"THROW {c}: " + (f"watching the band {d.box} (every frame)" if d.ok else
+            log(f"THROW {c}: " + (f"watching the band {d.box} (every frame), thrown {' and '.join(d.c['dirs'])}" if d.ok else
                                   "throw detection on, but no throw band / perimeter line / outside point drawn: idle"))
+
+    # ---- landing / left objects: the worker process (landing.py) gets one picture per camera about every second
+    def build_landing(self):
+        land = {}
+        for c in self.cams:
+            try:
+                lay = landing_layout(self.zones.get(c) or {})
+            except Exception as e:
+                log(f"LANDING {c}: zones not usable: {e!r}"); continue
+            if lay["tiles"]:
+                land[c] = lay
+        if set(land) != set(self.land):
+            if self.land_proc is not None:
+                self.stop_landing()                        # other cameras: the worker starts again with them (10 s)
+            log("LANDING: " + (", ".join(f"{c} ({len(l['zones'])} zone(s): {', '.join(z['name'] + ' ' + (z['side'] or '?') for z in l['zones'])}; "
+                                         f"{len(l['tiles'])} tiles)" for c, l in land.items()) or "no camera has a landing zone"))
+        self.land = land
+
+    def landing_wanted(self):
+        """the worker runs while a camera with a landing zone has a memory (day or night) — no memory, no GPU used"""
+        return any(os.path.isfile(os.path.join(self.banks_dir, c, m, "meta.json")) for c in self.land for m in ("day", "night"))
+
+    def manage_landing(self):
+        """every RECONNECT_S: start / restart / stop the landing worker (fail-safe: back-off when it keeps stopping)"""
+        p = self.land_proc
+        if p is not None and p.poll() is not None:
+            log(f"LANDING worker stopped (code {p.returncode})" + (" - starting it again" if self.landing_wanted() else ""))
+            self.land_proc = p = None
+            n = sum(1 for t in self.land_starts if time.monotonic() - t < 600)
+            self.land_next = time.monotonic() + min(300, 10 * 2 ** max(0, n - 1))
+        want = self.landing_wanted() and not self.stopping
+        if p is None and want and time.monotonic() >= self.land_next:
+            self.start_landing()
+        elif p is not None and not want:
+            log("LANDING: no memory for any camera any more - worker stopped"); self.stop_landing()
+
+    def start_landing(self):
+        import subprocess
+        run = {"cameras": sorted(self.land), "zones_file": self.zones_file, "banks_dir": self.banks_dir,
+               "throws_dir": self.throws_dir, "incoming": self.incoming, "landing_dir": self.cfg.get("landing_dir") or f"{DATA}/ds/landing",
+               "feedback_file": self.cfg.get("feedback_file") or f"{DATA}/feedback/feedback.jsonl", "keep_days": self.keep_days,
+               "cfg": self.cfg.get("landing_cfg") or {}}
+        rf = os.path.join(os.path.dirname(os.path.abspath(self.pgie_cfg)), "landing_run.json")
+        try:
+            with open(rf + ".tmp", "w") as f:
+                json.dump(run, f, indent=1)
+            os.replace(rf + ".tmp", rf)
+            os.makedirs(LANDING_SHM, exist_ok=True)
+            # no preexec_fn (not safe with this many threads): the worker itself asks the kernel for SIGTERM when this
+            # process dies and checks that its parent is still this pid
+            self.land_proc = subprocess.Popen([sys.executable, "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)), "landing.py"),
+                                               "--config", rf, "--parent", str(os.getpid())], stdout=sys.stdout, stderr=subprocess.STDOUT)
+            self.land_starts.append(time.monotonic())
+            log(f"LANDING worker started (pid {self.land_proc.pid}) for {', '.join(sorted(self.land))}")
+        except Exception as e:
+            log(f"LANDING worker not started: {e!r}"); self.land_next = time.monotonic() + 60
+
+    def stop_landing(self):
+        p, self.land_proc = self.land_proc, None
+        if p is None or p.poll() is not None:
+            return
+        try:
+            p.terminate()
+            p.wait(timeout=5)
+        except Exception:
+            try: p.kill()
+            except Exception: pass
+
+    def feed_landing(self, cam, full, boxes, now, wall):
+        """the landing worker's picture of this camera: the tiles' part at full size, the whole frame at 960x540, the
+        people / vehicles (their spots never count). Written to /dev/shm, picture first, its description last."""
+        lay = self.land.get(cam)
+        if lay is None:
+            return
+        x0, y0, x1, y1 = lay["crop"]
+        md = self.modes[cam]
+        people = [[round(b[0]), round(b[1]), round(b[2]), round(b[3]), lab] for b, _c, lab, _f in boxes
+                  if Z.target_of(lab) == "person" or (lab or "").lower() in SUPPRESS_LABELS]
+        meta = {"camera": cam, "ts": wall.isoformat(timespec="milliseconds"), "mono": now, "mode": md.mode,
+                "mode_age_s": round(now - md.since, 1) if md.since is not None else None, "mode_switched": md.switches > 0,
+                "crop": [x0, y0, x1, y1], "people": people}
+        try:
+            for name, arr in ((f"{cam}.npy", full[y0:y1, x0:x1]),
+                              (f"{cam}.view.npy", cv2.resize(full, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA))):
+                tmp = os.path.join(LANDING_SHM, "." + name)
+                with open(tmp, "wb") as f:
+                    np.save(f, np.ascontiguousarray(arr))
+                os.replace(tmp, os.path.join(LANDING_SHM, name))
+            tmp = os.path.join(LANDING_SHM, f".{cam}.json")
+            with open(tmp, "w") as f:
+                json.dump(meta, f)
+            os.replace(tmp, os.path.join(LANDING_SHM, f"{cam}.json"))
+        except OSError as e:
+            self.throw_n[(cam, "landing_write_errors")] += 1
+            if self.throw_n[(cam, "landing_write_errors")] <= 3: log(f"LANDING {cam}: picture not handed over: {e!r}")
+
+    def landing_state(self):
+        try:
+            st = json.load(open(LANDING_STATE))
+            if self.land_proc is None or st.get("pid") != self.land_proc.pid:
+                return {}
+            return st.get("cameras") or {}
+        except (OSError, ValueError):
+            return {}
 
     def throw_worker(self, cam):
         q = self.throw_q[cam]
@@ -191,6 +318,8 @@ class App:
 
     def write_throw(self, cam, det, ev, wall, mode):
         self.throw_n[(cam, "throws")] += 1
+        seen = self.near_seen.get(cam)
+        ev = {**ev, "thrower": seen is not None and seen >= ev.get("t_start", 0) - PERSON_LOOKBACK_S}
         day = wall.strftime("%Y%m%d")
         d = os.path.join(self.throws_dir, day)
         name = f"{cam}_{wall.strftime('%Y%m%d-%H%M%S')}-{wall.microsecond // 1000:03d}.jpg"
@@ -209,7 +338,7 @@ class App:
                 f.write(json.dumps(ev) + "\n")
         except OSError as e:
             log(f"THROW {cam}: not written: {e!r}")
-        log(f"THROW {cam}: {ev['curve']} over the line at {ev['crossing_xy']}, {ev['points']} points, "
+        log(f"THROW {cam}: thrown {ev.get('dir', 'in')}{' (person near the wall)' if ev.get('thrower') else ''}, {ev['curve']} over the line at {ev['crossing_xy']}, {ev['points']} points, "
             f"{ev['speed_px_f']} px/frame, fit {ev['fit_rms']} px → {ev['image']}")
 
     def throw_to_dashboard(self, cam, ev, jpg: bytes, wall, mode):
@@ -222,6 +351,7 @@ class App:
                            "camera": cam, "ts": wall.isoformat(timespec="milliseconds"), "mode": mode,
                            "objects": [{"label": "thrown object", "kind": "object", "regions": [], "alert": False,
                                         "outside": False, "near": False, "crossed": False, "thrown": True,
+                                        "throw_dir": ev.get("dir") or "in", "thrower": bool(ev.get("thrower")),
                                         "track": ev.get("track_id"), "conf": 1.0, "box": None}]})
         try:
             side = os.path.join(self.incoming, name[:-4] + ".json")
@@ -366,6 +496,9 @@ class App:
         if pad.link(self.mux_pads[i]) != Gst.PadLinkReturn.OK: log(f"ERROR linking camera {self.cams[i]}")
         if self.held[i]:                                  # the new source delivers: the old one goes 1.5 s later
             GLib.timeout_add(1500, self._dispose_source, *self.held[i], i); self.held[i] = None
+        det = self.throw_det.get(self.cams[i])
+        if det is not None and det.ok:                     # a fresh stream: the throw detection learns its background
+            det.rewarm()                                   # again first (no false throw from the first frames)
 
     def on_src_buffer(self, pad, info, i):
         if self.stopping: return Gst.PadProbeReturn.DROP
@@ -442,6 +575,8 @@ class App:
                 self.check_reachable(i)
         self.reload_zones()
         self.sampler.reload()
+        try: self.manage_landing()
+        except Exception as e: log(f"LANDING: {e!r}")
         return True
 
     def check_reachable(self, i):
@@ -516,12 +651,14 @@ class App:
             b = (r.left, r.top, r.width, r.height)
             d = Z.describe(lab, b, zone, MUX_W, MUX_H)
             tid = int(o.object_id) if o.object_id < 2**53 else None
-            if Z.target_of(lab) == "person" and self.crossing.update(
+            if Z.target_of(lab) == "person" and self.crossing.update(   # (never in a no-detection region: zones.py)
                     cam, tid, ((b[0] + b[2] / 2) / MUX_W, (b[1] + b[3]) / MUX_H), zone, time.monotonic()):
                 d = dict(d or {"kind": "person", "regions": [], "alert": False, "outside": False, "near": False})
                 d.update(alert=True, crossed=True, regions=d["regions"] + [Z.CROSSED_REGION])
                 log(f"CROSSED {cam}: person (track {tid}) crossed the perimeter line")
             c = Z.cls(d) if d else None
+            if d and Z.target_of(lab) == "person" and d.get("near"):
+                self.near_seen[cam] = time.monotonic()         # a possible thrower in a near-wall region (+ throw = Critical)
             boxes.append((b, c, lab, o.confidence))
             if d:
                 objs.append({"crossed": False, **d, "label": lab, "cls": c, "track": tid,
@@ -540,13 +677,21 @@ class App:
         if (due or hold) and self.disk_low:                    # saving paused (disk low): no frame copies for nothing
             self.policy.saved(cam, objs, due, now); due, hold = [], False
         snap = now - self.last_snap.get(cam, -1e9) >= 2.0
+        land = cam in self.land and self.land_proc is not None and self.modes[cam].mode is not None \
+            and now - self.land_last.get(cam, -1e9) >= LANDING_EVERY_S
         samples = [] if self.disk_low else self.sampler.due(cam, now, wall)
-        if samples and busy([b for b, _c, _l, _f in boxes], zone, MUX_W, MUX_H):
+        if snap:                                               # (every 2 s: a few boxes, nothing to measure)
+            self.parked.update(cam, [b for b, _c, lab, _f in boxes if Z.target_of(lab) != "person"], now)
+        if samples and busy([b for b, _c, lab, _f in boxes
+                             if Z.target_of(lab) == "person" or not self.parked.parked(cam, b, now)], zone, MUX_W, MUX_H):
             for j in samples: self.sampler.busy_now(j, cam, now)   # not a normal scene: tried again in 5 s
             samples = []
-        if not (due or hold or snap or samples): return
+        if not (due or hold or snap or samples or land): return
         full = self.frame_copy(buf, fm)
         if full is None: return
+        if land:
+            self.land_last[cam] = now
+            self.feed_landing(cam, full, boxes, now, wall)
         if snap or samples:                                    # day / night from a small copy (every 2 s)
             md = self.modes[cam]
             sw = md.update(saturation(cv2.resize(full, (160, 90), interpolation=cv2.INTER_AREA)), now)
@@ -672,13 +817,17 @@ class App:
             elif nsf == sf: self._wd = (pf, nsf, time.monotonic())
             self.fps = {c: round(self.fps_cnt[c] / 5.0, 2) for c in self.cams}; self.fps_cnt.clear()
             mono = time.monotonic()
+            land = self.landing_state()
             streams = [{"name": s["name"], "type": s["type"], "online": self.online[i], "throw": bool(s.get("throw")),
                         "mode": self.modes[s["name"]].mode, "saturation": self.modes[s["name"]].sat,
                         "reachable": None if self.reach[i] is None or self.online[i] else self.reach[i][1],
                         "last_frame_s": None if not self.last_buf[i] else round(mono - self.last_buf[i], 1),
                         "fps": self.fps.get(s["name"], 0), "reconnects": self.reconnects[i],
                         "images": {c: n for (cam, c), n in self.counts.items() if cam == s["name"]},
-                        "throw_stats": self.throw_stats(s["name"])}
+                        "throw_stats": self.throw_stats(s["name"]), "throw_dir": s.get("throw_dir") or "both",
+                        "landing": (land.get(s["name"]) or {"status": "starting" if self.land_proc else
+                                    "no memory yet (Recordings → Normal frames, then Build landing memory)"})
+                                   if s["name"] in self.land else None}
                        for i, s in enumerate(self.srcs)]
             self.crossing.prune(mono)
             self.prune_throws()
@@ -751,6 +900,8 @@ class App:
         try: self.loop.run()
         finally:
             self.quit_at = self.quit_at or time.monotonic()
+            try: self.stop_landing()
+            except Exception: pass
             got = self.state_lock.acquire(timeout=EXIT_S)  # an old source still closing first (watchdog() exits if stuck)
             self.pipe.set_state(Gst.State.NULL)
             if got: self.state_lock.release()

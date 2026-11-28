@@ -72,10 +72,17 @@ DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "f
 # classes: the model's labels the pipeline reports ([] = all; PERIMETER_THROW_DETECTION_SPEC yolo.classes_keep, e.g. person,
 # backpack, handbag, suitcase of a COCO model) — the others are dropped inside nvinfer (filter-out-class-ids).
 # Per camera "throw": true = throw detection on that camera (spec §7.4): every frame is decoded and looked at (the frame
-# skip above does not apply to it) — a thrown object is in the picture for only 5–15 frames.
+# skip above does not apply to it) — a thrown object is in the picture for only 5–15 frames. "throw_dir" (28 Nov 2026):
+# both (default) / in / out = which way over the line a throw is reported ("thrown in" / "thrown out").
+# Landing memory (PatchCore, step E): per camera with a landing zone, built from its Normal frames (Recordings) by the
+# "Build landing memory" job (pipeline/bank.py in its own process; the pipeline keeps running) into ds/banks/.
 # Day / night (spec §7.3): night when the picture's mean colour saturation (HSV, 0–255) stays under night_saturation_max for
 # mode_hysteresis_s (an IR picture is grey), day when above as long.
 
+THROW_DIRS = ("both", "in", "out")
+BANKS = DS / "banks"
+LANDING = DS / "landing"
+LANDING_STATE = SHM / "perimeter_landing_state.json"
 router = APIRouter()
 _lock = threading.Lock()
 
@@ -215,8 +222,11 @@ def check_config(raw: dict) -> dict:
         if uri.startswith("file://") and available() and not _exists(uri[7:]):
             raise ValueError(f"{name}: no video file {uri[7:]} on the Jetson")
         tr = s.get("transport", "tcp")
+        way = s.get("throw_dir") or "both"
+        if way not in THROW_DIRS:
+            raise ValueError(f"{name}: throw direction both, in or out")
         streams.append({"name": name, "uri": uri, "transport": "udp" if tr == "udp" else "tcp", "enabled": bool(s.get("enabled", True)),
-                        "throw": bool(s.get("throw", False))})
+                        "throw": bool(s.get("throw", False)), "throw_dir": way})
     if len(streams) > MAX_CAMERAS:
         raise ValueError(f"at most {MAX_CAMERAS} cameras on one Jetson")
     cfg["streams"] = streams
@@ -590,10 +600,12 @@ def run_plan(cfg: dict):
 
 def write_run_configs(cfg: dict, streams: list, model: dict, plan: dict):
     run = {"streams": [{"name": s["name"], "type": "file" if s["uri"].startswith("file://") else "rtsp", "uri": s["uri"],
-                        "transport": s["transport"], "throw": bool(s.get("throw"))} for s in streams],
+                        "transport": s["transport"], "throw": bool(s.get("throw")), "throw_dir": s.get("throw_dir") or "both"}
+                       for s in streams],
            "labels": model["labels"], "classes": cfg.get("classes") or [], "save_every_s": cfg["save_every_s"],
            "frame_skip": cfg["frame_skip"], "loop_files": cfg["loop_files"], "incoming": config.INCOMING_DIR,
            "zones_file": str(ZONES), "sampling_file": str(SAMPLING), "throws_dir": str(DS / "throws"),
+           "banks_dir": str(BANKS), "landing_dir": str(LANDING), "feedback_file": str(DATA / "feedback" / "feedback.jsonl"),
            "keep_days": config.IMAGE_RETENTION_DAYS,                     # 0 or less: kept forever (as the images)
            "mode": {"night_saturation_max": cfg["night_saturation_max"], "hysteresis_s": cfg["mode_hysteresis_s"]}}
     write_atomic(RUN / "config_run.json", json.dumps(run, indent=1))
@@ -769,6 +781,10 @@ def supervisor():
             supervise_once()
         except Exception as e:
             print(f"[ds] supervisor: {e!r}", flush=True)
+        try:
+            auto_landing_tick()
+        except Exception as e:
+            print(f"[ds] landing memory (automatic): {e!r}", flush=True)
 
 
 def start():
@@ -817,6 +833,185 @@ def api_status():
             "throw_cameras": [s["name"] for s in streams if s.get("throw")],
             "throw_no_band": [s["name"] for s in streams if s.get("throw") and not Z.regions(load_zones().get(s["name"]) or {}, "band")],
             "classes": cfg.get("classes") or []}
+
+
+# ─── landing memory (PatchCore, step E) ──────────────────────────────────────────────────────────────────────────
+def _captures_root() -> str:
+    import captures                                   # (captures imports this module: imported here, when needed)
+    return str(captures.ROOT)
+
+
+def landing_status() -> list:
+    """per camera with a landing zone: zones (and their side), Normal frames day / night, the memory of each mode, and
+    what the landing worker says now"""
+    from pipeline import bank as BK
+    zones, root = load_zones(), _captures_root()
+    live = (read_json(LANDING_STATE, {}) or {}).get("cameras") or {} if pid_alive() else {}
+    out = []
+    for s in load_config()["streams"]:
+        z = zones.get(s["name"]) or {}
+        if not Z.regions(z, "landing"):
+            continue
+        st = BK.status(s["name"], z, root, str(BANKS))
+        st["now"] = live.get(s["name"])
+        st["enabled"] = s["enabled"]
+        out.append(st)
+    return out
+
+
+def build_landing(job: Job, cam: str):
+    """the camera's day and night memory from its Normal frames — pipeline/bank.py in its own process (GPU), the
+    pipeline keeps running; the landing worker picks the new memory up by itself"""
+    zf = RUN / f"zones_bank_{cam}.json"
+    RUN.mkdir(parents=True, exist_ok=True)
+    write_atomic(zf, json.dumps({cam: load_zones().get(cam) or {}}))
+    h = host_health()
+    if h["mem_available_gb"] < 1.2:
+        raise RuntimeError(f"only {h['mem_available_gb']} GB RAM available (< 1.2 GB): try again later")
+    job.log(f"building the landing memory of {cam} (day and night, from its Normal frames) — the pipeline keeps running")
+    p = subprocess.Popen([PY, "-u", str(APP / "bank.py"), "build", "--camera", cam, "--zones", str(zf), "--captures",
+                          _captures_root(), "--out", str(BANKS)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, cwd=str(APP), env={**os.environ, "TRINETRA_DATA": str(DATA)})
+    res = None
+    for line in p.stdout:
+        line = line.rstrip()
+        if line.startswith("RESULT "):
+            try:
+                res = json.loads(line[7:])
+            except ValueError:
+                pass
+            continue
+        if line:
+            job.log(line[9:] if re.match(r"^\d\d:\d\d:\d\d ", line) else line)
+        if job.cancel:
+            p.kill()
+            raise RuntimeError("cancelled")
+    code = p.wait()
+    try:
+        zf.unlink()
+    except OSError:
+        pass
+    if code == 2:
+        raise RuntimeError("no memory built: not enough Normal frames yet (at least 20 of day or of night)")
+    if code or not res or res.get("error"):
+        raise RuntimeError((res or {}).get("error") or f"the build stopped (code {code})")
+    built = [m for m, v in res["modes"].items() if v.get("built")]
+    job.log(f"landing memory ready ({' + '.join(built)}); the landing detection uses it within a few seconds" +
+            ("" if pid_alive() else " once the pipeline runs"))
+
+
+LAND_JOB: Optional[Job] = None                       # its own slot: a 10-minute build never blocks Start / Stop
+# Automatic builds (28 Nov 2026, the user's wish: zones edited → the memory follows by itself):
+#   a landing zone added or moved (saved zones)   → built AUTO_DELAY_S later (another save meanwhile: later again)
+#   a Normal-frames recording finished / stopped  → built again with all its frames (forced)
+#   every AUTO_CHECK_S: a camera whose memory does not cover its zones, or has none while it has enough Normal frames
+#   and no Normal-frames recording runs for it    → built (at most once per AUTO_RETRY_S per camera if it fails)
+# A zone REMOVED needs no build: the worker keeps watching the zones the memory covers (bank.covered).
+AUTO_DELAY_S, AUTO_CHECK_S, AUTO_RETRY_S = 60, 60, 1800
+AUTO = {"pending": {}, "last": {}, "checked": 0.0}     # camera → {"due", "reason", "force"} · camera → last auto start
+
+
+def schedule_landing_build(cam: str, reason: str, delay: float = AUTO_DELAY_S, force: bool = False):
+    AUTO["pending"][cam] = {"due": time.time() + delay, "reason": reason,
+                            "force": force or (AUTO["pending"].get(cam) or {}).get("force", False)}
+    print(f"[ds] landing memory of {cam}: built by itself in {int(delay)} s ({reason})", flush=True)
+
+
+def _recording_normal(cam: str) -> bool:
+    try:
+        import captures
+        for c in captures._caps():
+            m = captures._read(c / "capture.json") or {}
+            if m.get("kind") == "normal" and m.get("state") in ("recording", "scheduled") and cam in (m.get("cameras") or []):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _needs_build(st: dict) -> Optional[str]:
+    """why this camera's memory should be built now (None: it is fine, or it cannot be built yet)"""
+    from pipeline import bank as BK
+    can = [m for m in ("day", "night") if st["frames"][m] >= BK.DEFAULTS["min_images"]]
+    if not can or not st["zones"]:
+        return None
+    for m in can:
+        mm = st["modes"].get(m)
+        if mm and mm.get("missing"):
+            return f"landing zone(s) {', '.join(mm['missing'])} not in the {m} memory yet"
+    if any(m not in st["modes"] for m in can) and not _recording_normal(st["camera"]):
+        return f"enough Normal frames for a {' + '.join(m for m in can if m not in st['modes'])} memory"
+    return None
+
+
+def auto_landing_tick(now: Optional[float] = None):
+    """runs in the supervisor (every 10 s): start a due automatic build when no build runs"""
+    now = now or time.time()
+    if now - AUTO["checked"] >= AUTO_CHECK_S:
+        AUTO["checked"] = now
+        for st in landing_status():
+            why = _needs_build(st)
+            if why and st["camera"] not in AUTO["pending"] and now - AUTO["last"].get(st["camera"], 0) >= AUTO_RETRY_S:
+                schedule_landing_build(st["camera"], why, 5)
+    if LAND_JOB and LAND_JOB.status == "running" or not available():
+        return
+    for cam, p in sorted(AUTO["pending"].items(), key=lambda kv: kv[1]["due"]):
+        if p["due"] > now:
+            continue
+        AUTO["pending"].pop(cam, None)
+        st = next((x for x in landing_status() if x["camera"] == cam), None)
+        why = _needs_build(st) if st else None
+        if st and (why or (p["force"] and any(st["frames"][m] >= 20 for m in ("day", "night")))):
+            AUTO["last"][cam] = now
+            try:
+                start_land_job(cam, by=f"automatically: {why or p['reason']}")
+            except HTTPException:
+                schedule_landing_build(cam, p["reason"], 30, p["force"])
+        return                                        # one at a time
+
+
+def start_land_job(cam: str, by: str = "") -> Job:
+    global LAND_JOB
+    with _lock:
+        if LAND_JOB and LAND_JOB.status == "running":
+            raise HTTPException(409, f"Busy: {LAND_JOB.action} is still running")
+        LAND_JOB = job = Job(f"landing memory {cam}")
+    if by:
+        job.log(f"started {by}")
+
+    def run():
+        try:
+            build_landing(job, cam)
+            job.status = "done"
+        except Exception as e:
+            job.status, job.error = "failed", str(e)
+            job.log(f"FAILED: {e}")
+        job.ended = datetime.now().isoformat(timespec="seconds")
+    threading.Thread(target=run, daemon=True, name="ds-landing").start()
+    return job
+
+
+@router.get("/api/ds/landing")
+def api_landing():
+    return {"cameras": landing_status(), "job": LAND_JOB.summary() if LAND_JOB else None,
+            "pending": {c: {"in_s": max(0, round(p["due"] - time.time())), "reason": p["reason"]} for c, p in AUTO["pending"].items()}}
+
+
+@router.post("/api/ds/landing/build")
+async def api_landing_build(request: Request):
+    body = await _body(request)
+    cam = str(body.get("camera") or "")
+    cfg = load_config()
+    if cam not in {s["name"] for s in cfg["streams"]}:
+        raise HTTPException(404, "Unknown camera")
+    if not Z.regions(load_zones().get(cam) or {}, "landing"):
+        raise HTTPException(400, f"{cam} has no landing zone: draw one on the Perimeter zones tab first")
+    if not available():
+        raise HTTPException(400, "DeepStream / the GPU is not available here")
+    AUTO["pending"].pop(cam, None)
+    job = start_land_job(cam, by=f"by {request.state.ident.get('username', '?') if hasattr(request.state, 'ident') else '?'}")
+    request.state.audit_target = cam
+    return job.summary()
 
 
 @router.get("/api/ds/config")
@@ -868,8 +1063,15 @@ async def api_zone_save(cam: str, request: Request, team: bool = True):
         zone = Z.clean(body if team else Z.keep_team_regions(body, z.get(cam) or {}))
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
+    from pipeline import bank as BK
     z[cam] = zone
     write_atomic(ZONES, json.dumps(z, indent=1))     # a running pipeline reads it again within 10 s
+    lay = BK.landing_layout(zone)
+    metas = [m for m in (BK.read_meta(str(BANKS), cam, md) for md in ("day", "night")) if m]
+    if lay["tiles"] and any(BK.covered(lay, m.get("tiles"))[1] for m in metas):
+        schedule_landing_build(cam, "landing zones added or moved")     # only a zone the memory does not cover yet
+    elif not any(BK.covered(lay, m.get("tiles"))[1] for m in metas):
+        AUTO["pending"].pop(cam, None)                # (a zone added then removed again: nothing left to build)
     return {"ok": True, "zone": zone, "applied": "within 10 s" if pid_alive() else "at the next start"}
 
 

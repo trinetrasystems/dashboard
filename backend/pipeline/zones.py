@@ -110,6 +110,34 @@ def regions(zone, kind=None) -> list:
     return [r for r in rs if kind is None or r.get("kind") == kind]
 
 
+def ignored(p, zone) -> bool:
+    """p (fractions) in a no-detection (ignore) region: nothing there is reported — no person / object, no line
+    crossing, no throw, no landing (28 Nov 2026: the user's "no detection" area)"""
+    return any(in_polygon(p, r["points"]) for r in regions(zone or {}, "ignore"))
+
+
+def region_side(region, zone):
+    """which side of the perimeter line a region lies on: "inside" / "outside" (most of its area), None without a line.
+    A landing zone's side decides which throws it confirms: "in" lands inside, "out" lands outside (28 Nov 2026)."""
+    line, out = (zone or {}).get("line") or [], (zone or {}).get("outside")
+    pts = region.get("points") or []
+    if len(line) < 2 or not out or len(pts) < 3:
+        return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    n_out = n_in = 0
+    for i in range(12):                                   # a 12 x 12 grid over the region's box: its area, not its corners
+        for j in range(12):
+            q = (min(xs) + (max(xs) - min(xs)) * (i + 0.5) / 12, min(ys) + (max(ys) - min(ys)) * (j + 0.5) / 12)
+            if in_polygon(q, pts):
+                if is_outside(q, zone):
+                    n_out += 1
+                else:
+                    n_in += 1
+    if not n_out + n_in:
+        return None
+    return "outside" if n_out > n_in else "inside"
+
+
 def target_of(label: str) -> str:
     return "person" if (label or "").strip().lower() in PERSON_LABELS else "object"
 
@@ -156,6 +184,9 @@ class LineCrossing:
         if track is None or len(zone.get("line") or []) < 2 or not zone.get("outside"):
             return False
         k = (cam, track)
+        if ignored(foot, zone):                       # a no-detection region: never a crossing (the track starts again)
+            self.t.pop(k, None)
+            return False
         st = self.t.get(k) or [0, 0, False, now]
         st[3] = now
         if is_outside(foot, zone):
@@ -294,6 +325,10 @@ if __name__ == "__main__":                            # python3 zones.py: self-t
             pass
     kept = keep_team_regions({**z, "regions": [z["regions"][0], {**band, "name": "Client band"}]}, z2)
     assert [r["name"] for r in kept["regions"]] == ["Wall top", "Band 1", "Landing 1", "Near wall"], kept
+    land_out = {"name": "Landing out", "kind": "landing", "points": [[0.1, 0.05], [0.9, 0.05], [0.9, 0.4], [0.1, 0.4]]}
+    assert region_side(land, z2) == "inside" and region_side(land_out, z2) == "outside" and region_side(land, {}) is None
+    zi = {**z, "regions": z["regions"] + [{"name": "Neighbour", "kind": "ignore", "points": [[0.4, 0.1], [0.6, 0.1], [0.6, 0.9], [0.4, 0.9]]}]}
+    assert ignored((0.5, 0.5), zi) and not ignored((0.2, 0.5), zi) and describe("person", box(500, 300), zi, 1000, 1000) is None
     d = describe("person", box(500, 700), z2, 1000, 1000)
     assert d["near"] and not describe("person", box(900, 800), z2, 1000, 1000)["near"]   # near-wall flag
     # crossing: outside 3x, then inside 3x → one crossing; jitter on the line is none; inside first is none
@@ -309,4 +344,7 @@ if __name__ == "__main__":                            # python3 zones.py: self-t
     assert [lc.update("c", 1, p, z, t) for t, p in enumerate([o, o, o, i, o, o, o, i, i, i])][-1] is True
     assert not lc.update("c", None, i, z, 0) and not LineCrossing().update("c", 1, i, {"line": []}, 0)   # no track / line
     lc.prune(100.0); assert not lc.t
+    zc = {**z, "regions": [{"name": "Neighbour", "kind": "ignore", "points": [[0.4, 0.0], [0.6, 0.0], [0.6, 1.0], [0.4, 1.0]]}]}
+    lc = LineCrossing(need=3)                                                   # crossing inside a no-detection region: never
+    assert not any(lc.update("c", 2, p, zc, t) for t, p in enumerate([o, o, o, i, i, i, i]))
     print("zones self-test ok")

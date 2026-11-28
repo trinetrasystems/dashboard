@@ -5,16 +5,17 @@
  * Regions: alert (anything there = breach), watch (the alert rules decide), ignore (never reported) and — drawn by the
  * Trinetra team only (team: true, the DeepStream page) — near (near the wall: a watch region the throw / loitering logic
  * also uses), band (throw band: the strip along the wall top watched for thrown objects, every frame) and landing
- * (landing zone: the ground inside where a thrown / left object is looked for). The client's editor shows those three
+ * (landing zone: the ground — inside or outside the wall — where a thrown / left object is looked for; its side comes
+ * from the perimeter line and the OUTSIDE point). The client's editor shows those three
  * but cannot change them (the server keeps them as they are).
  * Points are fractions of the frame; the outside-side rule is the same as backend/pipeline/zones.py.
  * ──────────────────────────────────────────────────────────────────────────── */
 function ZoneEditor(root, opts) {
   const COL = { line: '#f59e0b', alert: '#ef4444', watch: '#3b82f6', ignore: '#8a8f99', draft: '#14b8a6',
                 near: '#a855f7', band: '#facc15', landing: '#84cc16' };
-  const KIND = { alert: 'Alert region', watch: 'Watch region', ignore: 'Ignore region', near: 'Near-wall region',
+  const KIND = { alert: 'Alert region', watch: 'Watch region', ignore: 'No-detection region', near: 'Near-wall region',
                  band: 'Throw band', landing: 'Landing zone' };
-  const SHORT = { alert: 'alert', watch: 'watch', ignore: 'ignore', near: 'near wall', band: 'throw band', landing: 'landing zone' };
+  const SHORT = { alert: 'alert', watch: 'watch', ignore: 'no detection', near: 'near wall', band: 'throw band', landing: 'landing zone' };
   const TEAM_KINDS = ['near', 'band', 'landing'], REGION_TOOLS = ['alert', 'watch', 'ignore', ...TEAM_KINDS];
   const team = !!opts.team;
   const HELP = {
@@ -23,10 +24,10 @@ function ZoneEditor(root, opts) {
     outside: '<b>Outside side:</b> click once anywhere outside the perimeter line (the arrows then point outside).',
     alert: '<b>Alert region</b> (wall top, concertina wire — anything there is a breach): click its corners; click the <b>first point</b> or <b>double-click</b> to close it, then name it.',
     watch: '<b>Watch region</b> (a gate, a parking area — your alert rules decide): click its corners, close it, name it.',
-    ignore: '<b>Ignore region</b> (a road, a moving tree — never reported): click its corners, close it, name it.',
+    ignore: '<b>No-detection region</b> (an area you do not cover — a neighbour\'s plot, a road, a moving tree): nothing there ever alerts — no person or object, no line crossing, no throw, no landing / left object. Click its corners, close it, name it.',
     near: '<b>Near-wall region</b> (the ground just inside the wall): a person here raises a throw alert\'s level and can be a loitering rule\'s region. Click its corners, close it, name it.',
-    band: '<b>Throw band</b> (thrown objects): a strip along the wall top, a little above and below it — the perimeter line must run through it. Every frame is checked here for a small fast object crossing the line from outside to inside. Keep it tight: trees, the road and lights must stay out.',
-    landing: '<b>Landing zone</b> (thrown / left objects): the ground inside where something thrown would land. Checked for new objects about once a second, against pictures of the normal scene. Leave out moving things (trees, a busy path).',
+    band: '<b>Throw band</b> (thrown objects): a strip along the wall top, a little above and below it — the perimeter line must run through it. Every frame is checked here for a small fast object crossing the line — thrown in or thrown out (the camera\'s setting on the Cameras tab). Keep it tight: trees, the road and lights must stay out.',
+    landing: '<b>Landing zone</b> (thrown / left objects): the ground where something thrown would land — one inside the wall, and one outside if the camera sees it (up to 4). Its side is found from the perimeter line: a throw in is confirmed inside, a throw out outside. Checked about once a second against pictures of the normal scene (Build landing memory, Pipeline tab). Leave out moving things (trees, a busy path).',
   };
   const S = { cam: null, zone: null, draft: null, tool: null, hist: [], dirty: false, hover: null };
   const empty = () => ({ line: [], outside: null, regions: [] });
@@ -41,7 +42,7 @@ function ZoneEditor(root, opts) {
         <button data-tool="outside">Outside side</button>
         <button data-tool="alert">Alert region</button>
         <button data-tool="watch">Watch region</button>
-        <button data-tool="ignore">Ignore region</button>
+        <button data-tool="ignore" title="An area not covered: nothing there alerts">No-detection region</button>
         ${team ? `<button data-tool="near" title="Trinetra team">Near wall</button>
         <button data-tool="band" title="Trinetra team: throw detection">Throw band</button>
         <button data-tool="landing" title="Trinetra team: landing / left-object detection">Landing zone</button>` : ''}
@@ -68,7 +69,7 @@ function ZoneEditor(root, opts) {
           <div><span class="sw" style="background:${COL.line}"></span><b>Outside the line</b> → the outside rules (e.g. 10 min)</div>
           <div><span class="sw" style="background:${COL.watch}"></span>In a <b>watch region</b> → the alert rules that name it</div>
           <div><span class="sw" style="background:#22c55e"></span>Inside, no region → not reported</div>
-          <div><span class="sw" style="background:${COL.ignore}"></span>In an <b>ignore region</b> → never reported</div>
+          <div><span class="sw" style="background:${COL.ignore}"></span>In a <b>no-detection region</b> → nothing alerts (people, objects, crossing, throws, landing)</div>
           <div><span class="sw" style="background:${COL.near}"></span>In a <b>near-wall region</b> → as a watch region; also raises a throw alert</div>
           <div><span class="sw" style="background:${COL.band}"></span><b>Throw band</b> → watched for thrown objects (not for people)</div>
           <div><span class="sw" style="background:${COL.landing}"></span><b>Landing zone</b> → watched for new / left objects (not for people)</div>
@@ -220,7 +221,7 @@ function ZoneEditor(root, opts) {
     });
   }
   function nextName(kind) {
-    const base = { alert: 'Alert', watch: 'Gate', ignore: 'Ignore', near: 'Near wall', band: 'Band', landing: 'Landing' }[kind];
+    const base = { alert: 'Alert', watch: 'Gate', ignore: 'No detection', near: 'Near wall', band: 'Band', landing: 'Landing' }[kind];
     for (let i = 1; ; i++) if (!S.zone.regions.some(r => r.name.toLowerCase() === `${base} ${i}`.toLowerCase())) return `${base} ${i}`;
   }
 

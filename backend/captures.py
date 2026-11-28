@@ -266,6 +266,9 @@ def _finish_normal(cap: Path, m: dict, now: datetime):
     _write(cap / "frames.json", {"run": run, "every_s": m.get("every_s"), "skip_similar": False, "kind": "normal",
                                  "state": "done", "attempts": 0, "asked": _iso(now), "by": "the pipeline"})
     st = _normal_state(cap)
+    for cam in m.get("cameras") or []:                # the landing memory is built again with these frames (by itself)
+        if ds_control.Z.regions(ds_control.load_zones().get(cam) or {}, "landing"):
+            ds_control.schedule_landing_build(cam, f"Normal frames {cap.name} {'stopped' if stop else 'finished'}", 30, force=True)
     _log(cap, f"normal frames {'stopped' if stop else 'finished'}: {len(files)} frame(s) — "
               + ", ".join(f"{c}: {v.get('kept', 0)} ({v.get('day', 0)} day, {v.get('night', 0)} night, {v.get('skipped', 0)} turn(s) skipped: something in the landing zone)"
                           for c, v in st.items()))

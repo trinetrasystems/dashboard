@@ -31,6 +31,7 @@ class ModeDetector:
     def __init__(self, night_max: float = 12, hysteresis_s: float = 30):
         self.night_max, self.hyst = float(night_max), float(hysteresis_s)
         self.mode, self.since, self.sat, self.pending = None, None, None, None   # pending = (mode, first time seen)
+        self.switches = 0                          # real switches this run (not the first reading)
 
     def update(self, sat: float, now: float):
         """→ the new mode when it switched (also the first reading), else None"""
@@ -47,6 +48,7 @@ class ModeDetector:
             return None
         if now - self.pending[1] >= self.hyst:
             self.mode, self.since, self.pending = want, now, None
+            self.switches += 1
             return want
         return None
 
@@ -55,6 +57,7 @@ def busy(objs_boxes, zone, w: float, h: float) -> bool:
     """anything detected in a landing zone (corners, centre or foot point of its box inside), or — no landing zone —
     anything at all. objs_boxes: [(left, top, width, height) in pixels of a w x h frame]"""
     lands = Z.regions(zone or {}, "landing")
+    objs_boxes = [b for b in objs_boxes if not Z.ignored(((b[0] + b[2] / 2) / w, (b[1] + b[3]) / h), zone)]  # no-detection
     if not lands:
         return bool(objs_boxes)
     for (l, t, bw, bh) in objs_boxes:
@@ -63,6 +66,37 @@ def busy(objs_boxes, zone, w: float, h: float) -> bool:
         if any(Z.in_polygon(p, r["points"]) for r in lands for p in pts):
             return True
     return False
+
+
+class Parked:
+    """things (not people) standing still in the same place for after_s seconds — a parked bike or car is part of the
+    normal scene, so it does not keep the normal-frames sampler from ever saving a frame (28 Nov 2026: bikes parked at
+    a landing zone's edge made the sampler skip 2 of 3 turns). People always count, standing or not.
+    update() with every frame looked at (a few a second is enough); parked(box) after that."""
+
+    def __init__(self, after_s: float = 120, iou: float = 0.7, forget_s: float = 30):
+        self.after_s, self.iou, self.forget_s = after_s, iou, forget_s
+        self.items = {}                                        # camera → [[box, first seen, last seen]]
+
+    @staticmethod
+    def _iou(a, b):
+        ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+        iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+        i = ix * iy
+        return i / max(1e-9, a[2] * a[3] + b[2] * b[3] - i)
+
+    def update(self, cam, boxes, now):
+        its = self.items.setdefault(cam, [])
+        for b in boxes:
+            m = max(its, key=lambda it: self._iou(it[0], b), default=None)
+            if m is not None and self._iou(m[0], b) >= self.iou:
+                m[2] = now
+            else:
+                its.append([tuple(b), now, now])
+        self.items[cam] = [it for it in its if now - it[2] <= self.forget_s][-200:]
+
+    def parked(self, cam, box, now) -> bool:
+        return any(self._iou(it[0], box) >= self.iou and now - it[1] >= self.after_s for it in self.items.get(cam, []))
 
 
 class Sampler:
@@ -189,6 +223,17 @@ if __name__ == "__main__":                            # python3 scene.py: self-t
     assert not busy([(100, 100, 50, 100)], z, 1000, 1000)                # a person above the landing zone
     assert busy([(500, 550, 50, 100)], z, 1000, 1000)                    # feet in it
     assert busy([(1, 1, 5, 5)], {}, 1000, 1000) and not busy([], {}, 1000, 1000)
+    pk = Parked(after_s=120)
+    bike = (500, 550, 80, 60)
+    for t in range(0, 125, 2):
+        pk.update("c", [(bike[0] + t % 3, bike[1], bike[2], bike[3])], float(t))       # still (a pixel of jitter)
+    assert pk.parked("c", bike, 124.0) and not pk.parked("c", (100, 100, 50, 50), 124.0)
+    pk2 = Parked(after_s=120)
+    for t in range(0, 125, 2):
+        pk2.update("c", [(100 + 8 * t, 550, 80, 60)], float(t))                        # driving through: never parked
+    assert not pk2.parked("c", (100 + 8 * 124, 550, 80, 60), 124.0)
+    pk.update("c", [], 200.0)                                                           # gone for > 30 s: forgotten
+    assert not pk.parked("c", bike, 200.0)
     tmp = tempfile.mkdtemp()
     cap = os.path.join(tmp, "20261127-100000")
     os.makedirs(cap)

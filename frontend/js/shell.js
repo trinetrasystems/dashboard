@@ -535,11 +535,15 @@ async function refreshAlertStrip() {
   if (!d) return;
   const newest = d.latest[0];
   const maxId = Math.max(0, ...d.latest.map(a => a.id));
-  if (ALERT_STRIP.last !== null && maxId > ALERT_STRIP.last) {
-    const fresh = d.latest.filter(a => a.id > ALERT_STRIP.last);
+  // an alert UPGRADED in place (a throw, then its landing / a person near: Warning → Critical, same id) beeps again
+  const seen = ALERT_STRIP.sev || {};
+  const upgraded = ALERT_STRIP.last === null ? [] : d.latest.filter(a => a.id <= ALERT_STRIP.last && seen[a.id] && seen[a.id] !== a.severity && a.severity === 'critical');
+  if (ALERT_STRIP.last !== null && (maxId > ALERT_STRIP.last || upgraded.length)) {
+    const fresh = d.latest.filter(a => a.id > ALERT_STRIP.last).concat(upgraded);
     if (fresh.some(a => a.sound)) beep(fresh.some(a => a.severity === 'critical'));
     window.dispatchEvent(new CustomEvent('perimeter-alert', { detail: fresh }));
   }
+  ALERT_STRIP.sev = Object.fromEntries(d.latest.map(a => [a.id, a.severity]));
   ALERT_STRIP.last = Math.max(ALERT_STRIP.last || 0, maxId);
   ALERT_STRIP.open = d.open;
   // tab title: blinks while alerts are open

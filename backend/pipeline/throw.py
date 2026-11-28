@@ -17,7 +17,9 @@ tracks → path test. No GStreamer here: the pipeline feeds it every frame's ban
 4 tracks      constant-velocity prediction, greedy nearest neighbour within gate_px of the prediction; a 2-point track
               may jump up to max_step_px (no velocity known yet — a throw near the camera moves fast); max_missed_frames
 5 path test   when a track ends, or has min_track_points after crossing the line (an early decision = a fast alert):
-              crosses the perimeter line from the outside side to the inside · median speed ≥ min_speed · x(t) linear and
+              crosses the perimeter line in a direction the camera watches (cfg "dirs": "in" = from the outside side to
+              the inside, "out" = from the inside to the outside; both by default since 28 Nov 2026 — the event's "dir"
+              says which) · median speed ≥ min_speed · x(t) linear and
               y(t) quadratic fit within max_fit_rms with gravity (y accelerates downwards) — or a straight line within
               the limit (accept_straight_line) · no reversal of direction · not on the same spot (min path length)
 Every decided track is counted by its reason (state file: what the site's normal motion looks like).
@@ -32,13 +34,25 @@ DEFAULTS = {"history": 300, "var_threshold": 25, "warmup": 30, "scene_change_fra
             "person_ioa": 0.2, "gate_px": 60, "max_step_px": 150, "max_missed_frames": 1, "min_track_points": 3,
             "min_fit_points": 5, "min_side_points": 2, "min_speed_px_per_frame": 8.0, "max_fit_rms_px": 5.5,
             "fit_rms_per_size": 0.35, "accept_straight_line": True, "trim_from_points": (7, 10),
-            "x_degree": 2,
+            "x_degree": 2, "dirs": ("in", "out"), "var_init": 0, "clutter_frac": 0.5, "stall_px": 0.5, "max_stalls": 0,
             "max_spots": 60, "max_tracks": 120, "min_path_px": 40, "stationary_after": 8, "crop_px": 96, "keep_frames": 16}
 # fit_rms_per_size: the fit tolerance grows with the object (max_fit_rms_px or this x its typical width, √area): the
 # centre of a big motion-blurred streak wobbles a few pixels, a small dot's does not.
 # blob_area_px: the spec's (3, 150) is the area of a still object; a thrown one is a motion-blurred streak (a 10 px
 # object moving 30 px a frame covers ~300 px): 600 (measured on the test videos: 4 of 16 found at 150, 15 at 600).
-# min_side_points: seen at least this often on each side of the line (outside before, inside after the crossing).
+# clutter (28 Nov 2026): a track whose points come mostly from frames with more than max_spots spots (grass in a gust,
+# the background not learnt yet after a start) is not a throw — among 60 spots a frame, random ones line up into a
+# "curve" now and then (seen on the Jetson: 3 tiny 5-7 px "throws" in a windy test scene). Measured on 11 videos (the
+# user's 3 clips, 6 site-like test videos, 2 landing videos): clips exact, landing videos exact (were 2 extra), test
+# throws 93/96 as before. var_init: MOG2's starting variance per pixel (0 = OpenCV's 15); 40 was tried and is OFF: it
+# lost the user's clip 1. Left: 2 slow birds (9 px/frame) in 1 of the 6 test videos (1 with "in" only) — a Warning,
+# never Critical (no landing).
+# warmup: frames that only teach the background — at the start AND, since 28 Nov 2026, after every camera (re)connect
+# (rewarm(): the pipeline calls it when a new source delivers — the old background and half tracks do not carry over).
+# min_side_points: seen at least this often on each side of the line (before and after the crossing).
+# dirs: the directions of a throw this camera reports: "in" (outside → inside: something thrown into the site) and / or
+# "out" (inside → outside: something thrown out of it). The user's choice of 28 Nov 2026: both, labelled, per camera
+# (the spec's §7.4 had "in" only). A crossing the camera does not watch is counted as wrong_direction.
 # trim_from_points (a, b): a long path whose fit fails may set aside its worst-fitting point (a path of >= a points) or
 # two (>= b points) and is fitted again with the SAME tolerance: one wrong spot picked up next to the object (tracking
 # noise) or the hand still holding it at the start no longer fails a clean arc. Only after the crossing / speed / travel
@@ -86,9 +100,21 @@ def _trimmed_fit(fr, xs, ys, k, keep, xdeg=1):
     return fr, xs, ys
 
 
+def crossing(sides, dirs=("in", "out")):
+    """sides = [True when outside] along a track → (index of the first point after the first crossing in one of the
+    directions dirs, "in" | "out") or (None, None)"""
+    for i in range(1, len(sides)):
+        if sides[i - 1] != sides[i]:
+            d = "in" if sides[i - 1] else "out"
+            if d in dirs:
+                return i, d
+    return None, None
+
+
 def path_test(pts, line, outside, cfg=None, areas=None):
     """pts = [(frame, x, y)] in pixels; line / outside in the same pixels; areas = the spots' areas (optional) →
-    (ok, reason, metrics). Pure geometry (no pictures): the unit tests call this with made-up tracks."""
+    (ok, reason, metrics; metrics["dir"] = "in" | "out" once it crossed). Pure geometry (no pictures): the unit tests
+    call this with made-up tracks."""
     c = {**DEFAULTS, **(cfg or {})}
     tol = c["max_fit_rms_px"]
     if areas:
@@ -99,15 +125,25 @@ def path_test(pts, line, outside, cfg=None, areas=None):
         return False, "too_short", m
     zone = {"line": line, "outside": outside}
     sides = [Z.is_outside((x, y), zone) for _f, x, y in pts]
-    cross = next((i for i in range(1, n) if sides[i - 1] and not sides[i]), None)
+    cross, d = crossing(sides, tuple(c["dirs"]))
     if cross is None:
-        return False, ("inside_to_outside" if any(not a and b for a, b in zip(sides, sides[1:])) else "no_crossing"), m
+        return False, ("wrong_direction" if any(a != b for a, b in zip(sides, sides[1:])) else "no_crossing"), m
+    m["dir"] = d
     m["crossing_xy"] = [round((pts[cross - 1][1] + pts[cross][1]) / 2), round((pts[cross - 1][2] + pts[cross][2]) / 2)]
     # really over the line: seen on both sides, not one spot jittering on the line (grass at the wall foot)
-    if sum(sides[:cross]) < c["min_side_points"] or sum(1 for s in sides[cross:] if not s) < c["min_side_points"]:
+    before = sides[cross - 1]
+    if sum(1 for s in sides[:cross] if s == before) < c["min_side_points"] or \
+            sum(1 for s in sides[cross:] if s != before) < c["min_side_points"]:
         return False, "on_the_line", m
     steps = [math.hypot(pts[i][1] - pts[i - 1][1], pts[i][2] - pts[i - 1][2]) / max(1, pts[i][0] - pts[i - 1][0])
              for i in range(1, n)]
+    # a thrown object moves on EVERY frame: a track standing still from one frame to the next is a flickering spot
+    # (grass at the wall foot) that happened to line up (28 Nov 2026, Jetson: two 5-point "throws" with repeated points)
+    stalls = sum(1 for i in range(1, n) if pts[i][0] - pts[i - 1][0] == 1 and
+                 math.hypot(pts[i][1] - pts[i - 1][1], pts[i][2] - pts[i - 1][2]) < c["stall_px"])
+    m["stalls"] = stalls
+    if stalls > c["max_stalls"]:
+        return False, "stalled", m
     speed = sorted(steps)[len(steps) // 2]
     m["speed_px_f"] = round(speed, 1)
     length = math.hypot(pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2])
@@ -179,9 +215,13 @@ class ThrowDetector:
         self.mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
         for b in bands:
             cv2.fillPoly(self.mask, [np.array([(p[0] * W - x0, p[1] * H - y0) for p in b["points"]], np.int32)], 255)
+        for r in Z.regions(zone or {}, "ignore"):                      # no-detection regions: no motion looked at there
+            cv2.fillPoly(self.mask, [np.array([(p[0] * W - x0, p[1] * H - y0) for p in r["points"]], np.int32)], 0)
         self.mask_px = max(1, int(cv2.countNonZero(self.mask)))
         self.mog = cv2.createBackgroundSubtractorMOG2(history=self.c["history"], varThreshold=self.c["var_threshold"],
                                                       detectShadows=False)
+        if self.c.get("var_init"):
+            self.mog.setVarInit(float(self.c["var_init"]))
         self.k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.tracks, self.next_id, self.n = [], 1, 0
         self.recent = deque(maxlen=self.c["keep_frames"])                   # (frame_no, crop) for the review crops
@@ -215,7 +255,8 @@ class ThrowDetector:
                 self.stats["spots_on_person"] += 1
                 continue
             spots.append((float(cent[j][0] + x0), float(cent[j][1] + y0), a))
-        if len(spots) > self.c["max_spots"]:                         # grass in a storm: keep the smallest (a thrown
+        self.cluttered = len(spots) > self.c["max_spots"]
+        if self.cluttered:                                           # grass in a storm: keep the smallest (a thrown
             self.stats["frames_too_many_spots"] += 1                 # object is small), never thousands of tracks
             spots = sorted(spots, key=lambda s: s[2])[: self.c["max_spots"]]
         return spots
@@ -228,9 +269,17 @@ class ThrowDetector:
         return ix * iy / max(1, a[2] * a[3])
 
     # ── tracks ────────────────────────────────────────────────────────────────────────────────────────────
+    def rewarm(self):
+        """the camera (re)connected: learn the background again before anything counts (called from any thread)"""
+        self.rewarm_asked = True
+
     def feed(self, frame_no: int, t: float, crop, persons=None):
         if not self.ok:
             return []
+        if getattr(self, "rewarm_asked", False):
+            self.rewarm_asked = False
+            self.n, self.tracks = 0, []
+            self.stats["rewarms"] += 1
         t0 = time.perf_counter()
         self.n += 1
         self.recent.append((frame_no, crop))
@@ -265,6 +314,7 @@ class ThrowDetector:
             used_t.add(i); used_s.add(j)
             x, y, a = spots[j]
             self.tracks[i]["pts"].append((frame_no, x, y)); self.tracks[i]["area"].append(a)
+            self.tracks[i]["noisy"] += int(getattr(self, "cluttered", False))
             self.tracks[i]["t"].append(t); self.tracks[i]["missed"] = 0
         events, keep = [], []
         for i, tr in enumerate(self.tracks):
@@ -286,7 +336,8 @@ class ThrowDetector:
                 keep.append(tr)
         for j, (x, y, a) in enumerate(spots):                          # unmatched spots start tracks
             if j not in used_s and len(keep) < self.c["max_tracks"]:
-                keep.append({"id": self.next_id, "pts": [(frame_no, x, y)], "area": [a], "t": [t], "missed": 0, "decided": False})
+                keep.append({"id": self.next_id, "pts": [(frame_no, x, y)], "area": [a], "t": [t], "missed": 0, "decided": False,
+                             "noisy": int(getattr(self, "cluttered", False))})
                 self.next_id += 1
         self.tracks = keep
         return events
@@ -296,9 +347,8 @@ class ThrowDetector:
         if len(tr["pts"]) < 2 * self.c["min_track_points"] - 1:
             return False
         zone = {"line": self.line, "outside": self.outside}
-        sides = [Z.is_outside((x, y), zone) for _f, x, y in tr["pts"]]
-        cross = next((i for i in range(1, len(sides)) if sides[i - 1] and not sides[i]), None)
-        return cross is not None and len(sides) - cross >= self.c["min_track_points"]
+        cross, _d = crossing([Z.is_outside((x, y), zone) for _f, x, y in tr["pts"]], tuple(self.c["dirs"]))
+        return cross is not None and len(tr["pts"]) - cross >= self.c["min_track_points"]
 
     def _decide(self, tr):
         tr["decided"] = True
@@ -306,6 +356,8 @@ class ThrowDetector:
             self.stats["single_spots"] += 1
             return None
         ok, reason, m = path_test(tr["pts"], self.line, self.outside, self.c, tr["area"])
+        if ok and tr.get("noisy", 0) > self.c["clutter_frac"] * len(tr["pts"]):   # mostly from cluttered frames (too many
+            ok, reason = False, "clutter"                            # spots: grass in a gust) — chance, not a throw
         self.stats[reason] += 1
         if self.debug is not None and len(tr["pts"]) >= 3:            # replay --debug: every decided track, and why
             self.debug.append({"reason": reason, **m, "track": [[f, round(x), round(y)] for f, x, y in tr["pts"]],
@@ -325,8 +377,9 @@ class ThrowDetector:
         cx, cy = ev["crossing_xy"]
         s = self.c["crop_px"]
         x0, y0 = self.box[0], self.box[1]
-        fno = next((f for f, x, y in ev["track"] if not Z.is_outside((x, y), {"line": self.line, "outside": self.outside})),
-                   ev["track"][-1][0])
+        zone = {"line": self.line, "outside": self.outside}
+        first = Z.is_outside(tuple(ev["track"][0][1:]), zone)
+        fno = next((f for f, x, y in ev["track"] if Z.is_outside((x, y), zone) != first), ev["track"][-1][0])   # the crossing
         tiles = []
         for f in (fno - 1, fno, fno + 1):
             g = frames.get(f)
@@ -369,7 +422,14 @@ if __name__ == "__main__":                                              # python
     assert path_test(zig, line, out)[1] == "zigzag"
     assert path_test([(f, 900 + 2 * f, 470 + 2 * f) for f in range(20)], line, out)[1] == "slow"  # drifting leaf
     assert path_test([(f, 700 + 20 * f, 380 + 0 * f) for f in range(8)], line, out)[1] == "no_crossing"   # along the top
-    assert path_test([(f, 600 + 18 * f, 600 - 20 * f) for f in range(10)], line, out)[1] == "inside_to_outside"
+    out_throw = [(f, 600 + 18 * f, 600 - 20 * f + 0.8 * f * f) for f in range(12)]             # thrown OUT (up over the wall)
+    ok, reason, m = path_test(out_throw, line, out)
+    assert ok and m["dir"] == "out", (reason, m)
+    assert path_test(arc(), line, out)[2]["dir"] == "in"
+    assert path_test(out_throw, line, out, {"dirs": ("in",)})[1] == "wrong_direction"            # a camera watching "in" only
+    assert path_test(arc(), line, out, {"dirs": ("out",)})[1] == "wrong_direction"
+    st = [(0, 876, 692), (1, 908, 684.5), (2, 938.7, 674.9), (3, 938.7, 674.9), (4, 943, 664), (5, 970, 650)]
+    assert path_test(st, [(0, 680), (1920, 680)], (960, 900))[1] == "stalled"              # the Jetson's flicker "throw"
     up = [(f, 600 + 15 * f, 420 + 30 * f - 2.5 * f * f) for f in range(12)]                      # curving UP: no gravity
     assert not path_test(up, line, out)[0], path_test(up, line, out)
     random.seed(3)
@@ -382,8 +442,8 @@ if __name__ == "__main__":                                              # python
     zone = {"line": [[0, 0.5], [1, 0.5]], "outside": [0.5, 0.1],
             "regions": [{"name": "Band 1", "kind": "band", "points": [[0, 0.3], [1, 0.3], [1, 0.7], [0, 0.7]]}]}
     rng = np.random.default_rng(1)
-    for case in ("throw", "noise", "flash"):
-        det = ThrowDetector(zone, {"warmup": 20}, camera="test")
+    for case, dirs in (("throw", None), ("throw_out", None), ("out_ignored", ["in"]), ("noise", None), ("flash", None)):
+        det = ThrowDetector(zone, {"warmup": 20, **({"dirs": dirs} if dirs else {})}, camera="test")
         x0, y0, x1, y1 = det.box
         base = rng.integers(90, 130, (y1 - y0, x1 - x0)).astype(np.uint8)
         evs = []
@@ -393,17 +453,51 @@ if __name__ == "__main__":                                              # python
                 k = f - 40
                 x, y = 500 + 22 * k, 420 + (-20 * k + 2.0 * k * k)
                 cv2.circle(img, (int(x - x0), int(y - y0)), 4, 20, -1)
+            if case in ("throw_out", "out_ignored") and 40 <= f < 59:     # from the inside (below) up over the line
+                k = f - 40
+                x, y = 500 + 22 * k, 660 - 30 * k + 0.8 * k * k
+                cv2.circle(img, (int(x - x0), int(y - y0)), 4, 20, -1)
             if case == "flash" and f == 50:
                 img = cv2.add(img, 120)                                    # headlights: the whole band at once
             evs += det.feed(f, f / 30, img, [])
         if case == "throw":
-            assert len(evs) == 1 and evs[0]["curve"] == "parabola", (evs, det.summary())
+            assert len(evs) == 1 and evs[0]["curve"] == "parabola" and evs[0]["dir"] == "in", (evs, det.summary())
             rv = det.review_image(evs[0])
             assert rv.shape[1] == 6 * det.c["crop_px"], rv.shape
+        elif case == "throw_out":
+            assert len(evs) == 1 and evs[0]["dir"] == "out", (evs, det.summary())
+            assert det.review_image(evs[0]).shape[1] == 6 * det.c["crop_px"]
+        elif case == "out_ignored":                                         # the same throw, the camera watches "in" only
+            assert not evs and det.stats["wrong_direction"] >= 1, (evs, det.summary())
         else:
             assert not evs, (case, evs)
         if case == "flash":
             assert det.stats["scene_change_frames"] >= 1, det.summary()
+    # a no-detection region over the throw's path: nothing reported
+    zi = {**zone, "regions": zone["regions"] + [{"name": "Neighbour", "kind": "ignore", "points": [[0.2, 0], [0.9, 0], [0.9, 1], [0.2, 1]]}]}
+    det = ThrowDetector(zi, {"warmup": 20}, camera="test")
+    x0, y0, x1, y1 = det.box
+    evs = []
+    for f in range(80):
+        img = cv2.add(base, rng.integers(0, 4, base.shape, dtype=np.uint8))
+        if 40 <= f < 59:
+            k = f - 40
+            cv2.circle(img, (int(500 + 22 * k - x0), int(420 - 20 * k + 2.0 * k * k - y0)), 4, 20, -1)
+        evs += det.feed(f, f / 30, img, [])
+    assert not evs, evs
+    # a camera reconnect in the middle of a throw: rewarm() drops the half track and learns the background again
+    det = ThrowDetector(zone, {"warmup": 20}, camera="test")
+    x0, y0, x1, y1 = det.box
+    evs = []
+    for f in range(80):
+        img = cv2.add(base, rng.integers(0, 4, base.shape, dtype=np.uint8))
+        if f == 49:
+            det.rewarm()
+        if 40 <= f < 59:
+            k = f - 40
+            cv2.circle(img, (int(500 + 22 * k - x0), int(420 - 20 * k + 2.0 * k * k - y0)), 4, 20, -1)
+        evs += det.feed(f, f / 30, img, [])
+    assert not evs and det.stats["rewarms"] == 1, (evs, det.summary())
     # a person walking through the band: its motion is ignored (spots on a person box)
     det = ThrowDetector(zone, {"warmup": 20}, camera="test")
     x0, y0, x1, y1 = det.box

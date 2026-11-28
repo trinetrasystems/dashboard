@@ -48,8 +48,8 @@
           </div>
           <div class="ds-note" id="ds-engine-note"></div>
           <div class="table-wrap">
-            <table class="details"><thead><tr><th>Camera</th><th>Status</th><th>FPS</th><th>Day / night</th><th>Throws</th><th>Images this run</th></tr></thead>
-              <tbody id="ds-streams"><tr><td colspan="6" class="empty">not running</td></tr></tbody></table>
+            <table class="details"><thead><tr><th>Camera</th><th>Status</th><th>FPS</th><th>Day / night</th><th>Throws</th><th>Landing</th><th>Images this run</th></tr></thead>
+              <tbody id="ds-streams"><tr><td colspan="7" class="empty">not running</td></tr></tbody></table>
           </div>
         </div>
         <div class="card-head" style="border-top:1px solid var(--border)"><div class="card-title">Progress</div>
@@ -93,6 +93,20 @@
           <dl class="ds-body ds-kv" id="ds-health"></dl>
         </div>
       </div>
+    </div>
+    <div class="card" style="margin-top:16px" id="land-card">
+      <div class="card-head"><div class="card-title">Landing detection <span class="card-hint">PatchCore: new objects in the landing zones, against pictures of the normal scene</span></div></div>
+      <div class="ds-note" id="land-note">For each camera with a landing zone: record <b>Normal frames</b> (Recordings, about 3 days, day and night,
+        the camera fixed), then <b>Build landing memory</b> — or let it build by itself: when a Normal-frames recording ends,
+        and a minute after a landing zone is added or moved. Removing a zone needs nothing (the others carry on). A few
+        minutes per mode; the pipeline keeps running. After moving the camera: record Normal frames again.</div>
+      <div class="table-wrap">
+        <table class="details"><thead><tr><th>Camera</th><th>Landing zones</th><th>Normal frames</th><th>Day memory</th><th>Night memory</th><th>Now</th><th></th></tr></thead>
+          <tbody id="land-body"><tr><td colspan="7" class="empty">loading…</td></tr></tbody></table>
+      </div>
+      <div class="card-head" style="border-top:1px solid var(--border)" id="land-job-head" hidden><div class="card-title">Build</div>
+        <span class="card-hint" id="land-job-title"></span></div>
+      <pre class="ds-log" id="land-job" hidden></pre>
     </div>
     <div class="card" style="margin-top:16px">
       <div class="card-head"><div class="card-title">Log <span class="card-hint" id="ds-log-file"></span></div>
@@ -149,6 +163,11 @@
     <label class="check"><input type="checkbox" name="throw"> Throw detection — every frame is looked at (objects thrown over the wall
       are in the picture for under a second). Needs 25 fps or more, a fixed shutter of 1/500 s or faster by day, and a
       throw band drawn on the Perimeter zones tab. Uses more GPU than the other cameras.</label>
+    <label id="cam-dir-row">Throws reported <select class="ds-input" name="throw_dir">
+        <option value="both">Both ways — thrown in and thrown out (recommended)</option>
+        <option value="in">Thrown in only (outside → inside)</option>
+        <option value="out">Thrown out only (inside → outside)</option></select>
+      <small>The alert says “thrown in” or “thrown out”. The OUTSIDE point on the Perimeter zones tab decides which side is which.</small></label>
     <div class="form-result" id="cam-msg"></div>
     <div class="pop-actions"><button type="button" class="btn" id="cam-test">Test connection</button><span class="spacer"></span>
       <button type="button" class="btn ghost" data-close>Cancel</button>
