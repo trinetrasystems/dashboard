@@ -53,6 +53,7 @@ OUT_W, OUT_H = 960, 540
 MIN_FREE_GB, MAX_TEMP_C, RAM_FLOOR_KB = 5.0, 85.0, 716_800
 RECONNECT_S = 10
 RETRY_S = int(os.environ.get("PERIMETER_RETRY_S", "60"))
+HANG_S, EXIT_S, CLOSE_S, CLOSE_MAX = 60, 20, 60, 3   # watchdog(): main loop silent / shutdown / old connection closing
 TRACKER = "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml"
 ZONE_COL = {"alert": (40, 40, 220), "watch": (220, 140, 40), "near": (247, 85, 168), "ignore": (90, 90, 90),
             "band": (21, 204, 250), "landing": (22, 204, 132)}                  # BGR, as the zone editor
@@ -116,6 +117,8 @@ class App:
         self.drop = int(self.cfg.get("frame_skip", 2))
         self.any_live = any(s["type"] == "rtsp" for s in self.srcs)
         self.bins, self.mux_pads = [None] * n, [None] * n
+        self.pad_cam = {i: i for i in range(n)}           # muxer input number -> camera (a reconnect alternates i / i+n)
+        self.held = [None] * n                            # (old source, its muxer input) kept until the camera's new source links
         self.last_buf, self.started_at = [0.0] * n, [0.0] * n
         self.src_frames, self.online, self.gen, self.reconnects = [0] * n, [False] * n, [0] * n, [0] * n
         self.reach, self.reach_busy, self.outage = [None] * n, [False] * n, [0] * n
@@ -125,6 +128,9 @@ class App:
         self.fps_cnt, self.fps = collections.Counter(), {}
         self.frames, self.started = 0, datetime.now().isoformat(timespec="seconds")
         self.disk_low, self.stopping, self.stall, self.fatal = False, False, False, False
+        self.beat, self.quit_at = time.monotonic(), None         # fail-safe watchdog (watchdog()): main-loop heartbeat,
+        self.closing = {}                                          # when the shutdown began; old sources being closed
+        self.state_lock = threading.Lock()                         # closing an old source ↔ shutting the pipeline down
         self.exit_reason = "eos"
         self._wd = (0, 0, time.monotonic())
         os.makedirs(SNAPS, exist_ok=True); os.makedirs(self.incoming, exist_ok=True)
@@ -198,12 +204,37 @@ class App:
                         f.write(jpg.tobytes())
                     os.replace(os.path.join(d, "." + name + ".part"), os.path.join(d, name))
                     self.throw_n[(cam, "images_" + day)] += 1
+                    self.throw_to_dashboard(cam, ev, jpg.tobytes(), wall, mode)
             with open(os.path.join(self.throws_dir, "events.jsonl"), "a") as f:
                 f.write(json.dumps(ev) + "\n")
         except OSError as e:
             log(f"THROW {cam}: not written: {e!r}")
         log(f"THROW {cam}: {ev['curve']} over the line at {ev['crossing_xy']}, {ev['points']} points, "
             f"{ev['speed_px_f']} px/frame, fit {ev['fit_rms']} px → {ev['image']}")
+
+    def throw_to_dashboard(self, cam, ev, jpg: bytes, wall, mode):
+        """the throw → the dashboard's incoming/ like any camera image: <camera>_thrown-object_<time>.jpg (the review
+        picture: the object zoomed frame by frame + its path over the line) and its frame description FIRST, one object
+        marked "thrown" → the "Throw over the wall" rule (region *thrown) raises the alert. Runs in the throw worker."""
+        ts = f"{wall.strftime('%Y%m%d-%H%M%S')}-{wall.microsecond // 1000:03d}"
+        name = f"{cam}_thrown-object_{ts}.jpg"
+        meta = json.dumps({"v": 1, "frame": f"{cam}|{wall.isoformat(timespec='milliseconds')}|throw{ev.get('track_id')}",
+                           "camera": cam, "ts": wall.isoformat(timespec="milliseconds"), "mode": mode,
+                           "objects": [{"label": "thrown object", "kind": "object", "regions": [], "alert": False,
+                                        "outside": False, "near": False, "crossed": False, "thrown": True,
+                                        "track": ev.get("track_id"), "conf": 1.0, "box": None}]})
+        try:
+            side = os.path.join(self.incoming, name[:-4] + ".json")
+            with open(side + ".part", "w") as f:
+                f.write(meta)
+            os.replace(side + ".part", side)
+            tmp = os.path.join(self.incoming, f".{name}.part")
+            with open(tmp, "wb") as f:
+                f.write(jpg)
+            os.replace(tmp, os.path.join(self.incoming, name))
+            self.counts[(cam, "thrown-object")] += 1
+        except OSError as e:
+            log(f"THROW {cam}: not sent to the dashboard: {e!r}")
 
     def prune_throws(self):
         """days of review pictures older than the image retention (events.jsonl keeps its last 20 000 lines)"""
@@ -328,8 +359,13 @@ class App:
             return Gst.PadProbeReturn.OK
         pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM | Gst.PadProbeType.EVENT_FLUSH, ev)
         pad.add_probe(Gst.PadProbeType.BUFFER, self.on_src_buffer, i)
-        if self.mux_pads[i] is None: self.mux_pads[i] = self.mux.request_pad_simple(f"sink_{i}")
+        if self.mux_pads[i] is None:
+            held = self.held[i][1].get_name() if self.held[i] else None   # never the input the old source still holds
+            k = next(k for k in (i, i + len(self.srcs)) if f"sink_{k}" != held)
+            self.mux_pads[i] = self.mux.request_pad_simple(f"sink_{k}"); self.pad_cam[k] = i
         if pad.link(self.mux_pads[i]) != Gst.PadLinkReturn.OK: log(f"ERROR linking camera {self.cams[i]}")
+        if self.held[i]:                                  # the new source delivers: the old one goes 1.5 s later
+            GLib.timeout_add(1500, self._dispose_source, *self.held[i], i); self.held[i] = None
 
     def on_src_buffer(self, pad, info, i):
         if self.stopping: return Gst.PadProbeReturn.DROP
@@ -337,29 +373,62 @@ class App:
         return Gst.PadProbeReturn.OK
 
     def restart_source(self, i):
-        """re-create camera i. The old source is DETACHED from the muxer first and shut down only 1.5 s later: its
-        decoder's video memory must outlive its frames still on their way down the pipeline. (Shut down first — as
-        before 27 Nov 2026 — it freed memory a frame in flight still pointed to: NVMAP_IOC_DUP_HANDLE failed → NvVicCompose
-        failed → nvinfer "Internal data stream error" → the whole pipeline fatal, every time a camera's stream ended.)
-        Errors the detached old source may still post are ignored (an older generation: on_msg)."""
+        """re-create camera i. The old source stays linked to its muxer input (its data dropped) and is KEPT, input included, until
+        the camera's new source delivers video (on_pad: it gets the other of the camera's two inputs i / i+n); 1.5 s
+        after that the old input and source are released — no frame of theirs is on its way down the pipeline any more:
+        the decoder's video memory and the muxer's own per-input copies of a camera it scales must outlive those frames.
+        Released at once instead (until 28 Nov 2026) they freed memory a frame in flight still pointed to
+        (NVMAP_IOC_DUP_HANDLE failed → NvVicCompose failed → nvinfer "Internal data stream error" → fatal, several scaled
+        cameras reconnecting together), and released before the new source linked, the muxer was left with NO input
+        → "No Sources found" → end of stream → the pipeline quit (a camera whose RTSP set-up takes > 1.5 s).
+        A source that never delivered (no input) is closed at once. Errors an old source may still post are ignored
+        (an older generation: on_msg)."""
         old, pad = self.bins[i], self.mux_pads[i]
         if pad is not None:
             peer = pad.get_peer()
-            if peer is not None:
-                peer.unlink(pad)
-            pad.send_event(Gst.Event.new_flush_stop(False)); self.mux.release_request_pad(pad); self.mux_pads[i] = None
+            if peer is not None:                          # stays LINKED, its data dropped: unlinked for seconds, its
+                peer.add_probe(Gst.PadProbeType.DATA_DOWNSTREAM,   # frames got "not linked" and the RTSP source began
+                               lambda *_: Gst.PadProbeReturn.DROP)  # closing itself → deadlock with our close (28 Nov, gdb)
+            self.mux_pads[i] = None
+            if self.held[i]:                              # (cannot happen: a linked source released the older one)
+                self._dispose_source(*self.held[i], i)
+            self.held[i] = (old, pad)
+        else:
+            self._dispose_source(old, None, i)
         self.reconnects[i] += 1; self.outage[i] += 1
         self.make_source(i).sync_state_with_parent()
-        GLib.timeout_add(1500, self._dispose_source, old)
 
-    def _dispose_source(self, old):
-        try:
-            old.set_state(Gst.State.NULL); self.pipe.remove(old)
-        except Exception as e:
-            log("old camera source not removed:", repr(e))
+    def _dispose_source(self, old, pad=None, i=None):
+        """the old source is closed in its OWN thread, never in the main loop: closing a connection to a camera that
+        stopped sending without hanging up (cable cut, frozen camera) can wait a long time inside the RTSP source,
+        and the main loop runs everything else (reconnects, state, stop). watchdog() restarts the pipeline cleanly
+        when such closings pile up."""
+        name = old.get_name(); self.closing[name] = (time.monotonic(), i)
+        def run():
+            out = False
+            with self.state_lock:                         # taken out of the pipeline never at the same time as the
+                try:                                      # pipeline's shutdown (the same element changed from two
+                    if self.quit_at is None:              # threads aborted the process); shutting down: the
+                        if pad is not None:               # pipeline's own NULL closes it
+                            peer = pad.get_peer()
+                            if peer is not None: peer.unlink(pad)
+                            pad.send_event(Gst.Event.new_flush_start()); pad.send_event(Gst.Event.new_flush_stop(False))
+                            self.mux.release_request_pad(pad)
+                        self.pipe.remove(old); out = True
+                except Exception as e:
+                    log("old camera source not removed:", repr(e))
+            if out:                                       # closed OUTSIDE the lock, no longer in the pipeline: one slow
+                try:                                      # close never holds up the next ones or the shutdown
+                    old.set_state(Gst.State.NULL)
+                except Exception as e:
+                    log("old camera source not closed:", repr(e))
+            t0 = self.closing.pop(name, (time.monotonic(), i))[0]
+            if time.monotonic() - t0 > 10: log(f"old connection {name} closed after {time.monotonic() - t0:.0f} s")
+        threading.Thread(target=run, daemon=True, name=f"close-{name}").start()
         return False
 
     def watch_sources(self):
+        self.beat = time.monotonic()
         if self.stopping: return True
         now = time.monotonic()
         for i, s in enumerate(self.srcs):
@@ -410,11 +479,14 @@ class App:
 
     def on_msg(self, bus, msg):
         t = msg.type
-        if t == Gst.MessageType.EOS: log("EOS - stopped" if self.stopping else "EOS - all sources finished"); self.loop.quit()
+        if t == Gst.MessageType.EOS:
+            log("EOS - stopped" if self.stopping else "EOS - all sources finished")
+            self.quit_at = self.quit_at or time.monotonic(); self.loop.quit()
         elif t == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             if msg.src in self.core or msg.src is self.pipe:
-                log("FATAL", msg.src.get_name(), err.message, (dbg or "")[:300]); self.fatal = True; self.exit_reason = "fatal"; self.loop.quit()
+                log("FATAL", msg.src.get_name(), err.message, (dbg or "")[:300]); self.fatal = True; self.exit_reason = "fatal"
+                self.quit_at = self.quit_at or time.monotonic(); self.loop.quit()
                 return
             si = self.source_index(msg.src)
             if si is not None and si[1] == self.gen[si[0]]:
@@ -434,7 +506,7 @@ class App:
         return Gst.PadProbeReturn.OK
 
     def frame(self, buf, fm):
-        cam = self.cams[fm.pad_index]; self.frames += 1; self.fps_cnt[cam] += 1
+        cam = self.cams[self.pad_cam.get(fm.pad_index, fm.pad_index % len(self.cams))]; self.frames += 1; self.fps_cnt[cam] += 1
         zone = self.zones.get(cam) or {}
         objs, boxes = [], []
         lo = fm.obj_meta_list
@@ -583,7 +655,8 @@ class App:
         """clean stop: EOS straight into every mux input, then shut down (as Workplace Analytics)"""
         if self.stopping: return
         self.stopping, self.exit_reason = True, reason
-        pads = [p for p in self.mux_pads if p is not None]
+        self.quit_at = self.quit_at or time.monotonic()
+        pads = [p for p in self.mux_pads if p is not None] + [h[1] for h in self.held if h]
         if not pads: self.loop.quit(); return
         for p in pads: p.send_event(Gst.Event.new_eos())
         GLib.timeout_add(2500, lambda: (self.loop.quit() if self.loop.is_running() else None, False)[1])
@@ -624,6 +697,44 @@ class App:
         return {"watching": det.ok, "throws": self.throw_n[(cam, "throws")], "dropped": self.throw_n[(cam, "dropped")],
                 "queue": len(self.throw_q.get(cam) or ()), **(det.summary() if det.ok else {})}
 
+    def watchdog(self):
+        """fail-safe, in its own thread (works while the main loop is blocked): the pipeline never stays half-alive.
+        - the main loop silent for HANG_S (watch_sources beats every RECONNECT_S) → hard exit, code 6
+        - a shutdown (stop / fatal / stall) not finished within EXIT_S → hard exit (code 4 fatal, 3 stall, 6, 0 stop)
+        - old camera connections still closing after CLOSE_S: logged; CLOSE_MAX of them at once → clean restart
+        A hard exit marks the state file (exit reason) first; the dashboard supervisor starts the pipeline again
+        (the user still wants it running) — only Stop on the page keeps it off."""
+        said = set()
+        while True:
+            time.sleep(5)
+            now = time.monotonic()
+            if self.quit_at is not None and now - self.quit_at > EXIT_S:
+                code = 4 if self.fatal else 3 if self.stall else 0 if self.exit_reason == "stop" else 6
+                self._hard_exit(f"shutdown not finished after {EXIT_S} s", self.exit_reason, code)
+            if self.quit_at is None and now - self.beat > HANG_S:
+                self._hard_exit(f"main loop not responding for {int(now - self.beat)} s", "hang", 6)
+            stuck = {n: v for n, v in list(self.closing.items()) if now - v[0] > CLOSE_S}
+            for n in stuck:
+                if n not in said:
+                    said.add(n); log(f"old connection {n} still closing after {CLOSE_S} s (the pipeline carries on)")
+            if len(stuck) >= CLOSE_MAX and not self.stopping:
+                log(f"{len(stuck)} old camera connections will not close - restarting the pipeline cleanly")
+                GLib.idle_add(lambda: (self.stop("reconnect_stuck"), False)[1])
+                self.quit_at = self.quit_at or now
+
+    def _hard_exit(self, why, reason, code):
+        log(f"WATCHDOG: {why} - exiting (code {code}); the dashboard starts the pipeline again")
+        try:
+            st = json.load(open(STATE)) if os.path.exists(STATE) else {}
+            st.update(running=False, pid=os.getpid(), exit_reason=reason, stopped=datetime.now().isoformat(timespec="seconds"))
+            json.dump(st, open(STATE + ".tmp", "w")); os.replace(STATE + ".tmp", STATE)
+            self.flush_held()
+        except Exception:
+            pass
+        try: os.sync()
+        except Exception: pass
+        os._exit(code)
+
     def run(self):
         mem = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo") if ":" in l}
         if mem.get("MemAvailable", 0) < 1_500_000:
@@ -635,10 +746,14 @@ class App:
         GLib.timeout_add_seconds(RECONNECT_S, self.watch_sources)
         log(f"starting {len(self.srcs)} camera(s): " + ", ".join(f"{s['name']} ({s['type']}{', throw detection: every frame' if s.get('throw') else ''})" for s in self.srcs)
             + f"; images every {self.save_every:g} s per camera and class → {self.incoming}")
+        threading.Thread(target=self.watchdog, daemon=True, name="watchdog").start()
         self.pipe.set_state(Gst.State.PLAYING)
         try: self.loop.run()
         finally:
+            self.quit_at = self.quit_at or time.monotonic()
+            got = self.state_lock.acquire(timeout=EXIT_S)  # an old source still closing first (watchdog() exits if stuck)
             self.pipe.set_state(Gst.State.NULL)
+            if got: self.state_lock.release()
             self.flush_held()
             try:
                 s = json.load(open(STATE)) if os.path.exists(STATE) else {}
@@ -649,6 +764,8 @@ class App:
             if self.stall: os._exit(3)
             if self.fatal: os._exit(4)
             if self.exit_reason == "safety": os._exit(5)
+            if self.closing:                              # an old connection still closing in its thread: leave now
+                sys.stdout.flush(); sys.stderr.flush(); os._exit(0)
 
 
 if __name__ == "__main__":

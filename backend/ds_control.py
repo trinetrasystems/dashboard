@@ -59,8 +59,11 @@ ENGINE_STEP = 4                                       # engines for 4, 8, 12, 16
 SERIALIZE_RE = re.compile(r"serialize cuda engine to file:\s*(\S+)\s+successfully", re.I)
 # Automatic restart (as Workplace Analytics, 19 Nov 2026): a stop nobody asked for → started again at once; after a
 # memory (safety) stop RESTART_SETTLE_S later; still short of RESTART_MIN_GB FREE_MEM_AFTER_S after the stop → memory is
-# freed once (a stray pipeline, stale helpers, the page cache); max MAX_RESTARTS_PER_HOUR. Only Stop on the page keeps it off.
+# freed once (a stray pipeline, stale helpers, the page cache); max MAX_RESTARTS_PER_HOUR — after that once every
+# RESTART_BACKOFF_S (28 Nov 2026: it used to wait until the hour had passed, so a site stayed blind for up to an hour).
+# Only Stop on the page keeps it off.
 MAX_RESTARTS_PER_HOUR, RESTART_MIN_GB = 5, 2.0
+RESTART_BACKOFF_S = 600
 RESTART_SETTLE_S = 30
 FREE_MEM_AFTER_S = 60
 DEFAULTS = {"streams": [], "model": "", "threshold": 0.40, "save_every_s": 5, "frame_skip": 2, "loop_files": True,
@@ -705,8 +708,8 @@ def supervise_once(now: Optional[float] = None):
         return None                                   # a memory stop: let the memory come back first
     RESTARTS[:] = [t for t in RESTARTS if now - t < 3600]
     h, wait = host_health(), None
-    if len(RESTARTS) >= MAX_RESTARTS_PER_HOUR:
-        wait = f"{MAX_RESTARTS_PER_HOUR} restarts in the last hour"
+    if len(RESTARTS) >= MAX_RESTARTS_PER_HOUR and now - RESTARTS[-1] < RESTART_BACKOFF_S:
+        wait = f"{MAX_RESTARTS_PER_HOUR} restarts in the last hour - next try {int(RESTART_BACKOFF_S // 60)} min after the last"
     elif h["mem_available_gb"] < RESTART_MIN_GB:
         wait = f"only {h['mem_available_gb']} GB RAM available (needs {RESTART_MIN_GB} GB)"
         if down >= FREE_MEM_AFTER_S and not DOWN["freed"]:

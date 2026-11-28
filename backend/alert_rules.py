@@ -20,7 +20,8 @@ Offline: a camera that blinks back for a few seconds does not reset its outage �
 
 Each rule: cameras ([] = all), region (*alert = any alert region, *outside = outside the perimeter line, *any = any
 region or outside, *near = any near-wall zone, *crossed = a person who crossed the perimeter line from outside to inside
-(the pipeline's LineCrossing; such a frame is also an alert-region breach), or one region's name), target (person / object / any), active days + hours (overnight allowed),
+(the pipeline's LineCrossing; such a frame is also an alert-region breach), *thrown = an object the pipeline's
+throw detection saw thrown over the wall (alert kind "throw"), or one region's name), target (person / object / any), active days + hours (overnight allowed),
 cooldown, severity (critical / warning), sound. Whitelisted labels never alert.
 """
 import json
@@ -42,7 +43,8 @@ SEVERITIES = ("critical", "warning")
 FEEDBACK_LEARN = {"landing": "bank", "unattended": "bank", "anomaly": "bank", "throw": "negatives"}
 NO_FALSE_ALARM_KINDS = ("offline",)                 # a camera without video is a fact, not a detection
 SPECIAL_REGIONS = {"*alert": "any alert region", "*outside": "outside the perimeter line", "*any": "any region or outside",
-                   "*near": "any near-wall zone", "*crossed": "crossed the perimeter line"}
+                   "*near": "any near-wall zone", "*crossed": "crossed the perimeter line",
+                   "*thrown": "thrown over the wall"}
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CLASS_META = {                                       # file-name class → observation (images without a description)
     "boundry-object": {"kind": "object", "alert": True, "outside": False},
@@ -84,6 +86,11 @@ CREATE TABLE IF NOT EXISTS observations (
 CREATE INDEX IF NOT EXISTS idx_obs_cam_ts ON observations(camera, ts);
 """
 
+# THROW_RULE (28 Nov 2026, plan step F): a throw the pipeline's throw detection found (an object marked "thrown")
+# alone = Warning, as agreed in step 0 (with a landing / a person near = Critical: later, with PatchCore). An existing
+# install gets it once (alert_rules_throw_seeded), and a client who deletes it keeps it deleted.
+THROW_RULE = {"name": "Throw over the wall", "type": "presence", "region": "*thrown", "target": "any",
+              "severity": "warning", "cooldown": 1}
 DEFAULT_RULES = [
     {"name": "Perimeter breach", "type": "presence", "region": "*alert", "target": "any", "severity": "critical",
      "cooldown": 1},
@@ -92,6 +99,7 @@ DEFAULT_RULES = [
     {"name": "Object left outside the wall", "type": "dwell", "region": "*outside", "target": "object", "minutes": 10,
      "severity": "warning"},
     {"name": "Camera offline", "type": "offline", "minutes": 5, "severity": "warning", "sound": False},
+    THROW_RULE,
 ]
 
 
@@ -136,6 +144,14 @@ def migrate(conn):
             conn.execute(f"INSERT INTO alert_rules({', '.join(_q(k) for k in c)}) VALUES({', '.join('?' * len(c))})",
                          [json.dumps(v) if isinstance(v, list) else v for v in c.values()])
         conn.execute("CREATE TABLE alert_rules_seeded (x)")   # the defaults once: a client who deletes them keeps it so
+        conn.execute("CREATE TABLE IF NOT EXISTS alert_rules_throw_seeded (x)")   # a new install has it already
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='alert_rules_throw_seeded'").fetchone():
+        if not conn.execute("SELECT 1 FROM alert_rules WHERE region='*thrown' LIMIT 1").fetchone():
+            c = check({**THROW_RULE, "enabled": True})
+            conn.execute(f"INSERT INTO alert_rules({', '.join(_q(k) for k in c)}) VALUES({', '.join('?' * len(c))})",
+                         [json.dumps(v) if isinstance(v, list) else v for v in c.values()])
+            print("[migrate] alert rule added: Throw over the wall (warning)")
+        conn.execute("CREATE TABLE alert_rules_throw_seeded (x)")
 
 
 def _q(k):
@@ -160,7 +176,8 @@ def check(body: dict, known_cameras: Optional[set] = None) -> dict:
         raise ValueError(f"Unknown camera: {', '.join(c for c in cams if c not in known_cameras)}")
     region = str(body.get("region") or "*alert").strip()
     if region not in SPECIAL_REGIONS and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", region):
-        raise ValueError("Region: a region name, any alert region, outside the line, any region, any near-wall zone or crossed the line")
+        raise ValueError("Region: a region name, any alert region, outside the line, any region, any near-wall zone, "
+                         "crossed the line or thrown over the wall")
     target = body.get("target") or "any"
     if target not in TARGETS:
         raise ValueError("Who: person, object or any")
@@ -245,6 +262,8 @@ def matches(rule: dict, obj: dict, whitelist: set) -> bool:
         return bool(obj.get("near"))
     if reg == "*crossed":
         return bool(obj.get("crossed"))
+    if reg == "*thrown":
+        return bool(obj.get("thrown"))
     return reg.lower() in [n.lower() for n in obj.get("regions") or []]
 
 
@@ -282,7 +301,7 @@ class Engine:
         clean = [{"label": str(o.get("label", ""))[:40], "kind": "person" if o.get("kind") == "person" else "object",
                   "regions": [str(n)[:40] for n in (o.get("regions") or [])][:20], "alert": bool(o.get("alert")),
                   "outside": bool(o.get("outside")), "near": bool(o.get("near")), "crossed": bool(o.get("crossed")),
-                  "track": o.get("track") if isinstance(o.get("track"), int) else None}
+                  "thrown": bool(o.get("thrown")), "track": o.get("track") if isinstance(o.get("track"), int) else None}
                  for o in objs]
         fired = []
         with self._mu:
@@ -391,7 +410,9 @@ class Engine:
             if not rule.get("repeat") or now_utc - datetime.fromisoformat(prev["triggered_at"]) < timedelta(minutes=rule["repeat"]):
                 return None
         what = self._what(rule, hit)
-        if rule["type"] == "dwell":
+        if rule["region"] == "*thrown":
+            msg = f"{what} thrown over the wall"
+        elif rule["type"] == "dwell":
             msg = f"{what} in {where} for {int(dur // 60)} min {int(dur % 60)} s"
         else:
             msg = f"{what} in {where}" + (f" — still there after {int(dur // 60)} min {int(dur % 60)} s" if prev else "")
@@ -400,7 +421,8 @@ class Engine:
     def _store(self, conn, rule, camera, image, hit, start, dur, msg) -> dict:
         labels = sorted({o["label"] for o in hit if o["label"]})
         regions = sorted({n for o in hit for n in o["regions"]}) or ([SPECIAL_REGIONS[rule["region"]]] if rule["region"] in SPECIAL_REGIONS else [rule["region"]])
-        kind = "breach" if rule["severity"] == "critical" and rule["type"] == "presence" else rule["type"]
+        kind = "throw" if rule["region"] == "*thrown" else \
+            "breach" if rule["severity"] == "critical" and rule["type"] == "presence" else rule["type"]
         cur = conn.execute(
             "INSERT INTO alerts(session_id, badge, triggered_at, duration_seconds, kind, camera, zone, image, rule_id, "
             "rule_name, severity, message, presence_start, object_count, sound) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

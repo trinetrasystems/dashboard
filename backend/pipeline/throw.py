@@ -30,14 +30,28 @@ import zones as Z
 
 DEFAULTS = {"history": 300, "var_threshold": 25, "warmup": 30, "scene_change_frac": 0.30, "blob_area_px": (3, 600),
             "person_ioa": 0.2, "gate_px": 60, "max_step_px": 150, "max_missed_frames": 1, "min_track_points": 3,
-            "min_fit_points": 5, "min_side_points": 2, "min_speed_px_per_frame": 8.0, "max_fit_rms_px": 4.0,
-            "fit_rms_per_size": 0.35, "accept_straight_line": True,
+            "min_fit_points": 5, "min_side_points": 2, "min_speed_px_per_frame": 8.0, "max_fit_rms_px": 5.5,
+            "fit_rms_per_size": 0.35, "accept_straight_line": True, "trim_from_points": (7, 10),
+            "x_degree": 2,
             "max_spots": 60, "max_tracks": 120, "min_path_px": 40, "stationary_after": 8, "crop_px": 96, "keep_frames": 16}
 # fit_rms_per_size: the fit tolerance grows with the object (max_fit_rms_px or this x its typical width, √area): the
 # centre of a big motion-blurred streak wobbles a few pixels, a small dot's does not.
 # blob_area_px: the spec's (3, 150) is the area of a still object; a thrown one is a motion-blurred streak (a 10 px
 # object moving 30 px a frame covers ~300 px): 600 (measured on the test videos: 4 of 16 found at 150, 15 at 600).
 # min_side_points: seen at least this often on each side of the line (outside before, inside after the crossing).
+# trim_from_points (a, b): a long path whose fit fails may set aside its worst-fitting point (a path of >= a points) or
+# two (>= b points) and is fitted again with the SAME tolerance: one wrong spot picked up next to the object (tracking
+# noise) or the hand still holding it at the start no longer fails a clean arc. Only after the crossing / speed / travel
+# / zigzag tests passed on all points, and the rest (>= min_fit_points) must fit. Added 28 Nov 2026 after the user's
+# real throw clips 2 and 3 failed "bad_fit" on exactly that (one stray point; two hand points before the release).
+# x_degree: the sideways position x(t) is fitted with this degree (y(t) is always quadratic, gravity). 2 since 28 Nov
+# 2026: an object flying towards / away from the camera speeds up / slows down sideways in the picture (perspective),
+# and the first point is often still the accelerating hand, so a straight x(t) failed real throws (clip 3 on the
+# Jetson). Direction reversals still fail (zigzag test). Measured: same throws found, 0 false alarms on the six
+# site-like test videos (birds, insects, leaves, a walking person, headlights, grass in wind).
+# max_fit_rms_px 5.5 (was 4.0) since 28 Nov 2026: the user's real clip 1 (thrown from right at the gate) fitted at 5.2 px
+# on the Jetson's frames — its first point is the hand and the object still blurred together at the release. Margin
+# measured: even 7.0 raises 0 false alarms on the six site-like test videos and no extra event on the three real clips.
 # min_fit_points: a curve through 3 or 4 points always "fits" (a parabola has 3 numbers): the fit test means something
 # from 5 points (the spec's 3 is the shortest track looked at; a thrown object is in view 5–15 frames).
 # max_missed_frames: the spec's 1. A track that already has a speed is followed across that many frames without a
@@ -53,6 +67,23 @@ def _fit(ts, vs, deg):
         return None, 0.0
     c = np.polyfit(t - t[0], v, deg)
     return c, float(np.sqrt(np.mean((np.polyval(c, t - t[0]) - v) ** 2)))
+
+
+def _trimmed_fit(fr, xs, ys, k, keep, xdeg=1):
+    """drop up to k points, one at a time, each time the one farthest from the current fit (x linear, y quadratic) →
+    (frames, xs, ys) left, or None when fewer than keep would be left"""
+    import numpy as np
+    fr, xs, ys = list(fr), list(xs), list(ys)
+    for _ in range(k):
+        if len(fr) - 1 < keep:
+            return None
+        cx, _ = _fit(fr, xs, xdeg)
+        cy, _ = _fit(fr, ys, 2)
+        t = np.asarray(fr, float) - fr[0]
+        r = np.hypot(np.polyval(cx, t) - np.asarray(xs), np.polyval(cy, t) - np.asarray(ys))
+        j = int(np.argmax(r))
+        del fr[j], xs[j], ys[j]
+    return fr, xs, ys
 
 
 def path_test(pts, line, outside, cfg=None, areas=None):
@@ -96,7 +127,7 @@ def path_test(pts, line, outside, cfg=None, areas=None):
     m["x_flips"], m["y_flips"] = flips(dx), flips(dy)
     if m["x_flips"] > 0 or m["y_flips"] > 1:
         return False, "zigzag", m
-    cx, rx = _fit(fr, xs, 1)
+    cx, rx = _fit(fr, xs, c["x_degree"])
     cy2, ry2 = _fit(fr, ys, 2)
     cy1, ry1 = _fit(fr, ys, 1)
     m["fit_rms"], m["fit_tol"] = round(max(rx, ry2), 2), round(tol, 2)
@@ -106,6 +137,21 @@ def path_test(pts, line, outside, cfg=None, areas=None):
     if c["accept_straight_line"] and rx <= tol and ry1 <= tol:
         m["curve"], m["fit_rms"] = "line", round(max(rx, ry1), 2)
         return True, "throw", m
+    a, b = c["trim_from_points"]
+    k = 2 if n >= b else 1 if n >= a else 0
+    for kk in range(1, k + 1):                                   # the fewest points set aside that make it fit
+        t = _trimmed_fit(fr, xs, ys, kk, c["min_fit_points"], c["x_degree"])
+        if t is None:
+            break
+        tcx, trx = _fit(t[0], t[1], c["x_degree"])
+        tcy2, try2 = _fit(t[0], t[2], 2)
+        tcy1, try1 = _fit(t[0], t[2], 1)
+        if tcy2 is not None and trx <= tol and try2 <= tol and tcy2[0] > -0.05:
+            m.update(curve="parabola" if tcy2[0] > 0.05 else "line", fit_rms=round(max(trx, try2), 2), trimmed=kk)
+            return True, "throw", m
+        if c["accept_straight_line"] and trx <= tol and try1 <= tol:
+            m.update(curve="line", fit_rms=round(max(trx, try1), 2), trimmed=kk)
+            return True, "throw", m
     return False, ("against_gravity" if cy2 is not None and cy2[0] <= -0.05 and ry2 <= tol else "bad_fit"), m
 
 
